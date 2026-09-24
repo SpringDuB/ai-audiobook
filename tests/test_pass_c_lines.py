@@ -98,6 +98,29 @@ def test_process_chapter_assigns_speakers_addressees_and_ids(settings):
     assert lines[2]["pause_after_ms"] == 300              # 句号 300；场景强度 0.7 < 0.8 不追加
 
 
+def test_scene_boundary_pause_attaches_to_last_line_of_previous_scene(settings):
+    """场景切换的 500ms 必须落在场景之间，而不是新场景第一句之后。"""
+    llm = FakeLLM(
+        routes={"PASS_C": {"lines": [{"index": 1, "speaker": "旁白"}, {"index": 2, "speaker": "旁白"}]}}
+    )
+    scenes = [
+        _scene(index=1, start=1, end=1),
+        _scene(index=2, start=2, end=2),
+    ]
+    lines, _ = process_chapter(
+        _runner(settings, llm),
+        settings=settings,
+        book_id="b1",
+        chapter_index=1,
+        sentences=["第一句。", "第二句。"],
+        scenes_payload={"scenes": scenes},
+        characters_payload=_characters(),
+        pronounce_table={},
+    )
+    assert lines[0]["pause_after_ms"] == 300 + 500   # 场景 1 最后一句：句号 300 + 切换 500
+    assert lines[1]["pause_after_ms"] == 300         # 场景 2 最后一句：句号 300，无切换加成
+
+
 def test_unknown_speaker_falls_back_to_narrator_and_reports_issue(settings):
     llm = FakeLLM(routes={"PASS_C": {"lines": [{"index": 1, "speaker": "黑衣人"}]}})
     lines, issues = process_chapter(

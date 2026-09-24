@@ -18,7 +18,12 @@ RATE_BY_DELIVERY = {"shout": 1.05, "whisper": 0.92, "sneer": 0.97, "normal": 1.0
 TRAILING_MARKS = "”\"’』」）)】]"
 
 
-def derive_pause_ms(text: str, scene_switch: bool = False, intensity: float | None = None) -> int:
+def derive_pause_ms(
+    text: str,
+    scene_switch: bool = False,
+    intensity: float | None = None,
+    scene_extra_ms: int = 500,
+) -> int:
     # 中文对白常以引号收尾（“你为什么要杀我？”），判定标点前先剥掉这些收尾符号
     stripped = text.rstrip().rstrip(TRAILING_MARKS).rstrip()
     base = 200
@@ -27,7 +32,7 @@ def derive_pause_ms(text: str, scene_switch: bool = False, intensity: float | No
             base = ms
             break
     if scene_switch:
-        base += 500
+        base += scene_extra_ms
     if intensity is not None and intensity >= 0.8:
         base += 150
     return base

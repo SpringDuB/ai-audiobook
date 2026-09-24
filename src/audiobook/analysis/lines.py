@@ -48,7 +48,17 @@ def annotate_scene(runner, *, settings, book_id, chapter_index, scene, sentences
     )
 
 
-def build_lines(*, chapter_index, scene, sentences, annotations, characters_payload, relationships, pronounce_table):
+def build_lines(
+    *,
+    chapter_index,
+    scene,
+    sentences,
+    annotations,
+    characters_payload,
+    relationships,
+    pronounce_table,
+    has_next_scene: bool = False,
+):
     index = characters_index(characters_payload)
     by_index = {annotation.index: annotation for annotation in annotations}
     lines: list[dict] = []
@@ -95,7 +105,8 @@ def build_lines(*, chapter_index, scene, sentences, annotations, characters_payl
                 character=index.get(speaker_id),
                 relationship=relationship,
                 pronounce_table=pronounce_table,
-                scene_switch=(seq == 1 and scene["index"] > 1),
+                # 场景切换的额外停顿挂在场景最后一句的后面 —— 它才代表"场景之间"
+                scene_switch=(has_next_scene and seq == len(sentences)),
             )
         )
     return lines, issues
@@ -114,6 +125,9 @@ def process_chapter(
         scene_sentences = sentences[scene["start_line"] - 1: scene["end_line"]]
         if not scene_sentences:
             continue
+        has_next_scene = any(
+            sentences[later["start_line"] - 1: later["end_line"]] for later in scenes[position:]
+        )
         try:
             annotations = annotate_scene(
                 runner, settings=settings, book_id=book_id, chapter_index=chapter_index,
@@ -138,6 +152,7 @@ def process_chapter(
             chapter_index=chapter_index, scene=scene, sentences=scene_sentences,
             annotations=annotations, characters_payload=characters_payload,
             relationships=relationships, pronounce_table=pronounce_table,
+            has_next_scene=has_next_scene,
         )
         all_lines.extend(scene_lines)
         issues.extend(scene_issues)
