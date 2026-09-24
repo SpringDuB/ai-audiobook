@@ -16,6 +16,7 @@ class WorkerContext:
     conn: object
     worker_id: str
     engine: object | None = None
+    llm: object | None = None
 
     def progress(self, job, done: int, total: int, message: str = "") -> None:
         jobs.set_progress(self.conn, job.id, done, total, message)

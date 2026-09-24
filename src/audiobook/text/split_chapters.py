@@ -8,6 +8,8 @@ CHAPTER_PATTERNS = [
 ]
 
 SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
+WORD_CHARS = re.compile(r"[0-9A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
+CLOSING_MARKS = "”\"’』」）)】]"
 
 
 @dataclass
@@ -23,12 +25,27 @@ def match_chapter_title(line: str) -> bool:
 
 
 def split_sentences(content: str) -> list[str]:
+    """按中文标点断句；只由标点/引号组成的小片段（如句尾的 `”`）并回上一句。"""
     parts: list[str] = []
     for line in content.split("\n"):
         line = line.strip()
         if not line:
             continue
-        parts.extend(piece.strip() for piece in SENTENCE_SPLIT.split(line) if piece.strip())
+        merged: list[str] = []
+        for piece in (item.strip() for item in SENTENCE_SPLIT.split(line)):
+            if not piece:
+                continue
+            if merged:
+                stripped = piece.lstrip(CLOSING_MARKS)
+                moved = piece[: len(piece) - len(stripped)]
+                if moved and stripped:
+                    merged[-1] += moved  # “好。”他说。 → 句尾引号归上一句
+                    piece = stripped
+            if merged and not WORD_CHARS.search(piece):
+                merged[-1] += piece
+            else:
+                merged.append(piece)
+        parts.extend(merged)
     return parts
 
 

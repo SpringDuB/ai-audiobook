@@ -52,16 +52,30 @@ def main(argv=None) -> int:
 
     if args.cmd == "worker":
         from .engines.fake import FakeEngine
-        from .handlers import post, split, synthesize  # noqa: F401  导入即注册
+        from .handlers import casting, characters, lines, post, scenes, split, synthesize  # noqa: F401
+        from .llm.base import LLMError
+        from .llm.limiter import AdaptiveLimiter
+        from .llm.openai_compat import build_client
+        from .llm.runner import LlmJsonRunner
         from .worker import WorkerContext, run_forever, run_once
 
         conn = connect(settings.db_path)
         init_db(conn)
+        llm = None
+        try:
+            llm = LlmJsonRunner(
+                build_client(settings),
+                AdaptiveLimiter(max_concurrency=settings.llm_concurrency),
+                settings,
+            )
+        except LLMError as exc:
+            print(f"警告：{exc}（分析类任务会失败）")
         ctx = WorkerContext(
             settings=settings,
             conn=conn,
             worker_id=args.worker_id or f"w-{os.getpid()}-{uuid.uuid4().hex[:6]}",
             engine=FakeEngine(),
+            llm=llm,
         )
         if args.once:
             run_once(ctx)

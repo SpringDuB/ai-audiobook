@@ -1,6 +1,5 @@
 from .. import jobs, store
 from ..text.clean import clean_text
-from ..text.lines_stub import stub_lines
 from ..text.split_chapters import split_chapters
 from ..worker import register
 
@@ -24,11 +23,6 @@ def handle_split(ctx, job) -> None:
             "dropped_lines": cleaned.dropped[:200],
         },
     )
-    for chapter in chapters:
-        rows = stub_lines(chapter.index, chapter.content)
-        if not rows:
-            continue
-        store.write_jsonl_atomic(store.lines_path(ctx.settings, book_id, chapter.index), rows)
-        jobs.enqueue(ctx.conn, "synthesize", book_id, chapter.index)
-        ctx.progress(job, chapter.index + 1, len(chapters), chapter.title)
+    jobs.enqueue(ctx.conn, "characters", book_id)
     ctx.conn.execute("UPDATE books SET chapter_count=?, status='split' WHERE id=?", (len(chapters), book_id))
+    ctx.progress(job, len(chapters), len(chapters), f"{len(chapters)} 章")

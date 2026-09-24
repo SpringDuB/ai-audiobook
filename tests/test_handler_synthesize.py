@@ -1,7 +1,6 @@
 from audiobook import jobs, store
 from audiobook.engines.fake import FakeEngine
 from audiobook.handlers import synthesize  # noqa: F401  导入即注册
-from audiobook.text import lines_stub
 from audiobook.worker import WorkerContext, run_once
 
 
@@ -15,9 +14,9 @@ class CountingEngine(FakeEngine):
         return super().synthesize(text, voice_id, params, out_path)
 
 
-def _prepare_book(settings, book_id="b1", chapter=1, text="第一句。第二句。"):
+def _prepare_book(narrator_lines, settings, book_id="b1", chapter=1, text="第一句。第二句。"):
     store.atomic_replace_json(store.book_dir(settings, book_id) / "book.json", {"id": book_id, "title": "T"})
-    store.write_jsonl_atomic(store.lines_path(settings, book_id, chapter), lines_stub.stub_lines(chapter, text))
+    store.write_jsonl_atomic(store.lines_path(settings, book_id, chapter), narrator_lines(chapter, text))
     return book_id
 
 
@@ -30,9 +29,9 @@ def _run_synthesize(conn, ctx, book_id="b1", chapter=1):
     run_once(ctx)
 
 
-def test_synthesize_writes_clips_and_meta_then_enqueues_post(conn, settings):
+def test_synthesize_writes_clips_and_meta_then_enqueues_post(conn, settings, narrator_lines):
     engine = CountingEngine()
-    _prepare_book(settings)
+    _prepare_book(narrator_lines, settings)
     jobs.enqueue(conn, "synthesize", "b1", 1)
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
 
@@ -46,9 +45,9 @@ def test_synthesize_writes_clips_and_meta_then_enqueues_post(conn, settings):
     assert [j.kind for j in jobs.list_jobs(conn, "b1")] == ["synthesize", "post"]
 
 
-def test_second_run_reuses_cache_and_does_not_call_engine(conn, settings):
+def test_second_run_reuses_cache_and_does_not_call_engine(conn, settings, narrator_lines):
     engine = CountingEngine()
-    _prepare_book(settings)
+    _prepare_book(narrator_lines, settings)
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
 
     jobs.enqueue(conn, "synthesize", "b1", 1)
@@ -60,9 +59,9 @@ def test_second_run_reuses_cache_and_does_not_call_engine(conn, settings):
     assert engine.calls == first_calls
 
 
-def test_changed_text_regenerates_only_that_line(conn, settings):
+def test_changed_text_regenerates_only_that_line(conn, settings, narrator_lines):
     engine = CountingEngine()
-    _prepare_book(settings)
+    _prepare_book(narrator_lines, settings)
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
     jobs.enqueue(conn, "synthesize", "b1", 1)
     run_once(ctx)
@@ -76,9 +75,9 @@ def test_changed_text_regenerates_only_that_line(conn, settings):
     assert engine.calls == before + 1
 
 
-def test_failed_line_is_recorded_and_others_continue(conn, settings):
+def test_failed_line_is_recorded_and_others_continue(conn, settings, narrator_lines):
     engine = CountingEngine(fail_on={"第二句"})
-    _prepare_book(settings)
+    _prepare_book(narrator_lines, settings)
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
     jobs.enqueue(conn, "synthesize", "b1", 1)
     run_once(ctx)

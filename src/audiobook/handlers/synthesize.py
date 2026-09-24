@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs as jobs_mod
 from .. import store
+from ..analysis.casting import voice_for_speaker
 from ..cache import cache_key, params_from_line
 from ..worker import register
 
@@ -10,11 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_voice_id(settings, book_id: str, speaker: str) -> str:
-    casting = store.read_json(store.book_dir(settings, book_id) / "voices" / "casting.json", default={})
-    entry = casting.get(speaker) if isinstance(casting, dict) else None
-    if isinstance(entry, dict):
-        return entry.get("voice_id") or "default"
-    return "default"
+    casting = store.read_json(store.casting_path(settings, book_id), default={})
+    if not isinstance(casting, dict) or not casting:
+        return "default"
+    return voice_for_speaker(casting, speaker) or "default"
 
 
 def _synth_one(ctx, job, row: dict) -> dict:
