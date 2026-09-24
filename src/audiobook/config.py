@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     llm_chunk_chars: int = 8000
     llm_scene_window_chars: int = 8000
     synth_concurrency: int = 4
+    engine: str = "fake"
+    tts_timeout_seconds: float = 180.0
+    tts_connect_timeout_seconds: float = 5.0
+    tts_ref_upload_timeout_seconds: float = 120.0
+    synth_concurrency_max: int = 16
+    tts_health_cache_seconds: float = 5.0
+    tts_breaker_seconds: float = 60.0
+    tts_max_line_chunk_chars: int = 0
     tts_endpoints: list[str] = []
     worker_poll_seconds: float = 1.0
     lease_seconds: int = 30

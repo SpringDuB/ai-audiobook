@@ -13,6 +13,10 @@ ISSUE_KINDS = (
     "voice_library_empty",
     "casting_voice_reused",
     "casting_no_match",
+    "tts_line_failed",
+    "tts_ref_missing",
+    "tts_endpoint_down",
+    "audio_missing",
 )
 
 

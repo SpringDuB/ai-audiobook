@@ -67,6 +67,10 @@ def voice_path(settings, voice_id: str) -> Path:
     return settings.voices_dir / voice_id / "voice.json"
 
 
+def voice_ref_path(settings, voice_id: str) -> Path:
+    return settings.voices_dir / voice_id / "ref.wav"
+
+
 def pronounce_path(settings) -> Path:
     return settings.data_dir / "pronounce.json"
 
