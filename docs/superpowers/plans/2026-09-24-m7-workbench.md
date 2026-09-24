@@ -73,6 +73,11 @@
 7. **fake 后端误导人**：选 fake 一键启动后什么都不下载、也不加载模型，用户以为服务坏了 → 产品里彻底删除 fake（主项目 `engines/factory` 只留 http、老 `AB_ENGINE=fake` 给明确报错；tts 只留 indextts），测试用一个 `StubBackend` 替身。
 8. **启动不下载模型**：`IndexTtsBackend.load()` 原来直接读 `config.yaml`，从不调 `ensure_model` → 选 modelscope 也不会下载。改成"先 import 依赖 → 按来源 `ensure_model`（必要时下载，进度进日志）→ 加载"，并且 `serve` 默认预加载。
 9. **假的 Python 版本门槛**：`backends/indextts.py` 里那道 "必须 3.10/3.11" 的守卫是我们自己写的，不是 IndexTTS 的要求（真正卡人的是 pynini 之类依赖有没有轮子）→ 直接删掉，装得上就能跑。
+10. **日志乱码**：子进程 stdout 默认按 Windows 代码页（GBK）写，而读取端按 UTF-8 解码 → 界面上显示成一串 `�`。修法：给子进程强制 `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` / `PYTHONUNBUFFERED=1`，读取端再补 utf-8 → gbk → replace 三级兜底（实测 `text.count("\ufffd") == 0`）。
+11. **真后端依赖没写进 pyproject**：之前靠一串手工命令 → `tts/pyproject.toml` 增加 `indextts`（torch/torchaudio/transformers/librosa/soundfile/numpy/sentencepiece…）与 `download`（modelscope/huggingface_hub）两个 extra，基础依赖保持轻量；`tts/tests/test_packaging.py` 守住这几个包不许再丢。
+12. **`uv run` 的自动同步会撞文件锁**：正在跑的服务锁着 venv 里的 `watchfiles/_rust_notify.pyd`，同步于是以 `failed to remove file ... os error 5` 失败，还会把 `aiab-tts` 的 editable 安装连根拔掉。改成直连 `tts/.venv` 的解释器跑 `-m aiab_tts`（并 `PYTHONPATH=tts/src`，临时安装坏了也能起），venv 缺基础依赖时才自动补一次 `uv sync`。
+13. **孤儿服务越攒越多**：端到端用例用 `uv run ... python -m aiab_tts serve` 起服务，`terminate()` 只杀到 uv，真正的 python 子进程活了下来——一天下来攒了 52 个，全部锁着 venv 里的文件。修法：测试改成直连 venv 解释器 + `taskkill /T` 收进程树；产品启动时若发现端口上已经有人在应答但它不在台账里，直接在日志里点名提示。清理时把这 52 个（没有任何端口在监听的）孤儿杀掉了。
+14. **Python 版本门槛的真相**：`<3.12` 是 `index-tts` 自己的 `pyproject.toml` 声明（`requires-python = ">=3.10,<3.12"`，附带 `torch==2.8.*` 等 pin），我们这侧已经没有任何版本检查；`tts` 的 `indextts` extra 按它这份 pin 对齐，文档也改成"真后端用 3.11 建 venv"。
 
 遗留：
 

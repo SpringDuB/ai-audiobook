@@ -7,15 +7,14 @@
 
 ```powershell
 cd tts
-uv sync                                     # Python ≥3.10 都行；用你装得上依赖的那个版本
-uv pip install --python .venv -e <index-tts 仓库路径>   # IndexTTS-2.5 不在 PyPI 上
+uv sync --python 3.11 --extra indextts --extra download  # 推理栈 + 下载客户端（index-tts 自己要求 <3.12）
+uv pip install --python .venv -e index-tts              # IndexTTS-2.5 不在 PyPI 上
 uv run --project tts aiab-tts download --source modelscope        # 或 huggingface / local
 uv run --project tts aiab-tts serve --backend indextts --host 0.0.0.0 --port 8020
 uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 ```
 
-服务不卡 Python 版本：能不能跑只取决于 `index-tts` 与它的依赖有没有对应版本的轮子；
-装得上就直接用（3.13 也可以），装不上时启动日志会带着 import 的真实报错告诉你缺什么。
+服务本身不卡 Python 版本（`>=3.10`）；`<3.12` 是 `index-tts` 自己的声明，装不上时启动日志会带上 import 的真实报错。
 
 完整步骤、模型来源三选一、manifest 校验与显存共享见 [`docs/tts-deploy.md`](../docs/tts-deploy.md)。
 

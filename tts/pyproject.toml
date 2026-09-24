@@ -1,7 +1,7 @@
 [project]
 name = "aiab-tts"
 version = "0.1.0"
-description = "AI 有声书 TTS 推理服务（独立进程；IndexTTS-2.5 与 fake 两种后端）"
+description = "AI 有声书 TTS 推理服务（独立进程；IndexTTS-2.5 后端）"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115",
@@ -10,6 +10,38 @@ dependencies = [
   "pydantic-settings>=2.3",
   "python-multipart>=0.0.9",
   "httpx>=0.27",
+]
+
+# 真后端的推理栈与下载客户端。
+# 装法（模型权重按来源自动下载时需要 download）：
+#   uv sync --extra indextts --extra download
+#   uv pip install --python .venv -e index-tts      # index-tts 本体不在 PyPI 上
+#
+# 版本按 index-tts 自己的 pyproject 对齐（torch 2.8.* / transformers 4.52.1 / numpy 2.2.6 …）；
+# 权威来源仍是 index-tts 的 pyproject，`uv pip install -e` 会按它的 pin 再收敛一次。
+# 注意：index-tts 声明 requires-python ">=3.10,<3.12"，所以真后端请用 3.11 建 venv：
+#   uv sync --python 3.11 --extra indextts --extra download
+[project.optional-dependencies]
+indextts = [
+  "torch==2.8.*",
+  "torchaudio==2.8.*",
+  "numpy==2.2.6",
+  "librosa==0.10.2.post1",
+  "soundfile",
+  "transformers==4.52.1",
+  "tokenizers==0.21.0",
+  "accelerate==1.8.1",
+  "einops>=0.8.1",
+  "omegaconf>=2.3.0",
+  "sentencepiece>=0.2.1",
+  "tqdm>=4.67.1",
+  "cn2an==0.5.22",
+  "jieba==0.42.1",
+  "wetext>=0.0.9; sys_platform != 'linux'",
+]
+download = [
+  "modelscope>=1.9",
+  "huggingface_hub>=0.24",
 ]
 
 [dependency-groups]

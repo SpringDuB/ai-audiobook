@@ -4,19 +4,28 @@
 
 ## 1. 环境准备（GPU 机器）
 
-需要的是一块 NVIDIA GPU 与约 6 GB 显存。Python 侧**不设版本门槛**：`tts/pyproject.toml` 只写 `>=3.10`，
-能不能跑取决于 `index-tts` 及其依赖在你所用版本上有没有轮子——装得上就直接跑（3.13 也可以），
-装不上时启动日志会带上 import 的真实报错。
+需要的是一块 NVIDIA GPU 与约 6 GB 显存。
+
+Python 版本：**我们这侧不设门槛**（`tts/pyproject.toml` 只写 `>=3.10`，装得上就能跑），
+但 `index-tts` 自己在 `pyproject.toml` 里声明了 `requires-python = ">=3.10,<3.12"`，
+所以真后端用 3.11 建 venv 最省事（想用别的版本就得自己处理它的声明与依赖轮子）。
 
 ```powershell
 cd tts
-uv sync                      # 想固定到某个解释器：uv sync --python 3.11
+uv sync --python 3.11 --extra indextts --extra download   # 推理栈 + 下载客户端（版本按 index-tts 对齐）
 
 # IndexTTS 不在 PyPI 上：克隆官方仓库并装进本项目的 venv
-git clone https://github.com/index-tts/index-tts.git ..\third_party\index-tts
-uv pip install --python .venv -e ..\third_party\index-tts
-uv pip install --python .venv modelscope huggingface_hub   # 按需，仅下载阶段需要
+git clone https://github.com/index-tts/index-tts.git index-tts
+uv pip install --python .venv -e index-tts
 ```
+
+`indextts` extra = `torch==2.8.* / torchaudio / transformers==4.52.1 / librosa / soundfile / numpy / sentencepiece`
+等推理栈（版本按 index-tts 的 pin 对齐，权威来源仍是它的 `pyproject.toml`）；
+`download` extra = `modelscope` + `huggingface_hub`。基础依赖（fastapi / uvicorn …）保持轻量，
+没 GPU 的机器也能装、能跑单元测试。
+
+> Windows / Linux 上从 PyPI 装的 `torch==2.8.*` 默认就是 CUDA 构建；要用别的 CUDA 版本，
+> 先用 PyTorch 官方索引装 torch/torchaudio，再执行上面的 `uv sync`。
 
 > 若某个依赖（例如 `pynini`/`WeTextProcessing`）在你的版本上没有轮子，pip 会要求现场编译；
 > 这时要么换成它有轮子的解释器（`uv sync --python 3.11`），要么自行准备编译环境。
@@ -60,8 +69,9 @@ uv run --project tts aiab-tts download --source local
 日常使用不用敲命令：浏览器界面 **设置 → TTS 服务** 里选好后端与模型来源，点「一键启动 TTS 服务」。
 它会做三件事：
 
-1. 在本机拉起独立进程 `uv run --project tts aiab-tts serve --backend … --port …`（日志写到 `data/logs/tts-service.log`，
-   界面上可展开实时看）；
+1. 在本机拉起独立进程（直接用 `tts/.venv` 的解释器跑 `-m aiab_tts serve`，绕开 `uv run` 的自动同步——
+   正在跑的服务会锁住 venv 里的扩展模块，同步会以 `os error 5` 失败）。日志写到 `data/logs/tts-service.log`，
+   界面上可展开实时看；venv 缺失或缺基础依赖时会先自动补一次 `uv sync`（只装基础依赖）；
 2. 把合成引擎自动切到 `http` 并指向刚起来的地址（写进 `data/settings.json` 的 `engine` / `tts_endpoints`）；
 3. 运行中的 worker **下一轮任务前会重读设置**，所以不用重启 worker 就能用上新服务。
 

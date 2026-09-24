@@ -2,6 +2,7 @@ import sys
 import time
 import os
 
+from audiobook import tts_service
 from audiobook.config import get_settings, load_overlay
 from audiobook.tts_service import LocalTtsService
 
@@ -122,6 +123,69 @@ def test_start_strips_parent_virtual_env(tmp_path, monkeypatch):
     assert "VIRTUAL_ENV" not in captured["env"]
     assert "VIRTUAL_ENV_PROMPT" not in captured["env"]
     assert captured["env"]["AIAB_TTS_BACKEND"] == "indextts"
+    # 中文日志必须按 UTF-8 落盘，否则界面上是乱码
+    assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert captured["env"]["PYTHONUTF8"] == "1"
+    # 直接从源码跑：venv 被 uv 重装打断时也能起来
+    assert str(tts_service.TTS_DIR / "src") in captured["env"]["PYTHONPATH"]
+
+
+def test_build_command_prefers_venv_python(tmp_path, monkeypatch):
+    """venv 已存在就直连解释器，不走 `uv run`（避免它自动同步时碰到文件锁）。"""
+    fake_root = tmp_path / "tts"
+    scripts = fake_root / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    scripts.mkdir(parents=True)
+    python = scripts / ("python.exe" if os.name == "nt" else "python")
+    python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(tts_service, "TTS_DIR", fake_root)
+    service = LocalTtsService(get_settings(data_dir=tmp_path / "data"))
+    command = service.build_command(backend="indextts", port=8123)
+    assert command == [str(python), "-m", "aiab_tts", "serve", "--backend", "indextts", "--host", "127.0.0.1", "--port", "8123"]
+
+
+def test_logs_decode_gbk_from_old_runs(tmp_path):
+    """老版本子进程按 GBK 写日志：读取端要兜住，不能显示成一串替换符。"""
+    service = _service(tmp_path)
+    service.log_path.parent.mkdir(parents=True, exist_ok=True)
+    service.log_path.write_bytes("后端 indextts：模型来源=local\n".encode("gbk"))
+    assert service.logs(offset=0)["lines"] == ["后端 indextts：模型来源=local"]
+
+
+def test_logs_split_carriage_return_progress(tmp_path):
+    """下载进度条是 \\r 刷新的，要能在界面上按行滚动。"""
+    service = _service(tmp_path)
+    service.log_path.parent.mkdir(parents=True, exist_ok=True)
+    service.log_path.write_bytes(b"downloading 10%\rdownloading 60%\rdownloading 100%\n")
+    assert service.logs(offset=0)["lines"] == ["downloading 10%", "downloading 60%", "downloading 100%"]
+
+
+def test_port_busy_detects_an_untracked_service(tmp_path):
+    """端口被上次遗留的服务占着：要在日志里点出来，否则新服务只会报 address in use。"""
+    import socket
+
+    service = _service(tmp_path)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        assert service.port_busy(port) is True
+    assert service.port_busy(port) is False
+
+
+def test_start_warns_when_port_is_taken(tmp_path):
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        settings = get_settings(data_dir=tmp_path / "data")
+        service = LocalTtsService(settings, command=_sleeper())
+        service.start(backend="indextts", port=port)
+        try:
+            assert any("已经有服务在应答" in line for line in service.logs(offset=0)["lines"])
+        finally:
+            service.stop()
 
 
 def test_cli_start_writes_engine_overlay(tmp_path, monkeypatch):

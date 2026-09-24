@@ -85,16 +85,23 @@ class LocalTtsService:
         return state
 
     # ---------------------------------------------------------------- 启动命令
+    def venv_python(self) -> Path | None:
+        python = TTS_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        return python if python.exists() else None
+
     def build_command(self, *, backend: str, port: int) -> list[str]:
         if self._command:
             return list(self._command)
         args = ["serve", "--backend", backend, "--host", "127.0.0.1", "--port", str(port)]
+        python = self.venv_python()
+        if python is not None:
+            # 直接用 venv 的解释器跑，绕开 `uv run` 的自动同步：
+            # 正在跑的服务会锁住 venv 里的扩展模块，自动同步会以 os error 5 失败。
+            return [str(python), "-m", "aiab_tts", *args]
         uv = shutil.which("uv")
         if uv:
+            # 还没有 venv：交给 uv 建环境并装基础依赖
             return [uv, "run", "--project", str(TTS_DIR), "aiab-tts", *args]
-        python = TTS_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        if python.exists():
-            return [str(python), "-m", "aiab_tts", *args]
         raise RuntimeError("找不到 uv，且 tts/.venv 不存在：请先在项目根目录执行 uv sync 与 `uv run --project tts uv sync`")
 
     # ---------------------------------------------------------------- 探活
@@ -109,6 +116,15 @@ class LocalTtsService:
         except Exception:  # noqa: BLE001 - 探活失败就是没起来
             return None
         return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def port_busy(port: int) -> bool:
+        """端口上有没有人在应答（不看是不是我们台账里的进程）。"""
+        import socket
+
+        with socket.socket() as sock:
+            sock.settimeout(0.5)
+            return sock.connect_ex(("127.0.0.1", int(port))) == 0
 
     def status(self) -> dict:
         state = self._read_state()
@@ -170,17 +186,30 @@ class LocalTtsService:
             "AIAB_TTS_PORT": str(port),
             "AIAB_TTS_MODEL_SOURCE": model_source,
             "AIAB_TTS_MODEL_DIR": str(model_dir),
+            # 日志要按 UTF-8 落盘：子进程默认按 Windows 控制台代码页(GBK)写，界面上就是乱码
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "PYTHONUNBUFFERED": "1",
         }
         # 后端进程常常是从根项目的 .venv 里起来的；这个变量会让 `uv run --project tts`
         # 报警说 VIRTUAL_ENV 和项目环境不匹配（其实会用 tts/.venv），去掉更干净
         env.pop("VIRTUAL_ENV", None)
         env.pop("VIRTUAL_ENV_PROMPT", None)
+        # 直接从源码跑：venv 里的 editable 安装被 uv 重装打断时（"failed to remove file"）也能起来
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(TTS_DIR / "src"), env.get("PYTHONPATH")) if part)
         if hf_endpoint:
             env["AIAB_TTS_HF_ENDPOINT"] = hf_endpoint
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.log_path, "a", encoding="utf-8") as handle:
             handle.write(f"\n===== {stamp} 启动 TTS：backend={backend} port={port} model={model_source} =====\n")
+            self._prepare_environment(handle, env)
+            if self.port_busy(port):
+                # 常见坑：上次遗留的服务还占着端口，新服务会以 "address already in use" 失败
+                handle.write(
+                    f"警告：端口 {port} 上已经有服务在应答，但它不在本进程的台账里（多半是之前遗留的进程）。\n"
+                    f"      先把它停掉（任务管理器/`netstat -ano | findstr {port}`），否则新服务起不来。\n"
+                )
             handle.flush()
             self._process = self._popen(
                 command,
@@ -202,6 +231,40 @@ class LocalTtsService:
             command=command,
         )
         return self.status()
+
+    def _prepare_environment(self, handle, env: dict) -> None:
+        """venv 缺失或缺少基础依赖时补一下；只装基础依赖，不自动拉 torch 这类大件。"""
+        python = self.venv_python()
+        if python is None:
+            handle.write("tts/.venv 不存在：交给 uv 创建并安装基础依赖（真后端依赖见 docs/tts-deploy.md）\n")
+            return
+        probe = subprocess.run(
+            [str(python), "-c", "import fastapi, uvicorn"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            check=False,
+        )
+        if probe.returncode == 0:
+            return
+        uv = shutil.which("uv")
+        if not uv:
+            handle.write("tts/.venv 缺少基础依赖，且找不到 uv：请在 tts/ 目录执行 uv sync\n")
+            return
+        handle.write("tts/.venv 缺少基础依赖：先执行 uv sync（只装基础依赖）…\n")
+        result = subprocess.run(
+            [uv, "sync", "--project", str(TTS_DIR)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            check=False,
+        )
+        handle.write((result.stdout or "") + (result.stderr or ""))
+        handle.write(f"uv sync 退出码 {result.returncode}；真后端依赖（torch / index-tts）见 docs/tts-deploy.md\n")
 
     def stop(self) -> dict:
         state = self._read_state()
@@ -242,7 +305,22 @@ class LocalTtsService:
             handle.seek(start)
             chunk = handle.read()
         # 下载进度条是 \r 刷新的：换成换行，界面上就能一行行看到最新进度
-        text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        text = _decode_log(chunk)
         lines = text.splitlines()
         trimmed = lines[-limit:] if len(lines) > limit else lines
         return {"offset": size, "lines": trimmed, "reset": reset}
+
+
+def _decode_log(chunk: bytes) -> str:
+    """按 UTF-8 解码（子进程已被强制 UTF-8）；老日志可能是 GBK，兜一下。
+
+    下载进度条用 \\r 刷新，统一换成换行，界面上才能一行行看到最新进度。
+    """
+    try:
+        text = chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = chunk.decode("gbk")
+        except UnicodeDecodeError:
+            text = chunk.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")

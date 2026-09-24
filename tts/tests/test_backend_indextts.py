@@ -57,7 +57,8 @@ def test_load_only_depends_on_the_installed_package(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError) as excinfo:
         backend.load()
     assert "IndexTTS 不可用" in str(excinfo.value)
-    assert "3.10" not in str(excinfo.value) and "3.11" not in str(excinfo.value)
+    # 报错要给出装法（3.11 只是 index-tts 自己的声明，不是我们拦的）
+    assert "index-tts" in str(excinfo.value) and "uv pip install" in str(excinfo.value)
 
 
 def test_load_passes_paths_and_bf16(fake_indextts, tmp_path):

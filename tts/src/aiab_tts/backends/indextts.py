@@ -66,7 +66,9 @@ class IndexTtsBackend:
             raise RuntimeError(
                 f"IndexTTS 不可用：{exc}。"
                 "请按 docs/tts-deploy.md 在 tts/.venv 里装好 index-tts"
-                "（uv pip install --python tts/.venv -e third_party/index-tts）。"
+                "（uv sync --python 3.11 --extra indextts --extra download 后 "
+                "uv pip install --python tts/.venv -e index-tts）。"
+                "注意 index-tts 自己声明 requires-python >=3.10,<3.12，所以它的 venv 要用 3.11 建。"
             ) from exc
 
         from ..download import ModelIntegrityError, ensure_model

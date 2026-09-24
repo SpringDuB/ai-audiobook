@@ -69,6 +69,30 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _service_command(port: int) -> list[str]:
+    """优先直连 tts/.venv 的解释器：`uv run` 会多一层进程，kill 不干净会留下孤儿服务。"""
+    code = STUB_SERVER.replace("{port}", str(port))
+    python = TTS_PROJECT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if python.exists():
+        return [str(python), "-c", code]
+    assert UV is not None
+    return [UV, "run", "--project", str(TTS_PROJECT), "python", "-c", code]
+
+
+def _kill_tree(process) -> None:
+    """整棵进程树收尾（Windows 上用 taskkill /T），别留孤儿。"""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:  # pragma: no cover - 收不干净就强杀
+        process.kill()
+
+
 def _wait_health(base_url: str, timeout: float = 180.0) -> dict:
     deadline = time.time() + timeout
     last = ""
@@ -90,7 +114,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     process = subprocess.Popen(
-        [UV, "run", "--project", str(TTS_PROJECT), "python", "-c", STUB_SERVER.replace("{port}", str(port))],
+        _service_command(port),
         cwd=str(REPO),
         env=dict(os.environ, PYTHONIOENCODING="utf-8"),
         stdout=subprocess.PIPE,
@@ -146,8 +170,4 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         kinds = {issue["kind"] for issue in store.read_jsonl(store.issues_path(settings, book_id))}
         assert kinds <= {"voice_library_empty"}
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:  # pragma: no cover
-            process.kill()
+        _kill_tree(process)
