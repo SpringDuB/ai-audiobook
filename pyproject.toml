@@ -27,3 +27,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["ffmpeg: 需要本机 ffmpeg/ffprobe 的集成测试"]
