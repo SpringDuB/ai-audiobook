@@ -50,6 +50,26 @@ def _unload(args) -> int:
     return 0
 
 
+def _download(args) -> int:
+    from .download import ensure_model
+
+    settings = get_settings()
+    if args.source:
+        settings = settings.model_copy(update={"model_source": args.source})
+    if args.model_dir:
+        settings = settings.model_copy(update={"model_dir": args.model_dir})
+    if args.hf_endpoint:
+        settings = settings.model_copy(update={"hf_endpoint": args.hf_endpoint})
+    if args.model_id:
+        settings = settings.model_copy(update={"model_id": args.model_id})
+    result = ensure_model(settings)
+    print(f"model_dir={result['path']}")
+    print(f"source={result['source']} verified={result['verified']}")
+    for warning in result["warnings"]:
+        print(f"警告：{warning}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="aiab-tts")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -65,6 +85,12 @@ def main(argv=None) -> int:
     unload = sub.add_parser("unload", help="释放运行中服务的模型/显存")
     unload.add_argument("--url", default="http://127.0.0.1:8020")
 
+    download = sub.add_parser("download", help="按来源下载/校验模型权重")
+    download.add_argument("--source", default=None, choices=["modelscope", "huggingface", "local"])
+    download.add_argument("--model-dir", default=None)
+    download.add_argument("--model-id", default=None)
+    download.add_argument("--hf-endpoint", default=None)
+
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         return _serve(args)
@@ -72,6 +98,8 @@ def main(argv=None) -> int:
         return _check(args)
     if args.cmd == "unload":
         return _unload(args)
+    if args.cmd == "download":
+        return _download(args)
     parser.print_help()
     return 1
 
