@@ -153,3 +153,47 @@ def test_start_falls_back_to_indextts_when_stored_backend_is_gone(settings, monk
     client = _client(settings)
     client.post("/api/tts/local/start", json={})
     assert seen["backend"] == "indextts"
+
+
+def test_start_accepts_the_settings_page_payload(settings, monkeypatch):
+    """界面发的是 tts_* 前缀的键：曾经因为接口只认短键，选了 modelscope 也被忽略。"""
+    seen = {}
+
+    class FakeService:
+        def __init__(self, settings):  # noqa: ARG002
+            pass
+
+        def status(self):
+            return {"running": False, "healthy": False, "starting": False, "pid": None, "port": 8020,
+                    "url": "http://127.0.0.1:8020", "backend": "indextts", "log_path": "x.log"}
+
+        def start(self, **kwargs):
+            seen.update(kwargs)
+            return {**self.status(), "running": True, "port": kwargs.get("port") or 8020,
+                    "url": f"http://127.0.0.1:{kwargs.get('port') or 8020}"}
+
+        def stop(self):
+            return self.status()
+
+        def logs(self, *, offset=0, limit=300):  # noqa: ARG002
+            return {"offset": 0, "lines": [], "reset": True}
+
+    monkeypatch.setattr(app_module, "LocalTtsService", FakeService)
+    client = _client(settings)
+    client.post(
+        "/api/tts/local/start",
+        json={
+            "tts_backend": "indextts",
+            "tts_model_source": "modelscope",
+            "tts_model_dir": "checkpoints",
+            "tts_hf_endpoint": "https://hf-mirror.com",
+            "tts_port": 8123,
+        },
+    )
+    assert seen == {
+        "backend": "indextts",
+        "port": 8123,
+        "model_source": "modelscope",
+        "model_dir": "checkpoints",
+        "hf_endpoint": "https://hf-mirror.com",
+    }

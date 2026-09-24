@@ -1,6 +1,7 @@
 import sys
 import time
 import os
+from pathlib import Path
 
 from audiobook import tts_service
 from audiobook.config import get_settings, load_overlay
@@ -113,6 +114,7 @@ def test_start_strips_parent_virtual_env(tmp_path, monkeypatch):
     def fake_popen(command, **kwargs):
         captured["command"] = command
         captured["env"] = kwargs["env"]
+        captured["cwd"] = kwargs["cwd"]
         return _Proc()
 
     monkeypatch.setenv("VIRTUAL_ENV", r"D:\workspace\ai-audiobook\.venv")
@@ -128,6 +130,20 @@ def test_start_strips_parent_virtual_env(tmp_path, monkeypatch):
     assert captured["env"]["PYTHONUTF8"] == "1"
     # 直接从源码跑：venv 被 uv 重装打断时也能起来
     assert str(tts_service.TTS_DIR / "src") in captured["env"]["PYTHONPATH"]
+    # 工作目录必须是 tts/：model_dir="checkpoints" 要落到 tts/checkpoints
+    assert Path(captured["cwd"]) == tts_service.TTS_DIR
+
+
+def test_start_resolves_relative_model_dir_under_tts(tmp_path):
+    """跑一次真进程（模型来源 local，不会下载）：日志里要能看到解析后的绝对路径。"""
+    settings = get_settings(data_dir=tmp_path / "data", tts_model_dir="checkpoints", tts_model_source="local")
+    service = LocalTtsService(settings)
+    service.start(backend="indextts", port=8024)
+    try:
+        line = next(line for line in service.logs(offset=0)["lines"] if "模型目录" in line)
+        assert str(tts_service.TTS_DIR / "checkpoints") in line
+    finally:
+        service.stop()
 
 
 def test_build_command_prefers_venv_python(tmp_path, monkeypatch):

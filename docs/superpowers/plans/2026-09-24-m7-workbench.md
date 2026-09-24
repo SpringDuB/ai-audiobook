@@ -78,6 +78,9 @@
 12. **`uv run` 的自动同步会撞文件锁**：正在跑的服务锁着 venv 里的 `watchfiles/_rust_notify.pyd`，同步于是以 `failed to remove file ... os error 5` 失败，还会把 `aiab-tts` 的 editable 安装连根拔掉。改成直连 `tts/.venv` 的解释器跑 `-m aiab_tts`（并 `PYTHONPATH=tts/src`，临时安装坏了也能起），venv 缺基础依赖时才自动补一次 `uv sync`。
 13. **孤儿服务越攒越多**：端到端用例用 `uv run ... python -m aiab_tts serve` 起服务，`terminate()` 只杀到 uv，真正的 python 子进程活了下来——一天下来攒了 52 个，全部锁着 venv 里的文件。修法：测试改成直连 venv 解释器 + `taskkill /T` 收进程树；产品启动时若发现端口上已经有人在应答但它不在台账里，直接在日志里点名提示。清理时把这 52 个（没有任何端口在监听的）孤儿杀掉了。
 14. **Python 版本门槛的真相**：`<3.12` 是 `index-tts` 自己的 `pyproject.toml` 声明（`requires-python = ">=3.10,<3.12"`，附带 `torch==2.8.*` 等 pin），我们这侧已经没有任何版本检查；`tts` 的 `indextts` extra 按它这份 pin 对齐，文档也改成"真后端用 3.11 建 venv"。
+15. **界面上的模型来源被忽略**：界面发的是 `tts_model_source`，`/api/tts/local/start` 只读 `model_source`，于是永远回退到默认的 `local`（选了 modelscope 也没用）→ 接口两种键名都认，并加了"按设置页真实 payload 调用"的回归用例。
+16. **模型目录解析到项目根**：子进程 `cwd` 是仓库根，`model_dir="checkpoints"` 于是成了 `ai-audiobook\checkpoints`（报 `FileNotFoundError: ...\ai-audiobook\checkpoints\config.yaml`）→ 改成以 `tts/` 为工作目录（`tts/checkpoints`、`tts/data`、`tts/.env` 都跟着对上了），启动日志里也直接打印解析后的绝对路径。
+17. **自己的日志看不到**：uvicorn 只配它自己的 logger，我们 `logging.info("模型就绪…")` 全被丢掉 → `serve` 里 `logging.basicConfig`，顺手加了一条"torch 看不到 CUDA（CPU 版）"的显式警告与装 CUDA 版的命令（Windows 上 PyPI 的 torch 是 `+cpu`，会静默退回 CPU 推理）。
 
 遗留：
 

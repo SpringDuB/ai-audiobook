@@ -71,6 +71,19 @@ class IndexTtsBackend:
                 "注意 index-tts 自己声明 requires-python >=3.10,<3.12，所以它的 venv 要用 3.11 建。"
             ) from exc
 
+        try:
+            import torch  # index-tts 的依赖；这里只用来判断有没有 CUDA
+
+            if not torch.cuda.is_available():
+                logger.warning(
+                    "torch 看不到 CUDA（torch=%s，可能是 CPU 版）：IndexTTS 会退回 CPU 推理，慢几十倍。"
+                    "装 CUDA 版：uv pip install --python tts/.venv "
+                    "--index-url https://download.pytorch.org/whl/cu128 torch==2.8.* torchaudio==2.8.*",
+                    torch.__version__,
+                )
+        except ImportError:  # pragma: no cover - index-tts 自身依赖 torch
+            pass
+
         from ..download import ModelIntegrityError, ensure_model
 
         model_dir = Path(self.settings.model_dir)

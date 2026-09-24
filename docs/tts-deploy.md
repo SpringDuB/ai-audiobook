@@ -24,8 +24,20 @@ uv pip install --python .venv -e index-tts
 `download` extra = `modelscope` + `huggingface_hub`。基础依赖（fastapi / uvicorn …）保持轻量，
 没 GPU 的机器也能装、能跑单元测试。
 
-> Windows / Linux 上从 PyPI 装的 `torch==2.8.*` 默认就是 CUDA 构建；要用别的 CUDA 版本，
-> 先用 PyTorch 官方索引装 torch/torchaudio，再执行上面的 `uv sync`。
+### GPU 版 torch（**Windows 上必做**）
+
+PyPI 上的 `torch` 在 Windows 是 **CPU 版**（`2.8.0+cpu`）。装了它，IndexTTS 会退回 CPU 推理
+（日志里那行 "it may take a while to run in CPU mode"），慢几十倍，等于不能用。装 CUDA 版：
+
+```powershell
+uv pip install --python .venv --index-url https://download.pytorch.org/whl/cu128 `
+  torch==2.8.* torchaudio==2.8.*
+uv run --project tts python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# 期望看到 2.8.x+cu128 True
+```
+
+> 注意：之后**不要再跑 `uv sync`**（它会把 torch 换回 CPU 版）；要同步别的依赖时加 `--inexact`，
+> 或者同步完再把 CUDA 版 torch 装回来。
 
 > 若某个依赖（例如 `pynini`/`WeTextProcessing`）在你的版本上没有轮子，pip 会要求现场编译；
 > 这时要么换成它有轮子的解释器（`uv sync --python 3.11`），要么自行准备编译环境。

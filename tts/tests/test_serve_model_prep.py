@@ -2,6 +2,7 @@
 
 import sys
 import types
+import logging
 
 import pytest
 from aiab_tts.backends.indextts import IndexTtsBackend
@@ -68,3 +69,25 @@ def test_load_reports_missing_local_weights_clearly(tmp_path, monkeypatch, caplo
     with pytest.raises(RuntimeError) as excinfo:
         backend.load()
     assert "模型不可用" in str(excinfo.value) and "gpt.pth" in str(excinfo.value)
+
+
+def test_load_warns_when_torch_is_cpu_only(tmp_path, monkeypatch, caplog):
+    """CPU 版 torch 会静默退回 CPU 推理：要在日志里点名，并给出装 CUDA 版的命令。"""
+    fake_torch = types.ModuleType("torch")
+    fake_torch.__version__ = "2.8.0+cpu"
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr("aiab_tts.download.ensure_model", lambda settings: {
+        "path": tmp_path, "source": settings.model_source, "verified": True, "warnings": [],
+    })
+    module = types.ModuleType("indextts.infer_v2_5")
+    module.IndexTTS2 = type("IndexTTS2", (), {"__init__": lambda self, **kwargs: None})
+    package = types.ModuleType("indextts")
+    package.infer_v2_5 = module
+    monkeypatch.setitem(sys.modules, "indextts", package)
+    monkeypatch.setitem(sys.modules, "indextts.infer_v2_5", module)
+
+    with caplog.at_level(logging.WARNING, logger="aiab_tts.backends.indextts"):
+        IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path)).load()
+    assert any("看不到 CUDA" in record.message and "2.8.0+cpu" in record.getMessage() for record in caplog.records)
+    assert any("download.pytorch.org/whl/cu128" in record.getMessage() for record in caplog.records)

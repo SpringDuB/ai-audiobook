@@ -9,6 +9,10 @@
 cd tts
 uv sync --python 3.11 --extra indextts --extra download  # 推理栈 + 下载客户端（index-tts 自己要求 <3.12）
 uv pip install --python .venv -e index-tts              # IndexTTS-2.5 不在 PyPI 上
+
+# Windows 上 PyPI 的 torch 是 CPU 版，装 CUDA 版（否则 CPU 推理慢几十倍）
+uv pip install --python .venv --index-url https://download.pytorch.org/whl/cu128 torch==2.8.* torchaudio==2.8.*
+
 uv run --project tts aiab-tts download --source modelscope        # 或 huggingface / local
 uv run --project tts aiab-tts serve --backend indextts --host 0.0.0.0 --port 8020
 uv run --project tts aiab-tts check --url http://127.0.0.1:8020

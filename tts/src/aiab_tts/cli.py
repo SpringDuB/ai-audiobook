@@ -6,8 +6,11 @@ from .config import get_settings
 
 def describe_backend(settings) -> list[str]:
     """启动时先说清楚"要不要模型、要不要下载"，免得日志里只有 uvicorn 三行。"""
+    from pathlib import Path
+
     backend = (settings.backend or "indextts").lower()
-    lines = [f"后端 {backend}：模型来源={settings.model_source}，模型目录={settings.model_dir}"]
+    model_dir = Path(settings.model_dir).resolve()
+    lines = [f"后端 {backend}：模型来源={settings.model_source}，模型目录={model_dir}"]
     if settings.model_source in {"modelscope", "huggingface"}:
         lines.append("权重缺失/损坏时会按这个来源自动下载，进度就打印在本日志里。")
     else:
@@ -16,10 +19,14 @@ def describe_backend(settings) -> list[str]:
 
 
 def _serve(args) -> int:
+    import logging
+
     import uvicorn
 
     from .app import build_state, create_app
 
+    # 不配日志的话，我们自己 logger 的消息（模型就绪、辅助模型缺失…）根本不会出现在托管日志里
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = get_settings()
     if args.backend:
         settings = settings.model_copy(update={"backend": args.backend})

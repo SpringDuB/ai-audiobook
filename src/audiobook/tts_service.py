@@ -213,7 +213,9 @@ class LocalTtsService:
             handle.flush()
             self._process = self._popen(
                 command,
-                cwd=str(PROJECT_ROOT),
+                # 工作目录必须是 tts/：模型目录、参考音频缓存这些默认值都是相对它的
+                # （跑在根目录会把 `checkpoints` 解析成 ai-audiobook\checkpoints）
+                cwd=str(TTS_DIR),
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=handle,
