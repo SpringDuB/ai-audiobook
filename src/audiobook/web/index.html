@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AI 有声书 · 编辑台</title>
+  <link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header id="masthead" class="masthead">
+    <div class="masthead__brand">
+      <span class="letterpress letterpress--block">AI 有声书</span>
+      <span id="crumb" class="masthead__crumb">书架</span>
+    </div>
+    <div class="masthead__status" id="runstatus" aria-live="polite">
+      <span class="dot" data-state="idle" aria-hidden="true"></span>
+      <span class="mono" id="runlabel">空闲</span>
+    </div>
+  </header>
+
+  <nav id="rail" class="rail" aria-label="主导航">
+    <a href="#/shelf" data-route="shelf"><span class="rail__mark">书</span><span>书架</span></a>
+    <a href="#/jobs" data-route="jobs"><span class="rail__mark">刻</span><span>任务</span></a>
+    <a href="#/issues" data-route="issues"><span class="rail__mark">校</span><span>异常</span></a>
+    <a href="#/voices" data-route="voices"><span class="rail__mark">声</span><span>音色</span></a>
+    <a href="#/settings" data-route="settings"><span class="rail__mark">规</span><span>设置</span></a>
+  </nav>
+
+  <main id="main" tabindex="-1" data-boot="loading"></main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

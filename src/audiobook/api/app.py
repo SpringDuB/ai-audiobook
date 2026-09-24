@@ -5,12 +5,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .. import audio, jobs, store
 from ..config import OVERLAY_KEYS, get_settings, load_overlay, save_overlay
 from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
 from ..pipeline import resume_book
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
 def _character_names(settings, book_id: str) -> dict[str, str]:
@@ -80,6 +83,13 @@ def jobs_snapshot(conn, book_id: str | None = None) -> dict:
 
 def create_app(settings, conn) -> FastAPI:
     app = FastAPI(title="AI 有声书")
+
+    if WEB_DIR.exists():
+        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+        @app.get("/")
+        def index():
+            return FileResponse(WEB_DIR / "index.html", media_type="text/html")
 
     @app.post("/api/books")
     async def upload_book(file: UploadFile = File(...), title: str = Form("未命名")):
