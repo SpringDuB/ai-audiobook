@@ -158,6 +158,7 @@ def main(argv=None) -> int:
             scenes,
             split,
             synthesize,
+            synthesize_line,
         )
         from .llm.base import LLMError
         from .llm.limiter import AdaptiveLimiter

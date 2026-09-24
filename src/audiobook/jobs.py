@@ -188,9 +188,9 @@ def retry(conn, job_id: int, now=None) -> bool:
     return cur.rowcount == 1
 
 
-def enqueue_line(conn, book_id: str, chapter_index: int, line_id: str, now=None) -> int:
+def enqueue_line(conn, book_id: str, chapter_index: int, line_id: str, now=None, max_attempts: int = 3) -> int:
     """单行重合成任务：具体行 id 记在 progress.pending_line 上。"""
-    job_id = enqueue(conn, "synthesize_line", book_id, chapter_index, now=now)
+    job_id = enqueue(conn, "synthesize_line", book_id, chapter_index, now=now, max_attempts=max_attempts)
     conn.execute(
         "UPDATE jobs SET progress=? WHERE id=?",
         (json.dumps({"pending_line": line_id}, ensure_ascii=False), job_id),

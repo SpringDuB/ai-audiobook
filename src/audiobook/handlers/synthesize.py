@@ -29,7 +29,8 @@ def resolve_voice_id(settings, book_id: str, speaker: str) -> str:
     return voice_for_speaker(casting, speaker) or "default"
 
 
-def _synth_one(ctx, job, row: dict) -> dict:
+def synth_line(ctx, job, row: dict) -> dict:
+    """合成（或复用）一行音频，返回 {"id", "cached", "duration"}。"""
     caps = ctx.engine.capabilities()
     voice_id = resolve_voice_id(ctx.settings, job.book_id, row["speaker"])
     params = params_from_line(row, caps)
@@ -71,7 +72,7 @@ def handle_synthesize(ctx, job) -> None:
     failed = 0
     endpoint_down = False
     with ThreadPoolExecutor(max_workers=effective_concurrency(ctx)) as pool:
-        futures = {pool.submit(_synth_one, ctx, job, row): row for row in rows}
+        futures = {pool.submit(synth_line, ctx, job, row): row for row in rows}
         for future in as_completed(futures):
             row = futures[future]
             try:
