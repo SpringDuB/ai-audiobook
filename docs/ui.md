@@ -82,6 +82,16 @@ GET    /api/events                              SSE：任务快照
 
 ## 6. 界面冒烟测试（可重复执行）
 
+**一条命令的自动化冒烟**（默认跳过，需要 Chrome + Node ≥ 22）：
+
+```powershell
+$env:AB_UI_SMOKE="1"; uv run pytest tests/test_ui_smoke.py -v
+```
+
+它会在临时端口真起 `serve`，用 headless Chrome 校验：书架渲染出书、章页渲染出句子与钤印、设置页四组表单齐全、390×844 下底部标签栏固定在底部（不是铺满屏幕），且 `consoleErrors` 为空。
+
+**手工探针**（要逐页截图或做交互时用）：
+
 `tools/ui_probe.mjs` 用 Chrome DevTools Protocol 打开页面、等 JS 渲染完、输出关键结构与 console 错误并截图（Chrome 与 Node ≥ 22 是前提，本机已具备）：
 
 ```powershell
