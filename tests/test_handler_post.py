@@ -39,3 +39,10 @@ def test_post_skips_missing_clip_and_records_issue(conn, settings, narrator_line
     issues = store.read_jsonl(store.issues_path(settings, "b1"))
     assert any(row["kind"] == "audio_missing" and row["line"] == "c0001-s01-l002" for row in issues)
     assert audio.wav_duration(store.output_dir(settings, "b1") / "chapter_0001.wav") > 0
+
+
+def test_post_records_render_metadata(conn, settings, narrator_lines):
+    _run_pipeline(conn, settings, narrator_lines)
+    meta = store.read_json(store.chapter_render_meta_path(settings, "b1", 1))
+    assert (meta["cues"], meta["clips"]) == (2, 2)
+    assert meta["duration"] == pytest.approx(0.70, abs=1e-2)

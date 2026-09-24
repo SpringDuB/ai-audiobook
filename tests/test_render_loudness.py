@@ -6,6 +6,11 @@ from audiobook.render.loudness import measure_loudness, measure_rms, normalize_t
 from helpers import requires_ffmpeg, write_tone
 
 
+@pytest.fixture()
+def lufs(settings):
+    return settings.model_copy(update={"loudness_mode": "lufs"})
+
+
 @requires_ffmpeg
 def test_measure_loudness_reads_json_block(settings, tmp_path):
     src = write_tone(tmp_path / "tone.wav", seconds=2.0, rate=24000, freq=220, amp=0.0316)
@@ -22,15 +27,15 @@ def test_measure_rms_reads_mean_and_max(settings, tmp_path):
 
 
 @requires_ffmpeg
-def test_loudnorm_two_pass_hits_target_and_keeps_duration(settings, tmp_path):
+def test_loudnorm_two_pass_hits_target_and_keeps_duration(lufs, tmp_path):
     src = write_tone(tmp_path / "tone.wav", seconds=2.0, rate=24000, freq=220, amp=0.0316)
     dst = tmp_path / "norm.wav"
-    result = normalize_to_file(settings, src, dst, sample_rate=24000)
+    result = normalize_to_file(lufs, src, dst, sample_rate=24000)
     assert result.mode == "lufs" and result.target == -16.0
     info = probe_wav(dst)
     assert (info.sample_rate, info.channels) == (24000, 1)
     assert info.duration == pytest.approx(2.0, abs=0.02)
-    after = measure_loudness(settings, dst)
+    after = measure_loudness(lufs, dst)
     assert float(after["input_i"]) == pytest.approx(-16.0, abs=0.6)
     assert float(after["input_tp"]) <= -1.4
     assert result.measured_before == pytest.approx(-33.95, abs=1.0)   # 与第一遍测量一致
@@ -71,10 +76,10 @@ def test_true_peak_caps_gain_in_rms_mode(settings, tmp_path):
 
 
 @requires_ffmpeg
-def test_normalize_resamples_output_to_requested_rate(settings, tmp_path):
+def test_normalize_resamples_output_to_requested_rate(lufs, tmp_path):
     src = write_tone(tmp_path / "tone.wav", seconds=1.0, rate=22050, freq=220, amp=0.0316)
     dst = tmp_path / "resampled.wav"
-    normalize_to_file(settings, src, dst, sample_rate=48000)
+    normalize_to_file(lufs, src, dst, sample_rate=48000)
     info = probe_wav(dst)
     assert info.sample_rate == 48000
     assert info.duration == pytest.approx(1.0, abs=0.02)

@@ -35,7 +35,9 @@ def make_narrator_lines(chapter_index: int, text: str, scene_index: int = 1) -> 
 
 @pytest.fixture()
 def settings(tmp_path: Path):
-    return get_settings(data_dir=tmp_path / "data")
+    # 单元测试默认关掉响度归一与容器封装：不依赖 ffmpeg，时长断言保持精确。
+    # 需要真实 ffmpeg 行为的用例用 settings.model_copy(update={...}) 显式打开。
+    return get_settings(data_dir=tmp_path / "data", loudness_mode="off", export_mkv=False)
 
 
 @pytest.fixture()

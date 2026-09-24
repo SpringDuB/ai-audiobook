@@ -17,6 +17,8 @@ ISSUE_KINDS = (
     "tts_ref_missing",
     "tts_endpoint_down",
     "audio_missing",
+    "render_duration_mismatch",
+    "book_export_gap",
 )
 
 
