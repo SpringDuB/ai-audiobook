@@ -1,0 +1,134 @@
+from pathlib import Path
+
+import pytest
+
+from audiobook.engines.base import AudioResult, EngineCapabilities, SynthParams
+from audiobook.engines.errors import TtsBusy, TtsOom, TtsUnavailable
+from audiobook.engines.pool import TtsPool
+
+
+def _caps() -> EngineCapabilities:
+    return EngineCapabilities(
+        name="fake-tts",
+        version="1",
+        emotions=True,
+        emotion_dims=("happy",),
+        rate=True,
+        pronunciation=True,
+        sample_rate=22050,
+        max_text_chars=300,
+    )
+
+
+class FakeEndpoint:
+    def __init__(self, capacity: int = 2, error: Exception | None = None, status: str = "ok"):
+        self.capacity = capacity
+        self.error = error
+        self.status = status
+        self.calls = 0
+        self.health_calls = 0
+
+    def health(self) -> dict:
+        self.health_calls += 1
+        return {"status": self.status, "recommendedConcurrency": self.capacity, "inflight": 0}
+
+    def capabilities(self) -> EngineCapabilities:
+        return _caps()
+
+    def synthesize(self, text, voice_id, params, out_path) -> AudioResult:
+        self.calls += 1
+        if self.error:
+            raise self.error
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"RIFF")
+        return AudioResult(path=Path(out_path), duration=0.1, sample_rate=22050)
+
+    def close(self) -> None:
+        pass
+
+
+def _pool(settings, endpoints, clock=None) -> tuple[TtsPool, list[FakeEndpoint]]:
+    queue = list(endpoints)
+    pool = TtsPool(
+        [f"http://e{index}.local" for index in range(len(endpoints))],
+        settings,
+        engine_factory=lambda url: queue.pop(0),
+        clock=clock or (lambda: 0.0),
+    )
+    return pool, [state.engine for state in pool.states]
+
+
+def _out(settings, name: str = "a.wav") -> Path:
+    return Path(settings.data_dir) / name
+
+
+def test_refresh_reads_capacity_and_health(settings):
+    pool, endpoints = _pool(settings, [FakeEndpoint(3), FakeEndpoint(1)])
+    pool.refresh()
+    assert pool.concurrency_hint() == 4
+    assert [endpoint.health_calls for endpoint in endpoints] == [1, 1]
+    assert pool.capabilities().name == "fake-tts"
+
+
+def test_oom_downgrades_limit_and_opens_breaker(settings):
+    now = {"t": 0.0}
+    pool, endpoints = _pool(
+        settings,
+        [FakeEndpoint(4, error=TtsOom("oom")), FakeEndpoint(2)],
+        clock=lambda: now["t"],
+    )
+    pool.refresh()
+
+    with pytest.raises(TtsOom):
+        pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+
+    state = pool.states[0]
+    assert state.limit == 2
+    assert state.breaker_until == pytest.approx(60.0)
+
+    # 熔断期内第二次调用必须落到另一个端点
+    now["t"] = 1.0
+    pool.synthesize("第二句。", "v", SynthParams(), _out(settings, "b.wav"))
+    assert endpoints[0].calls == 1 and endpoints[1].calls == 1
+
+
+def test_busy_downgrades_by_one(settings):
+    pool, _ = _pool(settings, [FakeEndpoint(4, error=TtsBusy("busy"))])
+    pool.refresh()
+    with pytest.raises(TtsBusy):
+        pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+    assert pool.states[0].limit == 3
+
+
+def test_successes_restore_limit_gradually(settings):
+    pool, _ = _pool(settings, [FakeEndpoint(4)])
+    pool.refresh()
+    pool.states[0].limit = 2
+    for index in range(9):
+        pool.synthesize(f"第{index}句。", "v", SynthParams(), _out(settings, f"{index}.wav"))
+    assert pool.states[0].limit == 3
+
+
+def test_all_endpoints_down_raises_unavailable(settings):
+    pool, _ = _pool(settings, [FakeEndpoint(0, status="unloaded")])
+    pool.refresh()
+    with pytest.raises(TtsUnavailable):
+        pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+
+
+def test_full_endpoint_is_skipped(settings):
+    pool, endpoints = _pool(settings, [FakeEndpoint(1), FakeEndpoint(1)])
+    pool.refresh()
+    pool.states[0].inflight = 1  # 端点 0 已满
+    assert pool.concurrency_hint() == 1
+    pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+    assert endpoints[0].calls == 0 and endpoints[1].calls == 1
+
+
+def test_status_exposes_endpoint_details(settings):
+    pool, _ = _pool(settings, [FakeEndpoint(2)])
+    pool.refresh()
+    payload = pool.status()
+    assert payload["endpoints"][0]["capacity"] == 2
+    assert payload["concurrency"] == 2
+    assert payload["endpoints"][0]["ok"] is True
