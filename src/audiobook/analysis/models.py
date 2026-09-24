@@ -69,3 +69,41 @@ class PassAOutput(BaseModel):
 
     characters: list[CharacterCard]
     relationships: list[Relationship]
+
+
+class SceneSpan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    title: str = ""
+    summary: str = ""
+    participants: list[str] = Field(default_factory=list)
+    tone: str = "平静"
+    tone_intensity: float = 0.4
+    starts_with: str = ""
+    ends_with: str = ""
+
+    @field_validator("title", "summary", "starts_with", "ends_with", mode="before")
+    @classmethod
+    def _str_or_empty(cls, value):
+        return "" if value is None else value
+
+    @field_validator("participants", mode="before")
+    @classmethod
+    def _list_or_empty(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    @field_validator("tone_intensity", mode="before")
+    @classmethod
+    def _clamp(cls, value):
+        return clamp01(value)
+
+
+class PassBOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenes: list[SceneSpan]
