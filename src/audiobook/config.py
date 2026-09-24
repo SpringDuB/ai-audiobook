@@ -8,6 +8,16 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data")
     llm_concurrency: int = 8
+    llm_base_url: str = "http://127.0.0.1:8009/v1"
+    llm_api_key: str = "sk-local"
+    llm_model: str = "deepseek-flash"
+    llm_temperature: float = 0.6
+    llm_timeout_seconds: float = 120.0
+    llm_max_attempts: int = 2
+    llm_max_output_tokens: int = 4096
+    llm_json_mode: bool = True
+    llm_chunk_chars: int = 8000
+    llm_scene_window_chars: int = 8000
     synth_concurrency: int = 4
     tts_endpoints: list[str] = []
     worker_poll_seconds: float = 1.0
