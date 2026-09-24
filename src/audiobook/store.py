@@ -75,6 +75,44 @@ def pronounce_path(settings) -> Path:
     return settings.data_dir / "pronounce.json"
 
 
+def chapter_wav_path(settings, book_id: str, index: int) -> Path:
+    return output_dir(settings, book_id) / f"chapter_{chapter_tag(index)}.wav"
+
+
+def chapter_srt_path(settings, book_id: str, index: int) -> Path:
+    return output_dir(settings, book_id) / f"chapter_{chapter_tag(index)}.srt"
+
+
+def chapter_media_path(settings, book_id: str, index: int, ext: str) -> Path:
+    suffix = ext if ext.startswith(".") else f".{ext}"
+    return output_dir(settings, book_id) / f"chapter_{chapter_tag(index)}{suffix}"
+
+
+def chapter_render_meta_path(settings, book_id: str, index: int) -> Path:
+    return output_dir(settings, book_id) / f"chapter_{chapter_tag(index)}.render.json"
+
+
+def render_work_dir(settings, book_id: str, index: int) -> Path:
+    return audio_dir(settings, book_id, index) / "_render"
+
+
+def book_wav_path(settings, book_id: str) -> Path:
+    return output_dir(settings, book_id) / "book.wav"
+
+
+def book_srt_path(settings, book_id: str) -> Path:
+    return output_dir(settings, book_id) / "book.srt"
+
+
+def book_media_path(settings, book_id: str, ext: str) -> Path:
+    suffix = ext if ext.startswith(".") else f".{ext}"
+    return output_dir(settings, book_id) / f"book{suffix}"
+
+
+def export_target_dir(settings, book_id: str, out_dir=None) -> Path:
+    return Path(out_dir) if out_dir else output_dir(settings, book_id)
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
