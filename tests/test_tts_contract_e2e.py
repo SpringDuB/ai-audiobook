@@ -20,7 +20,21 @@ from audiobook.worker import WorkerContext, run_once
 
 REPO = Path(__file__).resolve().parents[1]
 TTS_PROJECT = REPO / "tts"
+TTS_TESTS = TTS_PROJECT / "tests"
 UV = shutil.which("uv")
+
+# 产品里的 TTS 服务只有 indextts（要 GPU + 权重），所以契约测试用 tts/tests 里的 stub 后端起一个真进程：
+# 进程边界、HTTP 契约、参考音频上传、并发门这些要验的东西一个不少。
+STUB_SERVER = (
+    "import sys, uvicorn;"
+    "sys.path.insert(0, r'{tests}');"
+    "from _stub_backend import StubBackend;"
+    "from aiab_tts.app import create_app;"
+    "from aiab_tts.config import TtsSettings;"
+    "from aiab_tts.state import ServiceState;"
+    "s = TtsSettings(host='127.0.0.1', port={port});"
+    "uvicorn.run(create_app(s, ServiceState(StubBackend(), s)), host='127.0.0.1', port={port}, log_level='warning')"
+).replace("{tests}", str(TTS_TESTS))
 
 SAMPLE = "第一章 开场\n\n苏锐说：“走。”\n\n王胖子说：“好。”"
 PASS_A = {
@@ -76,8 +90,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     process = subprocess.Popen(
-        [UV, "run", "--project", str(TTS_PROJECT), "python", "-m", "aiab_tts",
-         "serve", "--backend", "fake", "--port", str(port)],
+        [UV, "run", "--project", str(TTS_PROJECT), "python", "-c", STUB_SERVER.replace("{port}", str(port))],
         cwd=str(REPO),
         env=dict(os.environ, PYTHONIOENCODING="utf-8"),
         stdout=subprocess.PIPE,
@@ -86,13 +99,13 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
     )
     try:
         health = _wait_health(base_url)
-        assert health["engine"] == "fake-tts"
+        assert health["engine"] == "stub-tts"
         assert health["recommendedConcurrency"] >= 1
 
         settings = settings.model_copy(
             update={"engine": "http", "tts_endpoints": [base_url], "synth_concurrency_max": 4}
         )
-        # 音色参考音频：M6 迁移前用最小 WAV 占位（fake 后端只校验文件存在）
+        # 音色参考音频：用最小 WAV 占位（stub 后端只校验文件存在）
         ref = settings.voices_dir / "default" / "ref.wav"
         ref.parent.mkdir(parents=True, exist_ok=True)
         ref.write_bytes(b"RIFFfake")
@@ -126,7 +139,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         assert audio.wav_duration(out / "chapter_0000.wav") > 0.2
 
         meta = store.read_json(store.audio_dir(settings, book_id, 0) / "c0000-s01-l001.meta.json")
-        assert meta["engine"] == "fake-tts"
+        assert meta["engine"] == "stub-tts"
         assert meta["cache_key"]
         assert all(job.status == "done" for job in jobs.list_jobs(conn, book_id))
         # 合成阶段不允许出现任何行级异常；音色库未迁移时的 voice_library_empty 属预期

@@ -55,7 +55,7 @@
 |---|---|
 | C1 单元测试 | `uv run pytest` → **318 passed, 4 skipped**（比 M6 基线 298 净增 20 个用例：TTS 服务 7、工作台接口 5、worker 重载 3、ffmpeg 兜底 3、分相 2） |
 | C2 浏览器冒烟 | `$env:AB_UI_SMOKE=1; uv run pytest tests/test_ui_smoke.py` → **4 passed**：书架、工作台（章节列表 9 / 句子 106 / 角色行 4）、原文页签、悬浮音色窗（96 行）、设置页无 `[data-key=loudness_mode]`、390×844 底部标签栏 |
-| C3 一键启动 | 浏览器点「一键启动 TTS 服务」→ 真起独立进程（`pid 56188`，`backend=fake`），状态点「运行中」，`data/settings.json` 出现 `engine=http` / `tts_endpoints` / `tts_backend/model_source/model_dir/port`；点「停止」后 `Get-NetTCPConnection -LocalPort 8020` 为空、进程消失 |
+| C3 一键启动 | 浏览器点「一键启动 TTS 服务」→ 真起独立进程（当时 `pid 56188`），状态点「运行中」，`data/settings.json` 出现 `engine=http` / `tts_endpoints` / `tts_backend/model_source/model_dir/port`；点「停止」后 `Get-NetTCPConnection -LocalPort 8020` 为空、进程消失。删除 fake 后端后，进程托管改用测试替身 + 注入命令继续覆盖（`tests/test_tts_service.py`） |
 | C4 项目自带 ffmpeg | `find_ffmpeg()` → `.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe`（83.6 MB）；`-filters` 有 `loudnorm`、`-muxers` 有 `matroska`/`mp4`；把 ffprobe 屏蔽后 `probe_json` 仍能读出 `streams=[audio,subtitle]`、9 个章节标题与时长 |
 | C5 工作台实测 | 首章 106 句一次渲染完，场景分隔正确，行号 001–106 连续（旧数据没有 `seq` 时由后端按行序兜底，不再出现 `null`）；切章只重取本章数据并把地址栏同步成 `#/book/{id}/chapter/{n}`；`consoleErrors: []` |
 | C6 音色窗 | 96 个音色按 性别/年龄/用途 三行分类 + 搜索；试听走 `/api/voices/{id}/sample`；选中即写 `voices/casting.json` 并提示受影响章节 |
@@ -70,6 +70,9 @@
 4. **语法坑**：`cond ? ...spread : value` 不是合法 JS，工作台角色列表一开始整页白屏 → 改成 `...(cond ? arr : [fallback])`。
 5. **依赖下载卡住**：`uv add` 默认拉 `files.pythonhosted.org` 超时 → 改用阿里云镜像（`UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/`）重新 lock，锁文件 URL 也指向镜像。
 6. **移动端底部被标签栏盖住**：`#main[data-view=book]` 把 padding 归零后丢了底部留白 → 移动端补 `padding-block-end: 5.5rem`。
+7. **fake 后端误导人**：选 fake 一键启动后什么都不下载、也不加载模型，用户以为服务坏了 → 产品里彻底删除 fake（主项目 `engines/factory` 只留 http、老 `AB_ENGINE=fake` 给明确报错；tts 只留 indextts），测试用一个 `StubBackend` 替身。
+8. **启动不下载模型**：`IndexTtsBackend.load()` 原来直接读 `config.yaml`，从不调 `ensure_model` → 选 modelscope 也不会下载。改成"先 import 依赖 → 按来源 `ensure_model`（必要时下载，进度进日志）→ 加载"，并且 `serve` 默认预加载。
+9. **假的 Python 版本门槛**：`backends/indextts.py` 里那道 "必须 3.10/3.11" 的守卫是我们自己写的，不是 IndexTTS 的要求（真正卡人的是 pynini 之类依赖有没有轮子）→ 直接删掉，装得上就能跑。
 
 遗留：
 

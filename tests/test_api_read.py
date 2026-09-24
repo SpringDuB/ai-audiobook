@@ -98,7 +98,7 @@ def test_lines_endpoint_exposes_audio_url_and_emotion(settings, narrator_lines):
 
 
 def test_line_audio_serves_wav_when_present(settings, narrator_lines):
-    from audiobook.engines.fake import FakeEngine
+    from fake_engine import FakeEngine
 
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)

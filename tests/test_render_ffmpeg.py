@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 from audiobook.render.ffmpeg import (
     AudioInfo,
     FFmpegError,

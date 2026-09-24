@@ -5,7 +5,7 @@ import wave
 
 import pytest
 from aiab_tts.backends.base import SynthesisRequest
-from aiab_tts.backends.indextts import IndexTtsBackend, _assert_python, apply_pronunciation
+from aiab_tts.backends.indextts import IndexTtsBackend, apply_pronunciation
 from aiab_tts.config import TtsSettings
 
 
@@ -50,12 +50,14 @@ def test_apply_pronunciation_prefers_longest_word():
     assert apply_pronunciation("没事", {}) == "没事"
 
 
-def test_python_guard_rejects_313_with_actionable_message():
-    _assert_python((3, 11))
-    _assert_python((3, 10))
+def test_load_only_depends_on_the_installed_package(monkeypatch, tmp_path):
+    """不卡 Python 版本：能不能跑只取决于 index-tts 是否装得上。"""
+    monkeypatch.setattr(sys, "version_info", (3, 13, 5))
+    backend = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, model_source="local"))
     with pytest.raises(RuntimeError) as excinfo:
-        _assert_python((3, 13))
-    assert "3.10" in str(excinfo.value) and "uv python install 3.11" in str(excinfo.value)
+        backend.load()
+    assert "IndexTTS 不可用" in str(excinfo.value)
+    assert "3.10" not in str(excinfo.value) and "3.11" not in str(excinfo.value)
 
 
 def test_load_passes_paths_and_bf16(fake_indextts, tmp_path):

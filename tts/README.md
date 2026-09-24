@@ -3,25 +3,19 @@
 独立项目：**独立 venv、独立进程、独立部署**。后端（仓库根目录的 `aiab`）只通过 HTTP 调用它，
 任何情况下都不会 import 本项目的代码，也不在同一进程里加载模型。
 
-## 快速开始（无 GPU 的本地验证）
+## 快速开始（GPU 机器）
 
 ```powershell
-uv run --project tts aiab-tts serve --backend fake --port 8020
-uv run --project tts aiab-tts check --url http://127.0.0.1:8020
-```
-
-fake 后端会生成真实可播放的 WAV（时长与文本长度/语速相关），用于跑通整条链路、写测试和验收，
-不需要 GPU、不下载模型。
-
-## 真实后端（GPU 机器）
-
-```powershell
-uv python install 3.11
-uv sync --python 3.11                       # 在 tts/ 目录
+cd tts
+uv sync                                     # Python ≥3.10 都行；用你装得上依赖的那个版本
 uv pip install --python .venv -e <index-tts 仓库路径>   # IndexTTS-2.5 不在 PyPI 上
 uv run --project tts aiab-tts download --source modelscope        # 或 huggingface / local
 uv run --project tts aiab-tts serve --backend indextts --host 0.0.0.0 --port 8020
+uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 ```
+
+服务不卡 Python 版本：能不能跑只取决于 `index-tts` 与它的依赖有没有对应版本的轮子；
+装得上就直接用（3.13 也可以），装不上时启动日志会带着 import 的真实报错告诉你缺什么。
 
 完整步骤、模型来源三选一、manifest 校验与显存共享见 [`docs/tts-deploy.md`](../docs/tts-deploy.md)。
 

@@ -1,20 +1,17 @@
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from .backends.fake import FakeBackend
 from .config import TtsSettings
 from .state import ServiceError, ServiceState
 
 
 def build_backend(settings: TtsSettings):
-    backend = (settings.backend or "fake").lower()
-    if backend == "fake":
-        return FakeBackend()
+    backend = (settings.backend or "indextts").lower()
     if backend in ("indextts", "indextts-2.5"):
         from .backends.indextts import IndexTtsBackend  # 懒加载：只有真后端才 import torch 生态
 
         return IndexTtsBackend(settings)
-    raise ValueError(f"未知后端: {settings.backend}")
+    raise ValueError(f"未知后端: {settings.backend}（只支持 indextts）")
 
 
 def build_state(settings: TtsSettings) -> ServiceState:

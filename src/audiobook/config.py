@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     llm_chunk_chars: int = 8000
     llm_scene_window_chars: int = 8000
     synth_concurrency: int = 4
-    engine: str = "fake"
+    engine: str = "http"  # 只有 http：合成必须走独立 TTS 服务
     tts_timeout_seconds: float = 180.0
     tts_connect_timeout_seconds: float = 5.0
     tts_ref_upload_timeout_seconds: float = 120.0
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     lease_seconds: int = 30
 
     # 一键启动的本机 TTS 服务（tts/ 子项目）的启动参数
-    tts_backend: str = "fake"  # fake | indextts
+    tts_backend: str = "indextts"  # IndexTTS-2.5（唯一后端）
     tts_model_source: str = "local"  # modelscope | huggingface | local
     tts_model_dir: str = "checkpoints"
     tts_hf_endpoint: str = ""

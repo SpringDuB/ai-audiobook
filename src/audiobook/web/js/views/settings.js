@@ -9,15 +9,7 @@ const LLM_FIELDS = [
 ];
 
 const LAUNCH_FIELDS = [
-  {
-    key: "tts_backend",
-    label: "推理后端",
-    type: "select",
-    options: [
-      ["fake", "fake（无 GPU 假引擎，先跑通流程用）"],
-      ["indextts", "indextts（IndexTTS-2.5，真合成）"],
-    ],
-  },
+  { key: "tts_backend", label: "推理后端", type: "select", options: [["indextts", "indextts（IndexTTS-2.5）"]] },
   {
     key: "tts_model_source",
     label: "模型来源",
@@ -34,15 +26,6 @@ const LAUNCH_FIELDS = [
 ];
 
 const ADVANCED_FIELDS = [
-  {
-    key: "engine",
-    label: "合成引擎",
-    type: "select",
-    options: [
-      ["fake", "fake（假引擎）"],
-      ["http", "http（连独立 TTS 服务）"],
-    ],
-  },
   { key: "tts_endpoints", label: "TTS 端点（一行一个）", type: "list" },
   { key: "synth_concurrency", label: "合成并发", type: "number", min: "1" },
   { key: "synth_concurrency_max", label: "并发上限", type: "number", min: "1" },
@@ -121,6 +104,17 @@ async function build() {
   const logBox = h("pre", { class: "tts-log mono" }, "（日志会在这里滚动）");
   const launchGrid = h("div", { class: "grid-2" }, ...LAUNCH_FIELDS.map((field) => fieldNode(field, settings[field.key])));
 
+  // 只剩 indextts；这里要说清楚"点下去会发生什么"，免得用户以为它不干活
+  const backendHint = h("p", { class: "field__hint muted" });
+  const backendSelect = launchGrid.querySelector("#f-tts_backend");
+  const paintBackendHint = () => {
+    backendHint.textContent =
+      "启动时会先按「模型来源」下载/校验权重，再加载模型；进度和报错都打在下面的运行日志里。";
+  };
+  backendSelect.addEventListener("change", paintBackendHint);
+  paintBackendHint();
+  backendSelect.closest(".field").append(backendHint);
+
   const syncAdvanced = async () => {
     try {
       const fresh = (await api.settings()).settings || {};
@@ -189,7 +183,7 @@ async function build() {
       h(
         "p",
         { class: "muted" },
-        "真合成要先把 TTS 服务跑起来。点一下，它就在本机独立进程里起来（和后端不共进程），合成引擎会自动切过去。",
+        "点一下，IndexTTS-2.5 就在本机独立进程里起来（和后端不共进程），合成引擎自动切过去。首次启动可能要等权重下载。",
       ),
       h("div", { class: "row row--between" }, statusLine, h("div", { class: "row" }, startButton, stopButton)),
       launchGrid,
@@ -209,6 +203,7 @@ async function build() {
         { class: "muted" },
         "ffmpeg 由项目自带（uv sync 时就装好）；响度、停顿这些按有声书的稳妥默认值固定，不用你调。",
       ),
+      h("p", { class: "muted" }, "合成引擎固定为 http（连独立 TTS 服务），由「一键启动」自动配置端点。"),
     ),
   );
 

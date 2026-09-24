@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TTS_DIR = PROJECT_ROOT / "tts"
 
 STILL_ACTIVE = 259
-STARTUP_GRACE_SECONDS = 180.0
+# 首次启动可能要先下几 GB 权重，宽限期给足；期间显示"启动中"，不再当成僵尸 pid
+STARTUP_GRACE_SECONDS = 1800.0
 
 
 def _pid_alive(pid: int) -> bool:
@@ -167,6 +168,10 @@ class LocalTtsService:
             "AIAB_TTS_MODEL_SOURCE": model_source,
             "AIAB_TTS_MODEL_DIR": str(model_dir),
         }
+        # 后端进程常常是从根项目的 .venv 里起来的；这个变量会让 `uv run --project tts`
+        # 报警说 VIRTUAL_ENV 和项目环境不匹配（其实会用 tts/.venv），去掉更干净
+        env.pop("VIRTUAL_ENV", None)
+        env.pop("VIRTUAL_ENV_PROMPT", None)
         if hf_endpoint:
             env["AIAB_TTS_HF_ENDPOINT"] = hf_endpoint
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +238,8 @@ class LocalTtsService:
         with open(path, "rb") as handle:
             handle.seek(start)
             chunk = handle.read()
-        text = chunk.decode("utf-8", errors="replace")
+        # 下载进度条是 \r 刷新的：换成换行，界面上就能一行行看到最新进度
+        text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         lines = text.splitlines()
         trimmed = lines[-limit:] if len(lines) > limit else lines
         return {"offset": size, "lines": trimmed, "reset": reset}

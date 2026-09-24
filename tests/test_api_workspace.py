@@ -111,14 +111,45 @@ def test_tts_local_endpoints_switch_engine(settings, monkeypatch):
     assert status["service"]["running"] is False
     assert status["launch"]["backend"] == settings.tts_backend
 
-    started = client.post("/api/tts/local/start", json={"backend": "fake", "port": 8123, "model_source": "local"}).json()
+    started = client.post("/api/tts/local/start", json={"backend": "indextts", "port": 8123, "model_source": "local"}).json()
     assert started["engine"] == "http"
     assert started["endpoints"] == ["http://127.0.0.1:8123"]
     overlay = load_overlay(settings)
     assert overlay["engine"] == "http"
     assert overlay["tts_endpoints"] == ["http://127.0.0.1:8123"]
     assert overlay["tts_port"] == 8123
-    assert overlay["tts_backend"] == "fake"
+    assert overlay["tts_backend"] == "indextts"
 
     assert client.get("/api/tts/local/logs?offset=0").json()["lines"] == ["fake tts up"]
     assert client.post("/api/tts/local/stop").json()["service"]["running"] is False
+
+
+def test_start_falls_back_to_indextts_when_stored_backend_is_gone(settings, monkeypatch):
+    """老 data/settings.json 里存着 fake：一键启动要能自己纠正，而不是报"未知后端"。"""
+    from audiobook.config import save_overlay
+
+    save_overlay(settings, {"tts_backend": "fake"})
+    seen = {}
+
+    class FakeService:
+        def __init__(self, settings):  # noqa: ARG002
+            pass
+
+        def status(self):
+            return {"running": False, "healthy": False, "starting": False, "pid": None, "port": 8020,
+                    "url": "http://127.0.0.1:8020", "backend": "indextts", "log_path": "x.log"}
+
+        def start(self, **kwargs):
+            seen.update(kwargs)
+            return {**self.status(), "running": True, "port": kwargs.get("port") or 8020}
+
+        def stop(self):
+            return self.status()
+
+        def logs(self, *, offset=0, limit=300):  # noqa: ARG002
+            return {"offset": 0, "lines": [], "reset": True}
+
+    monkeypatch.setattr(app_module, "LocalTtsService", FakeService)
+    client = _client(settings)
+    client.post("/api/tts/local/start", json={})
+    assert seen["backend"] == "indextts"

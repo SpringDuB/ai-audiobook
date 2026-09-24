@@ -1,7 +1,7 @@
 from audiobook import audio, jobs, store
 from audiobook.api.app import create_app  # noqa: F401  确保导入链路完整
 from audiobook.db import connect, init_db
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 from audiobook.handlers import casting, characters, lines, post, scenes, split, synthesize  # noqa: F401
 from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM

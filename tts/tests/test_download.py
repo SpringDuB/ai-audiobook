@@ -53,7 +53,7 @@ def test_local_source_verifies_without_downloading(tmp_path):
     (model_dir / "manifest.json").write_text(
         json.dumps(_manifest_for(model_dir, ["config.yaml", "gpt.pth"])), encoding="utf-8"
     )
-    settings = TtsSettings(backend="fake", model_source="local", model_dir=model_dir)
+    settings = TtsSettings(model_source="local", model_dir=model_dir)
     result = ensure_model(settings)
     assert result["verified"] is True
     assert result["source"] == "local"

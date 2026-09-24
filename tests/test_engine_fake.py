@@ -1,7 +1,7 @@
 import pytest
 
 from audiobook.audio import wav_duration
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 
 
 def test_capabilities_declare_indextts_like_features():

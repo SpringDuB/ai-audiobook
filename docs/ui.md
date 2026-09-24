@@ -37,10 +37,12 @@
 只留两块，其余都藏起来：
 
 1. **大模型（LLM）**：端点、模型、温度、并发 + 密钥状态（密钥只从 `.env` 读，不回显）。
-2. **TTS 服务**：一个「一键启动 TTS 服务」按钮 + 停止 + 状态点（未运行 / 启动中 / 运行中）+ 推理后端（fake / indextts）、
+2. **TTS 服务**：一个「一键启动 TTS 服务」按钮 + 停止 + 状态点（未运行 / 启动中 / 运行中）+ 推理后端（IndextTS-2.5）、
    模型来源（local / modelscope / huggingface）、模型目录、端口，外加可展开的实时日志。
+   没有"假引擎"这类选项：合成只有真合成一条路。
 
-点启动会：拉起独立进程（`tts/` 子项目，与后端不共进程）→ 自动把合成引擎切到 `http://127.0.0.1:<port>` → 写入 `data/settings.json`。
+点启动会：拉起独立进程（`tts/` 子项目，与后端不共进程）→ **先按模型来源下载/校验权重、再加载模型**（进度直接进日志面板）→
+自动把合成引擎切到 `http://127.0.0.1:<port>` → 写入 `data/settings.json`。
 **worker 每轮任务前重读设置**，所以改并发、改端点、换引擎、刚启动 TTS，都不用重启 worker。
 
 `ffmpeg` 由项目自带（`uv sync` 时装好），响度归一与停顿、导出格式都已按有声书场景固定成默认值——
@@ -149,7 +151,7 @@ node tools/ui_probe.mjs "http://127.0.0.1:8300/#/book/<bookId>" "$env:TEMP\ui\pi
 - [x] **一屏完成**：章节列表 9 项 + 章内 106 句 + 本章角色 4 / 全书角色 14 同屏，`consoleErrors: []`。证据：[workbench-desktop.png](ui-shots/workbench-desktop.png)
 - [x] **两种视图**：中栏页签「角色文本 / 原文」切换后句子区归零、原文段落出现。
 - [x] **音色可分类可选**：悬浮窗列出 96 个音色，性别/年龄/用途三行分类 + 搜索 + 试听。证据：[voice-picker.png](ui-shots/voice-picker.png)
-- [x] **一键启动 TTS**：真点按钮 → 进程起来（`pid 56188`）→ 状态点变「运行中」→ 引擎自动切 `http`；再点「停止」后端口 8020 无监听、进程消失。证据：[settings-tts-running.png](ui-shots/settings-tts-running.png)
+- [x] **一键启动 TTS**：真点按钮 → 进程起来（`pid 56188`）→ 状态点变「运行中」→ 引擎自动切 `http`；再点「停止」后端口 8020 无监听、进程消失。证据：[settings-tts-running.png](ui-shots/settings-tts-running.png)（截图摄于还有 fake 后端的时期；进程托管逻辑与后端类型无关，现在只剩 indextts，并在启动时先下载/校验权重再加载）
 - [x] **不再暴露底层旋钮**：设置页没有响度/停顿/ffmpeg 路径字段（冒烟测试用 `[data-key=loudness_mode]` / `[data-key=ffmpeg_path]` 断言为 `null`）。
 - [x] **移动端可用**：390×844 下顶栏动作换行、章节列表可滚动、正文不截断、底部标签栏不盖住正文。证据：[workbench-mobile.png](ui-shots/workbench-mobile.png)
 - [x] **每页三态**：`loadingState() / emptyState() / errorState()` 由 `ui.js` 的 `renderWithState()` 统一注入，所有视图都走这条路径。

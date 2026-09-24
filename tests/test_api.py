@@ -52,10 +52,11 @@ def test_events_route_registered_and_snapshot_contains_jobs(settings):
 def test_tts_status_reports_configured_engine(settings):
     client, _ = make_client(settings)
     payload = client.get("/api/tts/status").json()
-    assert payload["engine"] == "fake"
-    assert payload["concurrency"] == settings.synth_concurrency
+    # 没有端点时不是"假装健康"，而是给一条能照做的错误
+    assert payload["engine"] == "http"
+    assert payload["concurrency"] == 0
     assert payload["endpoints"] == []
-    assert payload["error"] is None
+    assert "一键启动" in payload["error"]
 
 
 def test_run_endpoint_enqueues_next_pipeline_step(settings):

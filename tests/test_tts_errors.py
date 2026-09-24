@@ -30,9 +30,10 @@ def test_typed_errors_are_tts_errors():
     assert issubclass(TtsVoiceMissing, TtsBadRef)
 
 
-def test_tts_settings_defaults():
-    settings = get_settings()
-    assert settings.engine == "fake"
+def test_tts_settings_defaults(tmp_path):
+    settings = get_settings(data_dir=tmp_path / "data")      # 不读开发机上的 data/settings.json
+    assert settings.engine == "http"
+    assert settings.tts_backend == "indextts"
     assert settings.synth_concurrency_max == 16
     assert settings.tts_breaker_seconds == 60.0
     assert settings.tts_max_line_chunk_chars == 0

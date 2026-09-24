@@ -1,7 +1,7 @@
 import pytest
 
 from audiobook import jobs, store
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 from audiobook.handlers import post, synthesize  # noqa: F401  导入即注册
 from audiobook.render.book import export_book, parse_chapter_filter
 from audiobook.render.ffmpeg import probe_json, probe_wav

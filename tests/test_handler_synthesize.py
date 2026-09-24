@@ -1,5 +1,5 @@
 from audiobook import jobs, store
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 from audiobook.engines.errors import TtsVoiceMissing
 from audiobook.handlers import synthesize  # noqa: F401  导入即注册
 from audiobook.handlers.synthesize import effective_concurrency

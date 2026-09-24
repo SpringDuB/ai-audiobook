@@ -1,5 +1,5 @@
 from audiobook import jobs, store
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 from audiobook.handlers import book_export, post, synthesize  # noqa: F401  导入即注册
 from audiobook.render.srt import parse_srt
 from audiobook.worker import WorkerContext, run_once

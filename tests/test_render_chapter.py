@@ -3,7 +3,7 @@ import json
 import pytest
 
 from audiobook import store
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 from audiobook.render.chapter import build_clips, render_chapter, render_key
 from audiobook.render.ffmpeg import probe_json, probe_wav
 from conftest import make_narrator_lines

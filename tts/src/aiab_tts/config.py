@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class TtsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AIAB_TTS_", env_file=".env", extra="ignore")
 
-    backend: str = "fake"  # fake | indextts
+    backend: str = "indextts"  # 只支持 indextts（IndexTTS-2.5）
     host: str = "127.0.0.1"
     port: int = 8020
     data_dir: Path = Path("data")  # 参考音频缓存目录（相对 tts/）

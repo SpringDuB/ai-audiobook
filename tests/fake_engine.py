@@ -4,13 +4,13 @@ import time
 import wave
 from pathlib import Path
 
-from .base import AudioResult, EngineCapabilities, SynthParams
+from audiobook.engines.base import AudioResult, EngineCapabilities, SynthParams
 
 EMOTION_DIMS = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm")
 
 
 class FakeEngine:
-    """测试用引擎：时长与文本长度成正比，可注入失败与延迟，输出真实可播放的 WAV。"""
+    """测试专用引擎（产品里没有它）：时长与文本长度成正比、可注入失败与延迟，输出可播放的 WAV。"""
 
     def __init__(
         self,

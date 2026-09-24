@@ -1,18 +1,20 @@
 from fastapi.testclient import TestClient
 
+from _stub_backend import StubBackend
 from aiab_tts.app import create_app
+from aiab_tts.state import ServiceState
 from aiab_tts.config import TtsSettings
 
 
 def _client(tmp_path, **overrides) -> TestClient:
-    settings = TtsSettings(backend="fake", data_dir=tmp_path / "data", **overrides)
-    return TestClient(create_app(settings))
+    settings = TtsSettings(data_dir=tmp_path / "data", **overrides)
+    return TestClient(create_app(settings, ServiceState(StubBackend(), settings)))
 
 
 def test_health_reports_self_declared_concurrency(tmp_path):
     payload = _client(tmp_path, max_concurrency=3).get("/health").json()
     assert payload["status"] == "unloaded"
-    assert payload["engine"] == "fake-tts"
+    assert payload["engine"] == "stub-tts"
     assert payload["inflight"] == 0
     assert "modelLoaded" in payload and "modelSource" in payload
 
@@ -61,7 +63,7 @@ def test_ref_upload_then_synthesize_returns_playable_wav(tmp_path):
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/wav"
     assert float(response.headers["X-Duration-Sec"]) > 0.05
-    assert response.headers["X-Engine"] == "fake-tts"
+    assert response.headers["X-Engine"] == "stub-tts"
     assert response.content[:4] == b"RIFF"
 
 

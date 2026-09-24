@@ -2,7 +2,7 @@ import io
 import wave
 
 from aiab_tts.backends.base import SynthesisRequest
-from aiab_tts.backends.fake import FakeBackend
+from _stub_backend import StubBackend
 
 
 def _request(text: str = "第一句。", rate: float = 1.0, seed: int | None = 7) -> SynthesisRequest:
@@ -18,23 +18,23 @@ def _duration(payload: bytes) -> float:
 
 
 def test_duration_scales_with_text_and_rate():
-    backend = FakeBackend()
+    backend = StubBackend()
     base = backend.synthesize(_request("第一句。")).duration_sec
     faster = backend.synthesize(_request("第一句。", rate=2.0)).duration_sec
     longer = backend.synthesize(_request("第一句。第二句。")).duration_sec
     assert faster < base < longer
     assert _duration(backend.synthesize(_request()).audio) > 0
-    assert backend.capabilities()["engine"] == "fake-tts"
+    assert backend.capabilities()["engine"] == "stub-tts"
 
 
 def test_same_seed_is_reproducible():
-    backend = FakeBackend()
+    backend = StubBackend()
     assert backend.synthesize(_request(seed=3)).audio == backend.synthesize(_request(seed=3)).audio
     assert backend.synthesize(_request(seed=3)).audio != backend.synthesize(_request(seed=4)).audio
 
 
 def test_oom_is_injectable():
-    backend = FakeBackend(oom_on={"爆炸"})
+    backend = StubBackend(oom_on={"爆炸"})
     try:
         backend.synthesize(_request("会爆炸的句子"))
     except RuntimeError as exc:

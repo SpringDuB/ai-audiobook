@@ -4,10 +4,21 @@ import sys
 from .config import get_settings
 
 
+def describe_backend(settings) -> list[str]:
+    """启动时先说清楚"要不要模型、要不要下载"，免得日志里只有 uvicorn 三行。"""
+    backend = (settings.backend or "indextts").lower()
+    lines = [f"后端 {backend}：模型来源={settings.model_source}，模型目录={settings.model_dir}"]
+    if settings.model_source in {"modelscope", "huggingface"}:
+        lines.append("权重缺失/损坏时会按这个来源自动下载，进度就打印在本日志里。")
+    else:
+        lines.append("模型来源 local：只做校验，不下载；缺失时会在这里直接报错。")
+    return lines
+
+
 def _serve(args) -> int:
     import uvicorn
 
-    from .app import create_app
+    from .app import build_state, create_app
 
     settings = get_settings()
     if args.backend:
@@ -17,8 +28,20 @@ def _serve(args) -> int:
     if args.host:
         settings = settings.model_copy(update={"host": args.host})
     print(f"启动 TTS 服务：backend={settings.backend} host={settings.host} port={settings.port}")
+    for line in describe_backend(settings):
+        print(line, flush=True)
+    state = build_state(settings)
+    app = create_app(settings, state)
+    if not args.lazy:
+        print("开始预加载模型（首次会先下载权重，可能要几分钟）…", flush=True)
+        try:
+            result = state.warmup()
+        except Exception as exc:  # noqa: BLE001 - 起不来就带着日志退出，别留下一个假装健康的服务
+            print(f"模型准备失败：{type(exc).__name__}: {exc}", flush=True)
+            return 2
+        print(f"模型已加载：{result}", flush=True)
     # 逐行合成会产生成百上千次请求，默认关掉访问日志，需要排错时加 --access-log
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, access_log=args.access_log)
+    uvicorn.run(app, host=settings.host, port=settings.port, access_log=args.access_log)
     return 0
 
 
@@ -76,10 +99,11 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     serve = sub.add_parser("serve", help="启动 TTS 服务")
-    serve.add_argument("--backend", default=None, choices=["fake", "indextts"])
+    serve.add_argument("--backend", default=None, choices=["indextts"])
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--access-log", action="store_true", help="打开逐请求访问日志（默认关闭）")
+    serve.add_argument("--lazy", action="store_true", help="不在启动时预加载模型（第一次合成时才加载）")
 
     check = sub.add_parser("check", help="检查运行中的 TTS 服务")
     check.add_argument("--url", default="http://127.0.0.1:8020")

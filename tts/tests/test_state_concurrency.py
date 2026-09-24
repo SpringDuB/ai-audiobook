@@ -3,12 +3,12 @@ import time
 
 import pytest
 
-from aiab_tts.backends.fake import FakeBackend
+from _stub_backend import StubBackend
 from aiab_tts.config import TtsSettings
 from aiab_tts.state import ServiceError, ServiceState, gpu_info
 
 
-class SlowBackend(FakeBackend):
+class SlowBackend(StubBackend):
     def __init__(self, delay: float = 0.2):
         super().__init__(delay=delay)
         self.max_inflight = 0
@@ -27,8 +27,8 @@ class SlowBackend(FakeBackend):
 
 
 def _state(tmp_path, backend=None, **overrides) -> ServiceState:
-    settings = TtsSettings(backend="fake", data_dir=tmp_path / "data", **overrides)
-    return ServiceState(backend or FakeBackend(), settings)
+    settings = TtsSettings(data_dir=tmp_path / "data", **overrides)
+    return ServiceState(backend or StubBackend(), settings)
 
 
 def _ref(state: ServiceState) -> str:
@@ -66,7 +66,7 @@ def test_concurrency_gate_serializes_when_capacity_is_one(tmp_path):
 
 
 def test_oom_is_mapped_to_service_error(tmp_path):
-    state = _state(tmp_path, FakeBackend(oom_on={"爆炸"}), max_concurrency=1)
+    state = _state(tmp_path, StubBackend(oom_on={"爆炸"}), max_concurrency=1)
     state.warmup()
     ref_id = _ref(state)
     with pytest.raises(ServiceError) as excinfo:

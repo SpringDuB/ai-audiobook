@@ -5,17 +5,17 @@ import struct
 import time
 import wave
 
-from .base import SynthesisRequest, SynthesisResult
+from aiab_tts.backends.base import SynthesisRequest, SynthesisResult
 
 EMOTION_DIMS = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm")
 MS_PER_CHAR = 60.0
 
 
-class FakeBackend:
-    """不加载任何模型的参照后端：时长可控、可注入 OOM，用于本地端到端验证。"""
+class StubBackend:
+    """测试专用的假后端：不加载任何模型，时长可控、可注入 OOM。产品代码里没有它。"""
 
-    name = "fake-tts"
-    version = "fake-1"
+    name = "stub-tts"
+    version = "stub-1"
 
     def __init__(self, sample_rate: int = 22050, delay: float = 0.0, oom_on: set[str] | None = None):
         self.sample_rate = sample_rate

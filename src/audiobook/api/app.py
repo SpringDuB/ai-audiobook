@@ -468,7 +468,10 @@ def create_app(settings, conn) -> FastAPI:
     def tts_local_start(payload: dict | None = None):
         payload = payload or {}
         fresh = _fresh_settings()
+        # fake 后端已删除：旧 settings.json / 老请求里的值一律兜到 indextts
         backend = str(payload.get("backend") or fresh.tts_backend)
+        if backend != "indextts":
+            backend = "indextts"
         port = int(payload.get("port") or fresh.tts_port)
         model_source = str(payload.get("model_source") or fresh.tts_model_source)
         model_dir = str(payload.get("model_dir") or fresh.tts_model_dir)

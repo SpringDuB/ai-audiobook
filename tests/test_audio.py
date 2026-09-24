@@ -3,7 +3,7 @@ import wave
 import pytest
 
 from audiobook import audio
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 
 
 def _make(tmp_path, name, text, sample_rate=22050):

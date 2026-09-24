@@ -1,16 +1,16 @@
 # TTS 服务部署与验收（IndexTTS-2.5）
 
 本文覆盖：GPU 机器准备 → 模型三选一 → 起服务 → 后端接线 → 显存共享 → 验收清单。
-本地无 GPU 的验证用 `--backend fake`（见 `tts/README.md`），不需要本文步骤。
 
 ## 1. 环境准备（GPU 机器）
 
-IndexTTS-2.5 官方要求 **Python 3.10–3.11**、NVIDIA GPU、推理时约 6 GB 显存。
+需要的是一块 NVIDIA GPU 与约 6 GB 显存。Python 侧**不设版本门槛**：`tts/pyproject.toml` 只写 `>=3.10`，
+能不能跑取决于 `index-tts` 及其依赖在你所用版本上有没有轮子——装得上就直接跑（3.13 也可以），
+装不上时启动日志会带上 import 的真实报错。
 
 ```powershell
-uv python install 3.11
 cd tts
-uv sync --python 3.11
+uv sync                      # 想固定到某个解释器：uv sync --python 3.11
 
 # IndexTTS 不在 PyPI 上：克隆官方仓库并装进本项目的 venv
 git clone https://github.com/index-tts/index-tts.git ..\third_party\index-tts
@@ -18,8 +18,8 @@ uv pip install --python .venv -e ..\third_party\index-tts
 uv pip install --python .venv modelscope huggingface_hub   # 按需，仅下载阶段需要
 ```
 
-> 用错的 Python 版本时服务不会静默乱跑：`backends/indextts.py` 里有版本守卫，
-> 会直接抛出"需要 3.10 或 3.11，请用 `uv python install 3.11`"的明确错误。
+> 若某个依赖（例如 `pynini`/`WeTextProcessing`）在你的版本上没有轮子，pip 会要求现场编译；
+> 这时要么换成它有轮子的解释器（`uv sync --python 3.11`），要么自行准备编译环境。
 
 ## 2. 模型来源三选一
 
@@ -134,7 +134,7 @@ uv run --project tts aiab-tts unload --url http://127.0.0.1:8020
 | 现象 | 原因 / 处理 |
 |---|---|
 | `LLM 不可用` / `TTS 服务不可用` | 后端 `.env` 的端点写错，或服务没起；`aiab-tts check` 先验活 |
-| `Python 3.10–3.11` 报错 | 用了 3.13 跑真实后端；`uv python install 3.11` 后重装 |
+| `IndexTTS 不可用：No module named 'indextts'` | tts venv 里还没装 index-tts；按第 1 节 `uv pip install -e third_party/index-tts` |
 | `not_loaded` | 模型文件缺失/校验失败；`aiab-tts download --source local` 看缺哪些文件 |
 | `oom` | 降 `AIAB_TTS_MAX_CONCURRENCY`，或先 `unload` 别的 GPU 任务 |
 | `busy` | 并发打满；后端会自动降档重试，持续出现说明该加实例 |

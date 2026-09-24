@@ -1,5 +1,5 @@
 from audiobook import store
-from audiobook.engines.fake import FakeEngine
+from fake_engine import FakeEngine
 
 
 def _synth_clips(settings, book_id, index, rows, ms_per_char=10.0):

@@ -11,17 +11,7 @@ from .base import SynthesisRequest, SynthesisResult
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_PYTHON = ((3, 10), (3, 11))
 EMOTION_DIMS = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm")
-
-
-def _assert_python(version_info) -> None:
-    if tuple(version_info[:2]) in SUPPORTED_PYTHON:
-        return
-    raise RuntimeError(
-        f"IndexTTS-2.5 需要 Python 3.10 或 3.11，当前是 {version_info[0]}.{version_info[1]}。"
-        "请用 `uv python install 3.11` 后在 tts/ 目录执行 `uv sync --python 3.11`。"
-    )
 
 
 def apply_pronunciation(text: str, mapping: dict[str, str]) -> str:
@@ -69,10 +59,32 @@ class IndexTtsBackend:
         return self._tts is not None
 
     def load(self) -> None:
-        _assert_python(sys.version_info)
-        from indextts.infer_v2_5 import IndexTTS2  # 懒加载：只有真后端才 import 模型栈
+        # 不卡 Python 版本：装得上就能跑，装不上让 import 自己说话
+        try:
+            from indextts.infer_v2_5 import IndexTTS2  # 懒加载：只有真后端才 import 模型栈
+        except ImportError as exc:
+            raise RuntimeError(
+                f"IndexTTS 不可用：{exc}。"
+                "请按 docs/tts-deploy.md 在 tts/.venv 里装好 index-tts"
+                "（uv pip install --python tts/.venv -e third_party/index-tts）。"
+            ) from exc
+
+        from ..download import ModelIntegrityError, ensure_model
 
         model_dir = Path(self.settings.model_dir)
+        logger.info(
+            "准备模型：source=%s dir=%s（缺失时按来源自动下载）", self.settings.model_source, model_dir
+        )
+        try:
+            report = ensure_model(self.settings)
+        except ModelIntegrityError as exc:
+            raise RuntimeError(f"模型不可用：{exc}") from exc
+        for warning in report.get("warnings") or []:
+            logger.warning("%s", warning)
+        logger.info(
+            "模型就绪：%s（source=%s verified=%s）", report["path"], report["source"], report["verified"]
+        )
+
         self._tts = IndexTTS2(
             cfg_path=str(model_dir / "config.yaml"),
             model_dir=str(model_dir),
