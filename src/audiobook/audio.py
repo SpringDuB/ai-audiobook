@@ -55,9 +55,6 @@ def format_srt_time(seconds: float) -> str:
 
 
 def write_srt(cues: list[tuple[float, float, str]], path: Path) -> None:
-    from .store import atomic_write_text
+    from .render.srt import Cue, write_srt as _write_srt
 
-    blocks = []
-    for index, (start, end, text) in enumerate(cues, start=1):
-        blocks.append(f"{index}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n")
-    atomic_write_text(Path(path), "\n".join(blocks))
+    _write_srt([Cue(start=start, end=end, text=text) for start, end, text in cues], Path(path))
