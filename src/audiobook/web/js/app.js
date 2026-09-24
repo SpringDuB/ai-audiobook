@@ -1,15 +1,15 @@
 import { store } from "./store.js";
 import { parseHash, startRouter } from "./router.js";
-import { errorState, h } from "./ui.js";
+import { errorState, h, runTeardowns } from "./ui.js";
 import * as shelf from "./views/shelf.js";
-import * as book from "./views/book.js";
-import * as chapter from "./views/chapter.js";
+import * as workspace from "./views/workspace.js";
 import * as jobs from "./views/jobs.js";
 import * as issues from "./views/issues.js";
 import * as voices from "./views/voices.js";
 import * as settings from "./views/settings.js";
 
-const VIEWS = { shelf, book, chapter, jobs, issues, voices, settings };
+// 书页与章节页都是同一个工作台，只是选中的章节不同
+const VIEWS = { shelf, book: workspace, chapter: workspace, jobs, issues, voices, settings };
 
 function crumbFor(route) {
   switch (route.name) {
@@ -74,6 +74,7 @@ let token = 0;
 
 function routeTo(route) {
   const mine = ++token;
+  runTeardowns();
   document.getElementById("crumb").textContent = crumbFor(route);
   paintRail(route);
   main.dataset.view = route.name;

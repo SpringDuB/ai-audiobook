@@ -214,3 +214,240 @@
   .scene-chip { min-inline-size: 0; inline-size: 100%; }
   .scene-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ------------------------------------------------------------------ 工作台
+   书页一屏三栏：章节目录 / 原文·角色文本 / 角色音色。 */
+
+#main[data-view="book"],
+#main[data-view="chapter"] {
+  max-inline-size: none;
+  padding: 0;
+}
+
+.workbench { display: flex; flex-direction: column; min-block-size: calc(100dvh - 56px); }
+.workbench__bar {
+  position: sticky;
+  inset-block-start: 56px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-5);
+  background: var(--ink-900);
+  border-bottom: var(--line);
+}
+.workbench__title { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-lg); min-inline-size: 0; }
+.workbench__actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.workbench__progress { color: var(--cinnabar-300); font-size: var(--text-xs); }
+
+.workbench__body { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; align-items: start; }
+.workbench__chapters {
+  border-inline-end: var(--line);
+  border-block-end: var(--line);
+  padding: var(--space-3);
+  max-block-size: 15rem;
+  overflow: auto;
+}
+.workbench__chapters-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
+.workbench__script { padding: var(--space-4) var(--space-5) var(--space-8); min-inline-size: 0; }
+.workbench__cast { border-inline-start: var(--line); border-block-start: var(--line); padding: var(--space-4); }
+
+.chapter-list { display: flex; flex-direction: column; gap: 1px; }
+.chapter-item {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: var(--space-2);
+  inline-size: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-inline-start: 2px solid transparent;
+  border-radius: 0;
+  color: var(--paper-300);
+  padding: var(--space-2);
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.chapter-item:hover { background: var(--ink-800); color: var(--paper-100); }
+.chapter-item[aria-current="true"] {
+  background: var(--ink-800);
+  color: var(--paper-100);
+  box-shadow: inset 2px 0 0 var(--cinnabar-500);
+}
+.chapter-item__no { color: var(--paper-500); font-size: var(--text-xs); padding-block-start: 3px; }
+.chapter-item__title { display: block; font-family: var(--font-serif); font-size: var(--text-sm); line-height: 1.4; }
+.chapter-item__meta { display: flex; align-items: center; gap: var(--space-1); color: var(--paper-500); font-size: var(--text-xs); }
+.chapter-item[aria-current="true"] .chapter-item__no { color: var(--cinnabar-300); }
+
+.state-dot { display: inline-block; inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--paper-700); }
+.state-dot[data-state="rendered"], .state-dot[data-state="ready"] { background: var(--paper-100); }
+.state-dot[data-state="synthesized"] { background: var(--cinnabar-300); }
+.state-dot[data-state="synthesizing"], .state-dot[data-state="analyzing"] { background: var(--cinnabar-500); }
+
+.script__head {
+  position: sticky;
+  inset-block-start: 116px;
+  z-index: 6;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding-block-end: var(--space-3);
+  background: var(--ink-900);
+  border-bottom: var(--line);
+}
+.script__title { min-inline-size: 0; }
+.script__title h2 { margin: 0; font-size: var(--text-lg); }
+.script__meta { margin: var(--space-1) 0 0; color: var(--paper-500); font-size: var(--text-xs); }
+
+.tabs { display: inline-flex; border: var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.tab {
+  background: transparent;
+  border: 0;
+  color: var(--paper-300);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.tab + .tab { border-inline-start: var(--line); }
+.tab:hover { background: var(--ink-700); color: var(--paper-100); }
+.tab[aria-pressed="true"] { background: var(--ink-700); color: var(--paper-100); box-shadow: inset 0 -2px 0 var(--cinnabar-500); }
+.tabs--sm .tab { padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
+
+.raw-text { font-family: var(--font-serif); font-size: var(--text-base); line-height: 1.95; margin: 0 0 var(--space-3); text-indent: 2em; }
+
+.scene-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin: var(--space-4) 0 var(--space-2);
+  padding-block-end: var(--space-1);
+  border-bottom: 1px dashed var(--ink-500);
+  color: var(--paper-500);
+  font-size: var(--text-xs);
+}
+
+.line {
+  display: grid;
+  grid-template-columns: 2.5rem 1.75rem minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-2);
+  border-bottom: var(--line);
+}
+.line:hover { background: var(--ink-800); }
+.line.is-current { background: linear-gradient(90deg, rgba(194, 69, 47, 0.12), transparent 55%); }
+.line.is-current .line__seq { color: var(--cinnabar-300); }
+.line__seq { color: var(--paper-500); font-size: var(--text-xs); padding-block-start: 4px; }
+.line__body { min-inline-size: 0; }
+.line__meta { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-xs); color: var(--paper-500); }
+.line__who { color: var(--paper-300); }
+.line__text { font-family: var(--font-serif); font-size: var(--text-base); margin: var(--space-1) 0 var(--space-2); }
+.line__tools { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
+.line__edit { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+
+.cast__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.cast__head h3 { margin: 0 0 var(--space-2); font-size: var(--text-lg); }
+.cast__list { margin-top: var(--space-3); }
+.cast-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: var(--line);
+}
+.cast-row__head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.cast-row__name { font-family: var(--font-serif); }
+.cast-row__meta { margin: 0; color: var(--paper-500); font-size: var(--text-xs); }
+.cast__foot { margin-top: var(--space-3); font-size: var(--text-xs); display: grid; gap: var(--space-1); }
+
+@media (min-width: 1100px) {
+  .workbench__body { grid-template-columns: 16rem minmax(0, 1fr) 22rem; }
+  .workbench__chapters,
+  .workbench__cast {
+    position: sticky;
+    inset-block-start: 116px;
+    max-block-size: calc(100dvh - 128px);
+    overflow: auto;
+    border-block: none;
+  }
+  .workbench__cast { border-block-start: none; }
+  .script__head { inset-block-start: 116px; }
+}
+
+@media (max-width: 720px) {
+  /* 底部标签栏是固定的，正文要给它留位置 */
+  .workbench { padding-block-end: 5.5rem; }
+  .workbench__bar { position: static; }
+  .script__head { position: static; }
+  .workbench__script { padding: var(--space-3) var(--space-4) var(--space-6); }
+}
+
+/* ------------------------------------------------------------------ 音色悬浮窗 */
+
+.picker-host { position: fixed; inset: 0; z-index: 60; }
+.picker__backdrop { position: absolute; inset: 0; background: rgba(6, 5, 4, 0.5); }
+.picker {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  max-block-size: 76vh;
+  background: var(--ink-800);
+  border: var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+}
+.picker__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-3); border-bottom: var(--line); }
+.picker__head h3 { margin: 0; font-size: var(--text-base); }
+.picker__search { padding: var(--space-3) var(--space-3) 0; }
+.picker__facets { display: grid; gap: var(--space-1); padding: var(--space-2) var(--space-3); }
+.picker__facet { display: grid; grid-template-columns: 2.75rem minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.picker__facet-label { color: var(--paper-500); font-size: var(--text-xs); }
+.picker__chips { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+.picker__list { overflow: auto; padding: 0 var(--space-3) var(--space-3); }
+.picker__count { color: var(--paper-500); font-size: var(--text-xs); margin: var(--space-2) 0; }
+.picker__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: start;
+  padding: var(--space-2);
+  margin-bottom: var(--space-2);
+  background: var(--ink-900);
+  border: var(--line);
+  border-radius: var(--radius-sm);
+}
+.picker__row.is-current { border-color: var(--cinnabar-500); }
+.picker__pick { display: grid; gap: var(--space-1); background: transparent; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer; }
+.picker__pick-head { display: flex; align-items: baseline; gap: var(--space-2); }
+.picker__name { font-family: var(--font-serif); }
+.picker__tags { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+.picker__desc { margin: 0; font-size: var(--text-xs); line-height: 1.5; }
+.picker__row-actions { display: flex; gap: var(--space-1); }
+
+/* ------------------------------------------------------------------ 设置页 */
+
+.tts-status { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.dot[data-state="starting"] { background: var(--cinnabar-300); animation: breathe 1.6s ease-in-out infinite; }
+.tts-log {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--ink-950);
+  border: var(--line);
+  max-block-size: 15rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.log-details > summary,
+.advanced > summary { cursor: pointer; color: var(--paper-300); font-size: var(--text-sm); }
+.log-details[open] > summary,
+.advanced[open] > summary { margin-bottom: var(--space-2); }
+.advanced > summary { font-size: var(--text-lg); }
+.field__hint { font-size: var(--text-xs); margin: var(--space-1) 0 0; }

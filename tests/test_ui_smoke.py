@@ -19,6 +19,7 @@ import uvicorn
 from audiobook import store
 from audiobook.api.app import create_app
 from audiobook.db import connect, init_db
+from helpers import wav_bytes
 
 CHROME_CANDIDATES = (
     os.environ.get("CHROME_PATH", ""),
@@ -97,12 +98,43 @@ def _seed_book(settings, narrator_lines, book_id="smoke"):
         {"chapters": [{"index": 0, "title": "卷一", "content": "第一句。第二句。", "chars": 8}]},
     )
     store.write_jsonl_atomic(store.lines_path(settings, book_id, 0), narrator_lines(0, "第一句。第二句。"))
+    store.atomic_replace_json(
+        store.characters_path(settings, book_id),
+        {"characters": [{"id": "narrator", "name": "旁白"}]},
+    )
+    store.atomic_replace_json(
+        store.casting_path(settings, book_id),
+        {
+            "narrator_voice": "v1",
+            "roles": {"narrator": {"role_id": "narrator", "name": "旁白", "voice_id": "v1", "voice_name": "测试男声"}},
+        },
+    )
     return book_id
 
 
-def test_shelf_and_chapter_render_without_js_errors(served, settings, narrator_lines, tmp_path):
+def _seed_voice(settings, voice_id="v1", name="测试男声"):
+    path = settings.voices_dir / voice_id
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "ref.wav").write_bytes(wav_bytes())
+    store.atomic_replace_json(
+        path / "voice.json",
+        {
+            "id": voice_id,
+            "name": name,
+            "gender": "男",
+            "age_group": "青年",
+            "usage_type": ["角色对话"],
+            "personality": ["沉稳"],
+            "description": "测试用音色",
+        },
+    )
+    return voice_id
+
+
+def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator_lines, tmp_path):
     settings = settings.model_copy(update={"export_mkv": False})
     book_id = _seed_book(settings, narrator_lines)
+    _seed_voice(settings)
 
     shelf = _probe(f"{served}/#/shelf", tmp_path / "shelf")
     assert shelf["view"] == "shelf" and shelf["boot"] == "ready"
@@ -110,18 +142,50 @@ def test_shelf_and_chapter_render_without_js_errors(served, settings, narrator_l
     assert shelf["counts"]["books"] == 1
     assert "冒烟书" in shelf["text"]
 
-    chapter = _probe(f"{served}/#/book/{book_id}/chapter/0", tmp_path / "chapter", extra=("--scroll-to=.proof",))
-    assert chapter["consoleErrors"] == []
-    assert chapter["counts"]["proofLines"] == 2
-    assert chapter["counts"]["seals"] >= 2
-    assert "第一句。" in chapter["text"]
+    workspace = _probe(f"{served}/#/book/{book_id}", tmp_path / "workspace")
+    assert workspace["consoleErrors"] == []
+    assert workspace["view"] == "book"
+    assert workspace["counts"]["chapterItems"] == 1
+    assert workspace["counts"]["lines"] == 2
+    assert workspace["counts"]["castRows"] == 1
+    assert workspace["counts"]["seals"] >= 2
+    assert "第一句。" in workspace["text"]
+    assert "角色音色" in workspace["text"]
+
+    # 切到「原文」页签，原文要能直接看
+    raw = _probe(f"{served}/#/book/{book_id}", tmp_path / "raw", extra=("--click=.script__tools .tab:nth-child(2)",))
+    assert raw["consoleErrors"] == []
+    assert raw["counts"]["lines"] == 0
+    assert raw["counts"]["rawParagraphs"] >= 1
 
 
-def test_settings_page_renders_all_groups(served, settings, tmp_path):
-    page = _probe(f"{served}/#/settings", tmp_path / "settings")
+def test_workspace_voice_picker_lists_categories(served, settings, narrator_lines, tmp_path):
+    book_id = _seed_book(settings, narrator_lines)
+    _seed_voice(settings)
+    page = _probe(f"{served}/#/book/{book_id}", tmp_path / "picker", extra=("--click=.cast-row .btn",))
     assert page["consoleErrors"] == []
-    assert page["counts"]["fields"] >= 20
-    assert "响度模式" in page["text"]
+    assert page["counts"]["pickers"] == 1
+    assert page["counts"]["pickerRows"] == 1
+    assert "测试男声" in page["text"]
+
+
+def test_settings_offers_one_click_tts_and_hides_low_level_knobs(served, settings, tmp_path):
+    page = _probe(
+        f"{served}/#/settings",
+        tmp_path / "settings",
+        extra=(
+            "--eval=JSON.stringify({"
+            'loudness: Boolean(document.querySelector("[data-key=loudness_mode]")),'
+            'ffmpeg: Boolean(document.querySelector("[data-key=ffmpeg_path]")),'
+            'launch: Boolean(document.querySelector("#f-tts_backend")),'
+            "})",
+        ),
+    )
+    assert page["consoleErrors"] == []
+    assert page["counts"]["fields"] >= 10
+    assert "一键启动 TTS 服务" in page["text"]
+    probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert probe == {"loudness": False, "ffmpeg": False, "launch": True}
 
 
 def test_mobile_viewport_has_bottom_rail(served, settings, tmp_path):

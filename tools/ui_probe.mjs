@@ -21,6 +21,7 @@ const viewportOnly = rest.includes("--viewport");
 const scrollTo = rest.find((flag) => flag.startsWith("--scroll-to="))?.slice("--scroll-to=".length) || null;
 const extraEvals = rest.filter((flag) => flag.startsWith("--eval=")).map((flag) => flag.slice("--eval=".length));
 const stepsFile = rest.find((flag) => flag.startsWith("--steps="))?.slice("--steps=".length) || null;
+const settle = Number(rest.find((flag) => flag.startsWith("--wait="))?.slice("--wait=".length) || 2500);
 const chromePath = process.env.CHROME_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const port = 9300 + Math.floor(Math.random() * 400);
 const profile = path.join(tmpdir(), `aiab-ui-probe-${port}`);
@@ -119,7 +120,7 @@ try {
     mobile: width <= 720,
   });
   await cdp.send("Page.navigate", { url });
-  await sleep(2500);
+  await sleep(settle);
   for (const selector of clicks) {
     const clicked = await cdp.evaluate(
       `(() => { const node = document.querySelector(${JSON.stringify(selector)});
@@ -169,6 +170,12 @@ try {
         voices: document.querySelectorAll(".voice-card").length,
         fields: document.querySelectorAll("[data-key]").length,
         sceneChips: document.querySelectorAll(".scene-chip").length,
+        chapterItems: document.querySelectorAll(".chapter-item").length,
+        lines: document.querySelectorAll(".line").length,
+        castRows: document.querySelectorAll(".cast-row").length,
+        pickers: document.querySelectorAll(".picker").length,
+        pickerRows: document.querySelectorAll(".picker__row").length,
+        rawParagraphs: document.querySelectorAll(".raw-text").length,
       },
       errorBlock: document.querySelector(".error-block")?.innerText?.slice(0, 200) || null,
     };

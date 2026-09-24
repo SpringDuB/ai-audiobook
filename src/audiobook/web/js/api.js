@@ -39,6 +39,7 @@ export const api = {
   books: () => get("/api/books"),
   book: (id) => get(`/api/books/${id}`),
   chapters: (id) => get(`/api/books/${id}/chapters`),
+  chapterText: (id, index) => get(`/api/books/${id}/chapters/${index}/text`),
   scenes: (id, index) => get(`/api/books/${id}/chapters/${index}/scenes`),
   lines: (id, index, scene) =>
     get(`/api/books/${id}/chapters/${index}/lines${scene ? `?scene=${encodeURIComponent(scene)}` : ""}`),
@@ -46,6 +47,8 @@ export const api = {
   resynth: (id, lineId) => send("POST", `/api/books/${id}/lines/${lineId}/resynth`),
   renderChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/render`),
   runBook: (id) => send("POST", `/api/books/${id}/run`),
+  analyzeBook: (id) => send("POST", `/api/books/${id}/analyze`),
+  generateBook: (id) => send("POST", `/api/books/${id}/generate`),
   exportBook: (id, body) => send("POST", `/api/books/${id}/export`, body),
   upload: (file, title) => {
     const form = new FormData();
@@ -63,4 +66,8 @@ export const api = {
   setCasting: (id, roleId, body) => send("PUT", `/api/books/${id}/casting/${roleId}`, body),
   settings: () => get("/api/settings"),
   saveSettings: (patch) => send("PUT", "/api/settings", patch),
+  ttsLocal: () => get("/api/tts/local"),
+  ttsStart: (body) => send("POST", "/api/tts/local/start", body || {}),
+  ttsStop: () => send("POST", "/api/tts/local/stop"),
+  ttsLogs: (offset) => get(`/api/tts/local/logs?offset=${Number(offset) || 0}`),
 };

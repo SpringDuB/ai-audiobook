@@ -60,6 +60,25 @@ export function renderWithState(host, loader) {
   return run();
 }
 
+// 视图切换时清理（定时器、事件监听、共享 audio 元素都挂在这里）
+const teardowns = new Set();
+
+export function onTeardown(fn) {
+  teardowns.add(fn);
+  return () => teardowns.delete(fn);
+}
+
+export function runTeardowns() {
+  for (const fn of teardowns) {
+    try {
+      fn();
+    } catch {
+      /* 清理失败不该拦住页面切换 */
+    }
+  }
+  teardowns.clear();
+}
+
 let toastTimer = null;
 
 export function toast(message, kind = "info") {
