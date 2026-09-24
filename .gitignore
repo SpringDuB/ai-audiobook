@@ -5,6 +5,10 @@ __pycache__/
 *.py[cod]
 *.tmp
 .pytest_cache/
+.pytest-data/
+tts/checkpoints/
+tts/data/
+tts/.env
 .ruff_cache/
 build/
 dist/

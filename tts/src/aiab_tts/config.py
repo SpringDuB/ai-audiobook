@@ -1,0 +1,27 @@
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class TtsSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="AIAB_TTS_", env_file=".env", extra="ignore")
+
+    backend: str = "fake"  # fake | indextts
+    host: str = "127.0.0.1"
+    port: int = 8020
+    data_dir: Path = Path("data")  # 参考音频缓存目录（相对 tts/）
+    model_source: str = "local"  # modelscope | huggingface | local
+    model_id: str = "IndexTeam/IndexTTS-2.5"
+    model_dir: Path = Path("checkpoints")
+    hf_endpoint: str = ""
+    max_concurrency: int = 0  # 0 = 用后端推荐值
+    device: str = "cuda:0"
+    use_bf16: bool = True
+    max_text_chars: int = 300
+    queue_timeout_seconds: float = 600.0
+    allow_download: bool = True
+    verify_manifest: bool = True
+
+
+def get_settings(**overrides) -> TtsSettings:
+    return TtsSettings(**overrides)
