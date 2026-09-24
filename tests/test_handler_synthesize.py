@@ -1,6 +1,8 @@
 from audiobook import jobs, store
 from audiobook.engines.fake import FakeEngine
+from audiobook.engines.errors import TtsVoiceMissing
 from audiobook.handlers import synthesize  # noqa: F401  导入即注册
+from audiobook.handlers.synthesize import effective_concurrency
 from audiobook.worker import WorkerContext, run_once
 
 
@@ -11,6 +13,25 @@ class CountingEngine(FakeEngine):
 
     def synthesize(self, text, voice_id, params, out_path):
         self.calls += 1
+        return super().synthesize(text, voice_id, params, out_path)
+
+
+class HintedEngine(FakeEngine):
+    def __init__(self, hint: int):
+        super().__init__(ms_per_char=10.0)
+        self._hint = hint
+
+    def concurrency_hint(self) -> int:
+        return self._hint
+
+
+class MissingRefEngine(FakeEngine):
+    def __init__(self):
+        super().__init__(ms_per_char=10.0)
+
+    def synthesize(self, text, voice_id, params, out_path):
+        if "第二句" in text:
+            raise TtsVoiceMissing("缺少参考音频: data/voices/v_missing/ref.wav")
         return super().synthesize(text, voice_id, params, out_path)
 
 
@@ -84,6 +105,28 @@ def test_failed_line_is_recorded_and_others_continue(conn, settings, narrator_li
 
     assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.wav").exists()
     issues = store.read_jsonl(store.issues_path(settings, "b1"))
-    assert any(row["id"] == "c0001-s01-l002" for row in issues)
+    assert any(row["kind"] == "tts_line_failed" and row["line"] == "c0001-s01-l002" for row in issues)
     synth_job = [j for j in jobs.list_jobs(conn, "b1") if j.kind == "synthesize"][0]
     assert jobs.get_job(conn, synth_job.id).status == "done"
+
+
+def test_effective_concurrency_prefers_engine_hint(settings):
+    assert effective_concurrency(WorkerContext(settings=settings, conn=None, worker_id="w1", engine=HintedEngine(3))) == 3
+    capped = settings.model_copy(update={"synth_concurrency_max": 2})
+    assert effective_concurrency(WorkerContext(settings=capped, conn=None, worker_id="w1", engine=HintedEngine(3))) == 2
+    assert effective_concurrency(
+        WorkerContext(settings=settings, conn=None, worker_id="w1", engine=FakeEngine())
+    ) == settings.synth_concurrency
+
+
+def test_line_failure_is_recorded_with_tts_issue_kind(conn, settings, narrator_lines):
+    engine = MissingRefEngine()
+    _prepare_book(narrator_lines, settings)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+    run_once(ctx)
+
+    issues = store.read_jsonl(store.issues_path(settings, "b1"))
+    assert [issue["kind"] for issue in issues] == ["tts_ref_missing"]
+    assert issues[0]["line"] == "c0001-s01-l002"
+    assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.wav").exists()

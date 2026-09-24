@@ -51,6 +51,28 @@ def create_app(settings, conn) -> FastAPI:
     def list_jobs(book_id: str | None = None):
         return {"jobs": [j.__dict__ for j in jobs.list_jobs(conn, book_id)]}
 
+    @app.get("/api/tts/status")
+    def tts_status():
+        from ..engines.factory import build_engine
+
+        try:
+            engine = build_engine(settings)
+        except Exception as exc:  # noqa: BLE001 - 状态接口不抛错
+            return {"engine": settings.engine, "concurrency": 0, "endpoints": [], "error": str(exc)}
+        try:
+            if hasattr(engine, "status"):
+                return {"engine": settings.engine, "error": None, **engine.status()}
+            return {
+                "engine": settings.engine,
+                "concurrency": settings.synth_concurrency,
+                "endpoints": [],
+                "error": None,
+            }
+        finally:
+            close = getattr(engine, "close", None)
+            if callable(close):
+                close()
+
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: int):
         jobs.request_cancel(conn, job_id)

@@ -37,5 +37,5 @@ def test_post_skips_missing_clip_and_records_issue(conn, settings, narrator_line
     while run_once(ctx):
         pass
     issues = store.read_jsonl(store.issues_path(settings, "b1"))
-    assert any(row["id"] == "c0001-s01-l002" for row in issues)
+    assert any(row["kind"] == "audio_missing" and row["line"] == "c0001-s01-l002" for row in issues)
     assert audio.wav_duration(store.output_dir(settings, "b1") / "chapter_0001.wav") > 0

@@ -4,10 +4,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .. import jobs as jobs_mod
 from .. import store
 from ..analysis.casting import voice_for_speaker
+from ..analysis.issues import record_issue
 from ..cache import cache_key, params_from_line
+from ..engines.errors import TtsUnavailable, TtsVoiceMissing
 from ..worker import register
 
 logger = logging.getLogger(__name__)
+
+
+def effective_concurrency(ctx) -> int:
+    """TTS 并发上限来自服务端自报；客户端只保留安全上限。"""
+    hint = getattr(ctx.engine, "concurrency_hint", None)
+    if callable(hint):
+        reported = hint()
+        if reported and reported > 0:
+            return max(1, min(ctx.settings.synth_concurrency_max, int(reported)))
+    return max(1, ctx.settings.synth_concurrency)
 
 
 def resolve_voice_id(settings, book_id: str, speaker: str) -> str:
@@ -56,29 +68,46 @@ def handle_synthesize(ctx, job) -> None:
         raise RuntimeError(f"第 {job.chapter_index} 章没有行数据，请先跑 chapter_split")
     total = len(rows)
     done = 0
-    issues: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max(1, ctx.settings.synth_concurrency)) as pool:
+    failed = 0
+    endpoint_down = False
+    with ThreadPoolExecutor(max_workers=effective_concurrency(ctx)) as pool:
         futures = {pool.submit(_synth_one, ctx, job, row): row for row in rows}
         for future in as_completed(futures):
             row = futures[future]
             try:
                 future.result()
             except Exception as exc:  # noqa: BLE001 - 单行失败不能拖垮整章
+                failed += 1
+                kind = "tts_line_failed"
+                if isinstance(exc, TtsVoiceMissing):
+                    kind = "tts_ref_missing"
+                if isinstance(exc, TtsUnavailable):
+                    endpoint_down = True
                 logger.warning("行 %s 合成失败: %s", row["id"], exc)
-                issues.append(
-                    {
-                        "id": row["id"],
-                        "chapter": job.chapter_index,
-                        "reason": f"{type(exc).__name__}: {exc}",
-                        "text": row["text"],
-                    }
+                record_issue(
+                    ctx.settings,
+                    job.book_id,
+                    kind,
+                    reason=f"{type(exc).__name__}: {exc}",
+                    chapter=job.chapter_index,
+                    line=row["id"],
+                    fallback="该行留空，post 会跳过并记 audio_missing",
+                    detail={"text": row["text"]},
                 )
             finally:
                 done += 1
                 ctx.progress(job, done, total, row["id"])
-    for issue in issues:
-        store.append_jsonl(store.issues_path(ctx.settings, job.book_id), issue)
-    if len(issues) == total:
+    if failed == total:
+        if endpoint_down:
+            record_issue(
+                ctx.settings,
+                job.book_id,
+                "tts_endpoint_down",
+                reason="所有 TTS 端点不可用",
+                chapter=job.chapter_index,
+                fallback="任务退避后重试整章",
+            )
+            raise RuntimeError("TTS 端点全部不可用，退避后重试")
         raise RuntimeError("整章所有行都合成失败")
-    ctx.progress(job, total, total, f"完成，失败 {len(issues)} 行")
+    ctx.progress(job, total, total, f"完成，失败 {failed} 行")
     jobs_mod.enqueue(ctx.conn, "post", job.book_id, job.chapter_index)

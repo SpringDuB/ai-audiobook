@@ -1,6 +1,7 @@
 import logging
 
 from .. import audio, store
+from ..analysis.issues import record_issue
 from ..worker import register
 
 logger = logging.getLogger(__name__)
@@ -15,12 +16,20 @@ def handle_post(ctx, job) -> None:
     clips_dir = store.audio_dir(settings, book_id, chapter)
     items: list[tuple] = []
     cues: list[tuple[float, float, str]] = []
-    missing: list[dict] = []
     cursor = 0.0
     for row in rows:
         clip = clips_dir / f"{row['id']}.wav"
         if not clip.exists():
-            missing.append({"id": row["id"], "chapter": chapter, "reason": "缺少音频片段", "text": row["text"]})
+            record_issue(
+                settings,
+                book_id,
+                "audio_missing",
+                reason="缺少音频片段",
+                chapter=chapter,
+                line=row["id"],
+                fallback="跳过该行，字幕与音频同步偏移",
+                detail={"text": row["text"]},
+            )
             continue
         duration = audio.wav_duration(clip)
         pause_ms = int(row.get("pause_after_ms") or 0)
@@ -30,12 +39,10 @@ def handle_post(ctx, job) -> None:
         ctx.progress(job, len(items), len(rows), row["id"])
     if not items:
         raise RuntimeError("没有任何可拼接的片段")
-    for issue in missing:
-        store.append_jsonl(store.issues_path(settings, book_id), issue)
     tag = store.chapter_tag(chapter)
     wav_path = store.output_dir(settings, book_id) / f"chapter_{tag}.wav"
     srt_path = store.output_dir(settings, book_id) / f"chapter_{tag}.srt"
     total = audio.concat_with_pauses(items, wav_path)
     audio.write_srt(cues, srt_path)
-    logger.info("第 %s 章产出完成：%.2fs，%d 条字幕，缺失 %d 行", chapter, total, len(cues), len(missing))
+    logger.info("第 %s 章产出完成：%.2fs，%d 条字幕", chapter, total, len(cues))
     ctx.progress(job, len(rows), len(rows), f"完成 {total:.2f}s")

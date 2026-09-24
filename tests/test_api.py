@@ -49,6 +49,15 @@ def test_events_route_registered_and_snapshot_contains_jobs(settings):
     assert "chapter_split" in payload
 
 
+def test_tts_status_reports_configured_engine(settings):
+    client, _ = make_client(settings)
+    payload = client.get("/api/tts/status").json()
+    assert payload["engine"] == "fake"
+    assert payload["concurrency"] == settings.synth_concurrency
+    assert payload["endpoints"] == []
+    assert payload["error"] is None
+
+
 def test_run_endpoint_enqueues_next_pipeline_step(settings):
     client, conn = make_client(settings)
     book_id = _upload(client, "第一章 重生十年前\n\n正文一。\n\n第二章 死党\n\n正文二。")

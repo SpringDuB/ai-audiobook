@@ -83,14 +83,25 @@ def main(argv=None) -> int:
         import uvicorn
 
         from .api.app import create_app
+        from .engines.factory import build_engine
 
         conn = connect(settings.db_path)
         init_db(conn)
+        try:
+            probe = build_engine(settings)
+            if hasattr(probe, "refresh"):
+                probe.refresh(force=True)
+                print(f"TTS 状态：{probe.status()}")
+            close = getattr(probe, "close", None)
+            if callable(close):
+                close()
+        except Exception as exc:  # noqa: BLE001 - TTS 没起也要能起服务
+            print(f"警告：TTS 未就绪（{exc}）。请先启动 TTS 服务再跑合成任务。")
         uvicorn.run(create_app(settings, conn), host=args.host, port=args.port)
         return 0
 
     if args.cmd == "worker":
-        from .engines.fake import FakeEngine
+        from .engines.factory import build_engine
         from .handlers import casting, characters, lines, post, scenes, split, synthesize  # noqa: F401
         from .llm.base import LLMError
         from .llm.limiter import AdaptiveLimiter
@@ -113,7 +124,7 @@ def main(argv=None) -> int:
             settings=settings,
             conn=conn,
             worker_id=args.worker_id or f"w-{os.getpid()}-{uuid.uuid4().hex[:6]}",
-            engine=FakeEngine(),
+            engine=build_engine(settings),
             llm=llm,
         )
         if args.once:
