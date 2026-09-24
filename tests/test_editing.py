@@ -22,14 +22,18 @@ def test_patch_text_marks_manual_source():
 
 
 def test_patch_speaker_accepts_name_or_id():
-    names = {"旁白": "narrator", "张卫东": "role_0001"}
+    # names 的约定与 characters.json / API 一致：{role_id: 角色名}
+    names = {"narrator": "旁白", "role_0001": "张卫东"}
     by_name = apply_line_patch(_row(), {"speaker": "张卫东"}, names)
     assert (by_name["speaker"], by_name["speaker_name"]) == ("role_0001", "张卫东")
     assert apply_line_patch(_row(), {"speaker": "role_0001"}, names)["speaker"] == "role_0001"
+    # 保留原说话人（把现有名字传回来）不应改坏
+    same = apply_line_patch(_row(), {"speaker": "旁白"}, names)
+    assert (same["speaker"], same["speaker_name"]) == ("narrator", "旁白")
 
 
 def test_patch_addressee_can_be_cleared():
-    names = {"旁白": "narrator", "张卫东": "role_0001"}
+    names = {"narrator": "旁白", "role_0001": "张卫东"}
     row = _row(addressee="role_0001", addressee_name="张卫东")
     cleared = apply_line_patch(row, {"addressee": ""}, names)
     assert (cleared["addressee"], cleared["addressee_name"]) == (None, None)
@@ -59,7 +63,7 @@ def test_patch_rejects_unknown_fields_and_values():
     with pytest.raises(ValueError):
         apply_line_patch(_row(), {"pause_after_ms": -5}, {})
     with pytest.raises(ValueError):
-        apply_line_patch(_row(), {"speaker": "查无此人"}, {"旁白": "narrator"})
+        apply_line_patch(_row(), {"speaker": "查无此人"}, {"narrator": "旁白"})
 
 
 def test_invalidate_chapter_removes_render_meta_and_container(settings):

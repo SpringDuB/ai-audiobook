@@ -11,6 +11,7 @@ def test_root_serves_app_shell(settings):
     assert "/static/theme.css" in body and "/static/js/app.js" in body
     assert 'id="main"' in body and 'id="masthead"' in body and 'id="rail"' in body
     assert "#/shelf" in body and "#/jobs" in body and "#/settings" in body
+    assert "/static/favicon.svg" in body
 
 
 def test_static_assets_are_offline_only(settings):
@@ -24,6 +25,7 @@ def test_static_assets_are_offline_only(settings):
         "/static/js/router.js",
         "/static/js/ui.js",
         "/static/js/format.js",
+        "/static/favicon.svg",
     ):
         assert client.get(path).status_code == 200, path
     css = client.get("/static/theme.css").text + client.get("/static/app.css").text

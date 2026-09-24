@@ -21,6 +21,28 @@ def test_patch_line_writes_file_and_invalidates(settings, narrator_lines):
     assert bad.status_code == 400 and "不可修改的字段" in bad.json()["detail"]
 
 
+def test_patch_line_keeps_speaker_when_name_is_sent_back(settings, narrator_lines):
+    """界面上把当前说话人原样提交（角色名）时，不能把 speaker 字段写坏。"""
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    store.atomic_replace_json(
+        store.characters_path(settings, book_id),
+        {"characters": [{"id": "role_0001", "name": "张卫东", "gender": "男", "age_group": "青年"}]},
+    )
+    rows = store.read_jsonl(store.lines_path(settings, book_id, 0))
+    rows[0]["addressee"] = "role_0001"
+    rows[0]["addressee_name"] = "张卫东"
+    store.write_jsonl_atomic(store.lines_path(settings, book_id, 0), rows)
+    body = client.patch(
+        f"/api/books/{book_id}/lines/c0000-s01-l001",
+        json={"text": "改一句。", "speaker": "旁白", "addressee": "张卫东"},
+    ).json()
+    assert body["line"]["speaker"] == "narrator"
+    assert body["line"]["speaker_name"] == "旁白"
+    assert body["line"]["addressee"] == "role_0001"
+    assert body["line"]["addressee_name"] == "张卫东"
+
+
 def test_resynth_enqueues_line_job(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
@@ -35,6 +57,18 @@ def test_export_endpoint_enqueues_book_export(settings, narrator_lines):
     book_id = _seed_book(settings, narrator_lines)
     body = client.post(f"/api/books/{book_id}/export", json={"mode": "chapter", "force": True}).json()
     assert jobs.get_job(_conn(settings), body["job_id"]).kind == "book_export"
+
+
+def test_render_chapter_endpoint_invalidates_and_enqueues_post(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    store.atomic_write_bytes(store.chapter_render_meta_path(settings, book_id, 0), b"{}")
+    store.atomic_write_bytes(store.book_wav_path(settings, book_id), b"RIFF")
+    body = client.post(f"/api/books/{book_id}/chapters/0/render").json()
+    job = jobs.get_job(_conn(settings), body["job_id"])
+    assert (job.kind, job.chapter_index) == ("post", 0)
+    assert not store.chapter_render_meta_path(settings, book_id, 0).exists()
+    assert client.post("/api/books/nope/chapters/0/render").status_code == 404
 
 
 def test_issues_retry_requeues_affected_chapters(settings, narrator_lines):

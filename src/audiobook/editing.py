@@ -9,11 +9,15 @@ MAX_PAUSE_MS = 5000
 
 
 def _role_name(names: dict[str, str], role_id: str) -> str:
-    return next((name for name, rid in names.items() if rid == role_id), role_id)
+    """names 的约定是 {role_id: 角色名}（与 characters.json / API 一致）。"""
+    return names.get(role_id, role_id)
 
 
 def _resolve_role(target: str, names: dict[str, str]) -> str | None:
-    return target if target in set(names.values()) else names.get(target)
+    """接受 role_id 或角色名，统一返回 role_id。"""
+    if target in names:
+        return target
+    return next((role_id for role_id, name in names.items() if name == target), None)
 
 
 def apply_line_patch(row: dict, patch: dict, names: dict[str, str]) -> dict:

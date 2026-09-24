@@ -71,7 +71,7 @@
 .import input[type="file"] { padding: var(--space-1) var(--space-2); }
 
 .book-grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); margin-top: var(--space-4); }
-.book-card { display: flex; flex-direction: column; gap: var(--space-3); }
+.book-card { display: flex; flex-direction: column; gap: var(--space-3); align-items: flex-start; }
 .book-card__title { font-size: var(--text-lg); }
 .book-card__stats { display: flex; gap: var(--space-3); flex-wrap: wrap; color: var(--paper-300); font-size: var(--text-sm); }
 .book-card__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: auto; }
@@ -100,6 +100,18 @@
 .scene-chip__meta { font-size: var(--text-xs); color: var(--paper-500); }
 
 .scene-cards { display: grid; gap: var(--space-3); }
+.scene-overview { padding: var(--space-3) var(--space-4); }
+.scene-overview > summary {
+  cursor: pointer;
+  color: var(--paper-300);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  list-style: none;
+}
+.scene-overview > summary::before { content: "▸ "; color: var(--cinnabar-500); }
+.scene-overview[open] > summary::before { content: "▾ "; }
+.scene-overview > summary::-webkit-details-marker { display: none; }
+.scene-overview[open] > summary { margin-bottom: var(--space-3); }
 .scene-card__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .scene-card__people { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .scene-card__summary { color: var(--paper-300); font-size: var(--text-sm); margin: var(--space-2) 0 0; }
@@ -170,7 +182,8 @@
   .masthead__crumb { display: none; }
   .rail {
     position: fixed;
-    inset-block: auto 0 0;
+    inset-block-start: auto;
+    inset-block-end: 0;
     inset-inline: 0;
     inline-size: auto;
     flex-direction: row;

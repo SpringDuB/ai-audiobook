@@ -96,6 +96,23 @@ def test_render_key_changes_with_pause_settings(settings):
     assert render_key(settings.model_copy(update={"loudness_mode": "lufs"}), clips) != base
 
 
+def test_render_chapter_invalidates_book_level_products(settings):
+    """章节重渲染后，整本成品必须作废（否则用户会听到旧的整本）。"""
+    _seed_lines(settings)
+    out = store.output_dir(settings, "b1")
+    store.atomic_write_bytes(store.book_wav_path(settings, "b1"), b"RIFF")
+    store.atomic_write_bytes(store.book_srt_path(settings, "b1"), b"1\n")
+    store.atomic_write_bytes(store.book_media_path(settings, "b1", ".mkv"), b"x")
+    store.atomic_write_text(out / "playlist.m3u", "#EXTM3U\n")
+    store.atomic_write_text(out / "merge-report.txt", "报告\n")
+    render_chapter(settings, "b1", 1)
+    assert not store.book_wav_path(settings, "b1").exists()
+    assert not store.book_srt_path(settings, "b1").exists()
+    assert not store.book_media_path(settings, "b1", ".mkv").exists()
+    assert not (out / "playlist.m3u").exists()
+    assert not (out / "merge-report.txt").exists()
+
+
 @requires_ffmpeg
 def test_render_chapter_with_loudness_and_container(settings):
     prod = settings.model_copy(update={"loudness_mode": "lufs", "export_mkv": True})

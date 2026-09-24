@@ -16,6 +16,9 @@ from .pauses import build_pause_plan
 
 RENDER_VERSION = 1
 
+# 章节重渲染后必须作废的整本级产物（下一次 book_export 会重建它们）
+BOOK_LEVEL_ARTIFACTS = ("playlist.m3u", "book_章节.txt", "merge-report.txt")
+
 
 @dataclass(frozen=True)
 class ChapterRenderResult:
@@ -90,6 +93,23 @@ def render_key(settings, clips: list[Clip]) -> str:
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def invalidate_book_products(settings, book_id: str) -> list[Path]:
+    """章节变了，整本成品就不再可信：删掉它们，让 plan/export 重新生成。"""
+    removed: list[Path] = []
+    candidates = [
+        store.book_wav_path(settings, book_id),
+        store.book_srt_path(settings, book_id),
+        store.book_media_path(settings, book_id, "mkv"),
+        store.book_media_path(settings, book_id, "mp4"),
+        *(store.output_dir(settings, book_id) / name for name in BOOK_LEVEL_ARTIFACTS),
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            Path(path).unlink()
+            removed.append(Path(path))
+    return removed
 
 
 def _plan_cues(clips: list[Clip]) -> tuple[list[srt_mod.Cue], float]:
@@ -185,6 +205,7 @@ def render_chapter(
         },
     )
     shutil.rmtree(work_dir, ignore_errors=True)
+    invalidate_book_products(settings, book_id)
     return ChapterRenderResult(
         wav=wav_path,
         srt=srt_path,

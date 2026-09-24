@@ -51,8 +51,34 @@ async function build(route, host) {
     return container;
   }
   const { issues } = await api.issues(bookId);
+  const { jobs } = await api.jobs().catch(() => ({ jobs: [] }));
+  const failedJobs = (jobs || []).filter((job) => job.book_id === bookId && job.status === "failed");
+  if (failedJobs.length) {
+    container.append(
+      h(
+        "div",
+        { class: "sheet" },
+        h(
+          "p",
+          {},
+          `另有 ${failedJobs.length} 个失败任务（不属于降级记录）：`,
+          failedJobs
+            .slice(0, 6)
+            .map((job) => `${job.kind}#${job.chapter_index ?? "全书"}`)
+            .join("、"),
+          failedJobs.length > 6 ? " …" : "",
+        ),
+        h("a", { class: "btn btn-sm", href: "#/jobs" }, "去任务中心重试"),
+      ),
+    );
+  }
   if (!issues.length) {
-    container.append(emptyState("没有异常", "全流程没有降级或失败记录。"));
+    container.append(
+      emptyState(
+        "没有降级记录",
+        failedJobs.length ? "但上面有失败任务，需要去任务中心处理。" : "全流程没有降级或失败记录。",
+      ),
+    );
     return container;
   }
   const counts = new Map();

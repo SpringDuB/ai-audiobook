@@ -44,6 +44,7 @@ export const api = {
     get(`/api/books/${id}/chapters/${index}/lines${scene ? `?scene=${encodeURIComponent(scene)}` : ""}`),
   patchLine: (id, lineId, patch) => send("PATCH", `/api/books/${id}/lines/${lineId}`, patch),
   resynth: (id, lineId) => send("POST", `/api/books/${id}/lines/${lineId}/resynth`),
+  renderChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/render`),
   runBook: (id) => send("POST", `/api/books/${id}/run`),
   exportBook: (id, body) => send("POST", `/api/books/${id}/export`, body),
   upload: (file, title) => {

@@ -263,6 +263,14 @@ def create_app(settings, conn) -> FastAPI:
         payload = payload or {}
         return {"job_id": jobs.enqueue(conn, "book_export", book_id), "mode": payload.get("mode") or "all"}
 
+    @app.post("/api/books/{book_id}/chapters/{index}/render")
+    def render_chapter_route(book_id: str, index: int):
+        """强制重渲染一章：作废该章成品与整本成品，然后入队 post。"""
+        if _chapter_meta(settings, book_id, index) is None:
+            raise HTTPException(status_code=404, detail="chapter not found")
+        invalidate_chapter(settings, book_id, index)
+        return {"job_id": jobs.enqueue(conn, "post", book_id, index), "chapter_index": index}
+
     @app.post("/api/jobs/{job_id}/retry")
     def retry_job(job_id: int):
         if jobs.get_job(conn, job_id) is None:

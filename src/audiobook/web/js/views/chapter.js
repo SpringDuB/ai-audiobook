@@ -288,15 +288,31 @@ async function build(route, host) {
             class: "btn",
             onClick: async () => {
               try {
-                await api.runBook(bookId);
-                toast("已入队本章后续任务");
+                await api.renderChapter(bookId, index);
+                toast("已入队本章重渲染");
                 window.location.hash = "#/jobs";
               } catch (error) {
                 toast(error.message, "error");
               }
             },
           },
-          "生成 / 重渲染",
+          "重渲染本章",
+        ),
+        h(
+          "button",
+          {
+            class: "btn btn-ghost",
+            onClick: async () => {
+              try {
+                await api.runBook(bookId);
+                toast("已按断点补排队列");
+                window.location.hash = "#/jobs";
+              } catch (error) {
+                toast(error.message, "error");
+              }
+            },
+          },
+          "继续生成",
         ),
       ),
     ),
@@ -326,7 +342,23 @@ async function build(route, host) {
     "div",
     { class: "chapter-layout" },
     chips,
-    h("div", { class: "stack" }, ...(!state.filter ? scenes : []).map(sceneCard), list),
+    h(
+      "div",
+      { class: "stack" },
+      scenes.length
+        ? h(
+            "details",
+            { class: "sheet scene-overview" },
+            h(
+              "summary",
+              {},
+              `场景概览 · ${scenes.length} 个场景 · ${duration(scenes.reduce((sum, scene) => sum + (scene.duration_sec || 0), 0))}`,
+            ),
+            h("div", { class: "scene-cards" }, ...scenes.map(sceneCard)),
+          )
+        : null,
+      list,
+    ),
   );
   container.append(layout);
   draw();
