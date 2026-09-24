@@ -1,0 +1,74 @@
+from audiobook import jobs
+
+
+def test_enqueue_is_idempotent_for_active_job(conn):
+    first = jobs.enqueue(conn, "synthesize", "book1", 1)
+    second = jobs.enqueue(conn, "synthesize", "book1", 1)
+    assert first == second
+
+
+def test_enqueue_allows_new_job_after_done(conn):
+    first = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.claim(conn, "w1")
+    jobs.complete(conn, first, "w1")
+    second = jobs.enqueue(conn, "synthesize", "book1", 1)
+    assert second != first
+
+
+def test_claim_marks_running_and_counts_attempt(conn):
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    claimed = jobs.claim(conn, "w1")
+    assert claimed.id == job_id
+    assert claimed.status == "running"
+    assert claimed.attempts == 1
+    assert jobs.claim(conn, "w2") is None
+
+
+def test_claim_respects_not_before(conn):
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.fail(conn, job_id, "w1", "boom", retry_delay_ms=60_000, now=1_000)
+    assert jobs.claim(conn, "w2", now=2_000) is None
+    assert jobs.claim(conn, "w2", now=61_001).id == job_id
+
+
+def test_fail_after_max_attempts_marks_failed(conn):
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1, max_attempts=2)
+    jobs.claim(conn, "w1")
+    assert jobs.fail(conn, job_id, "w1", "e1", retry_delay_ms=0) == "queued"
+    jobs.claim(conn, "w1")
+    assert jobs.fail(conn, job_id, "w1", "e2", retry_delay_ms=0) == "failed"
+    assert jobs.get_job(conn, job_id).status == "failed"
+
+
+def test_reap_expired_requeues_dead_worker(conn):
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.claim(conn, "w1", lease_seconds=10, now=1_000)
+    assert jobs.reap_expired(conn, now=5_000) == 0
+    assert jobs.reap_expired(conn, now=20_000) == 1
+    assert jobs.get_job(conn, job_id).status == "queued"
+
+
+def test_heartbeat_extends_lease(conn):
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.claim(conn, "w1", lease_seconds=10, now=1_000)
+    assert jobs.heartbeat(conn, job_id, "w1", lease_seconds=10, now=9_000) is True
+    assert jobs.reap_expired(conn, now=15_000) == 0
+    assert jobs.heartbeat(conn, job_id, "other", lease_seconds=10, now=16_000) is False
+
+
+def test_cancel_queued_and_running(conn):
+    queued = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.request_cancel(conn, queued)
+    assert jobs.get_job(conn, queued).status == "canceled"
+    assert jobs.claim(conn, "w1") is None
+
+    running = jobs.enqueue(conn, "synthesize", "book1", 2)
+    jobs.claim(conn, "w1")
+    jobs.request_cancel(conn, running)
+    assert jobs.is_canceled(conn, running) is True
+
+
+def test_progress_roundtrip(conn):
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.set_progress(conn, job_id, 3, 10, "第 3 行")
+    assert jobs.get_job(conn, job_id).progress == {"done": 3, "total": 10, "message": "第 3 行"}
