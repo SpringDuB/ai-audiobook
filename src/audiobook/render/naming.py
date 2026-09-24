@@ -3,7 +3,8 @@ import re
 from .. import store
 
 _UNSAFE = re.compile(r'[\\/:*?"<>|\r\n\t]')
-_CHAPTER_PREFIX = re.compile(r"^第\s*\d+\s*章")
+# 章节标题可能自带"第一章""第12章""卷三"等前缀，别重复拼
+_CHAPTER_PREFIX = re.compile(r"^第\s*[\d一二三四五六七八九十百零两]+\s*[章卷节回]")
 
 
 def safe_filename(name: str, *, limit: int = 60) -> str:
