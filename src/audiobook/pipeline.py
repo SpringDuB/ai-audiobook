@@ -24,10 +24,14 @@ def plan_book(settings, conn, book_id: str) -> list[tuple[str, int | None]]:
     missing: list[tuple[str, int | None]] = []
     for chapter in chapters:
         index = chapter["index"]
-        audio_path = store.output_dir(settings, book_id) / f"chapter_{store.chapter_tag(index)}.wav"
-        if not audio_path.exists():
+        if not store.chapter_wav_path(settings, book_id, index).exists():
             missing.append(("synthesize", index))
-    return missing
+    if missing:
+        return missing
+    # 全部章节都有成品音频 → 收尾出整本
+    if not store.book_wav_path(settings, book_id).exists():
+        return [("book_export", None)]
+    return []
 
 
 def enqueue_plan(conn, book_id: str, plan) -> list[int]:

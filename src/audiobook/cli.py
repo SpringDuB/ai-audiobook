@@ -30,6 +30,16 @@ def main(argv=None) -> int:
     p_run = sub.add_parser("run", help="按文件断点为一本书入队下一步任务")
     p_run.add_argument("book_id")
 
+    p_export = sub.add_parser("export", help="导出可播放的容器与整本合本")
+    p_export.add_argument("book_id")
+    p_export.add_argument("--mode", choices=["chapter", "book", "all"], default="all")
+    p_export.add_argument("--container", choices=["mkv", "mp4"], default=None)
+    p_export.add_argument("--chapters", default=None, help="例如 1,2,30-38")
+    p_export.add_argument("--out-dir", default=None)
+    p_export.add_argument("--no-container", action="store_true", help="只出 wav/srt，不封装 mkv/mp4")
+    p_export.add_argument("--force", action="store_true")
+    p_export.add_argument("--dry-run", action="store_true")
+
     sub.add_parser("llm-check", help="验证 LLM 端点连通性并做一次 JSON 往返")
 
     args = parser.parse_args(argv)
@@ -70,6 +80,43 @@ def main(argv=None) -> int:
         print(f"入队：{text}")
         return 0
 
+    if args.cmd == "export":
+        from .render.book import export_book, parse_chapter_filter
+        from .render.ffmpeg import FFmpegError
+
+        try:
+            chapters = parse_chapter_filter(args.chapters)
+        except ValueError as exc:
+            print(f"参数错误：{exc}")
+            return 2
+        try:
+            report = export_book(
+                settings,
+                args.book_id,
+                mode=args.mode,
+                container=args.container,
+                chapters=chapters,
+                out_dir=args.out_dir,
+                force=args.force,
+                dry_run=args.dry_run,
+                containers=False if args.no_container else None,
+            )
+        except (FFmpegError, RuntimeError, ValueError) as exc:
+            print(f"导出失败：{exc}")
+            return 1
+        for warning in report.warnings:
+            print(f"警告：{warning}")
+        print(f"模式 {report.mode} / 容器 {report.container} / 输出目录 {report.out_dir}")
+        print(
+            f"章节 {len(report.chapters)} 个，缺失 {len(report.missing)} 个，"
+            f"字幕 {report.cues} 条，总时长 {report.total_seconds:.1f}s"
+        )
+        for path in report.outputs:
+            print(f"  {path}")
+        if report.dry_run:
+            print("（dry-run：未写入任何文件）")
+        return 0
+
     if args.cmd == "import":
         from .importer import import_book
 
@@ -102,7 +149,16 @@ def main(argv=None) -> int:
 
     if args.cmd == "worker":
         from .engines.factory import build_engine
-        from .handlers import casting, characters, lines, post, scenes, split, synthesize  # noqa: F401
+        from .handlers import (  # noqa: F401
+            book_export,
+            casting,
+            characters,
+            lines,
+            post,
+            scenes,
+            split,
+            synthesize,
+        )
         from .llm.base import LLMError
         from .llm.limiter import AdaptiveLimiter
         from .llm.openai_compat import build_client
