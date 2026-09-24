@@ -27,9 +27,48 @@ def main(argv=None) -> int:
     p_import.add_argument("--title", required=True)
     p_import.add_argument("--book-id", default=None)
 
+    p_run = sub.add_parser("run", help="按文件断点为一本书入队下一步任务")
+    p_run.add_argument("book_id")
+
+    sub.add_parser("llm-check", help="验证 LLM 端点连通性并做一次 JSON 往返")
+
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = get_settings()
+
+    if args.cmd == "llm-check":
+        from .analysis.models import PassAOutput
+        from .llm.base import LLMError
+        from .llm.limiter import AdaptiveLimiter
+        from .llm.openai_compat import build_client
+        from .llm.runner import LlmJsonError, LlmJsonRunner
+
+        try:
+            runner = LlmJsonRunner(
+                build_client(settings), AdaptiveLimiter(max_concurrency=settings.llm_concurrency), settings
+            )
+            result = runner.run(
+                system="你是 JSON 生成器，只输出 JSON。",
+                user='只输出 {"characters": [], "relationships": []}',
+                model_cls=PassAOutput,
+                pass_name="check",
+                book_id="",
+            )
+        except (LLMError, LlmJsonError) as exc:
+            print(f"LLM 不可用：{exc}")
+            return 2
+        print(f"LLM 可用：{settings.llm_base_url} / {settings.llm_model} → {result.model_dump()}")
+        return 0
+
+    if args.cmd == "run":
+        from .pipeline import resume_book
+
+        conn = connect(settings.db_path)
+        init_db(conn)
+        plan = resume_book(settings, conn, args.book_id)
+        text = "、".join(f"{kind}#{chapter}" for kind, chapter in plan) or "（无，全部已完成）"
+        print(f"入队：{text}")
+        return 0
 
     if args.cmd == "import":
         from .importer import import_book

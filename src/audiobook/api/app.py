@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import jobs, store
 from ..importer import import_book
+from ..pipeline import resume_book
 
 
 def jobs_snapshot(conn, book_id: str | None = None) -> dict:
@@ -43,13 +44,8 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.post("/api/books/{book_id}/run")
     def run_book(book_id: str):
-        payload = store.read_json(store.chapters_path(settings, book_id), default={})
-        chapters = payload.get("chapters", []) if isinstance(payload, dict) else payload
-        if not chapters:
-            jobs.enqueue(conn, "chapter_split", book_id)
-        for chapter in chapters:
-            jobs.enqueue(conn, "synthesize", book_id, chapter["index"])
-        return {"ok": True, "queued": len(chapters)}
+        plan = resume_book(settings, conn, book_id)
+        return {"ok": True, "queued": len(plan), "plan": plan}
 
     @app.get("/api/jobs")
     def list_jobs(book_id: str | None = None):

@@ -49,10 +49,10 @@ def test_events_route_registered_and_snapshot_contains_jobs(settings):
     assert "chapter_split" in payload
 
 
-def test_run_endpoint_enqueues_synthesize_for_each_chapter(settings):
+def test_run_endpoint_enqueues_next_pipeline_step(settings):
     client, conn = make_client(settings)
     book_id = _upload(client, "第一章 重生十年前\n\n正文一。\n\n第二章 死党\n\n正文二。")
-    # 先用分章 handler 生成 chapters.json 与 lines
+    # 先用分章 handler 生成 chapters.json
     from audiobook.handlers import split  # noqa: F401
     from audiobook.importer import import_book  # noqa: F401
     from audiobook.worker import WorkerContext, run_once
@@ -62,4 +62,6 @@ def test_run_endpoint_enqueues_synthesize_for_each_chapter(settings):
 
     resp = client.post(f"/api/books/{book_id}/run")
     assert resp.status_code == 200
-    assert resp.json()["queued"] == 2
+    # 有分章、还没有角色档案 → 下一步是 characters
+    assert resp.json()["queued"] == 1
+    assert resp.json()["plan"] == [["characters", None]]
