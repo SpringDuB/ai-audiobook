@@ -113,6 +113,70 @@ def export_target_dir(settings, book_id: str, out_dir=None) -> Path:
     return Path(out_dir) if out_dir else output_dir(settings, book_id)
 
 
+def settings_overlay_path(settings) -> Path:
+    return settings.data_dir / "settings.json"
+
+
+def count_issues(settings, book_id: str) -> int:
+    return len(read_jsonl(issues_path(settings, book_id)))
+
+
+def chapter_state(settings, book_id: str, index: int) -> dict:
+    """章节在流水线上的位置：empty → analyzed → synthesized → rendered。"""
+    rows = read_jsonl(lines_path(settings, book_id, index))
+    scenes = (read_json(scenes_path(settings, book_id, index), default={}) or {}).get("scenes") or []
+    meta = read_json(chapter_render_meta_path(settings, book_id, index), default={}) or {}
+    clips_dir = audio_dir(settings, book_id, index)
+    segments = sum(1 for row in rows if (clips_dir / f"{row['id']}.wav").exists())
+    if meta and chapter_wav_path(settings, book_id, index).exists():
+        state = "rendered"
+    elif segments:
+        state = "synthesized"
+    elif rows:
+        state = "analyzed"
+    else:
+        state = "empty"
+    return {
+        "index": index,
+        "scenes": len(scenes),
+        "lines": len(rows),
+        "segments": segments,
+        "duration_sec": float(meta.get("duration") or 0.0),
+        "rendered_at": meta.get("generated_at"),
+        "state": state,
+    }
+
+
+def book_stats(settings, book_id: str) -> dict:
+    chapters = (read_json(chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+    total = len(chapters)
+    analyzed = generated = 0
+    duration = 0.0
+    for chapter in chapters:
+        detail = chapter_state(settings, book_id, int(chapter["index"]))
+        analyzed += 1 if detail["lines"] else 0
+        generated += 1 if detail["state"] == "rendered" else 0
+        duration += detail["duration_sec"]
+    if total == 0:
+        state = "empty"
+    elif generated == total:
+        state = "ready"
+    elif generated:
+        state = "synthesizing"
+    elif analyzed:
+        state = "analyzed"
+    else:
+        state = "analyzing"
+    return {
+        "chapters": total,
+        "analyzed": analyzed,
+        "generated": generated,
+        "duration_sec": round(duration, 2),
+        "issues": count_issues(settings, book_id),
+        "state": state,
+    }
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

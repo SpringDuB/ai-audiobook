@@ -7,6 +7,32 @@ def test_enqueue_is_idempotent_for_active_job(conn):
     assert first == second
 
 
+def test_failed_job_can_be_retried(conn):
+    job_id = jobs.enqueue(conn, "post", "b1", 1)
+    for _ in range(3):
+        job = jobs.claim(conn, "w1")
+        jobs.fail(conn, job.id, "w1", "boom", retry_delay_ms=0)
+    assert jobs.get_job(conn, job_id).status == "failed"
+
+    assert jobs.retry(conn, job_id) is True
+    fresh = jobs.get_job(conn, job_id)
+    assert (fresh.status, fresh.attempts, fresh.error) == ("queued", 0, None)
+    assert jobs.retry(conn, job_id) is False
+
+
+def test_job_carries_timestamps_and_error(conn):
+    job_id = jobs.enqueue(conn, "post", "b1", 1, now=1000)
+    job = jobs.get_job(conn, job_id)
+    assert (job.created_at, job.updated_at, job.error) == (1000, 1000, None)
+
+
+def test_enqueue_line_records_target_line(conn):
+    job_id = jobs.enqueue_line(conn, "b1", 2, "c0002-s01-l005")
+    job = jobs.get_job(conn, job_id)
+    assert (job.kind, job.chapter_index) == ("synthesize_line", 2)
+    assert job.progress == {"pending_line": "c0002-s01-l005"}
+
+
 def test_enqueue_allows_new_job_after_done(conn):
     first = jobs.enqueue(conn, "synthesize", "book1", 1)
     jobs.claim(conn, "w1")

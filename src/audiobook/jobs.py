@@ -18,6 +18,9 @@ class Job:
     attempts: int
     max_attempts: int
     progress: dict | None
+    error: str | None = None
+    created_at: int = 0
+    updated_at: int = 0
 
 
 def _row_to_job(row: sqlite3.Row) -> Job:
@@ -30,6 +33,9 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         attempts=row["attempts"],
         max_attempts=row["max_attempts"],
         progress=json.loads(row["progress"]) if row["progress"] else None,
+        error=row["error"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -168,6 +174,28 @@ def request_cancel(conn, job_id, now=None) -> None:
         conn.execute("UPDATE jobs SET status='canceled', updated_at=? WHERE id=?", (ts, job_id))
     else:
         conn.execute("UPDATE jobs SET cancel_requested=1, updated_at=? WHERE id=?", (ts, job_id))
+
+
+def retry(conn, job_id: int, now=None) -> bool:
+    """把失败/取消的任务重新排队（清零 attempts，清掉错误与退避）。"""
+    ts = now_ms(now)
+    cur = conn.execute(
+        "UPDATE jobs SET status='queued', attempts=0, error=NULL, not_before=NULL,"
+        " worker_id=NULL, lease_expires_at=NULL, cancel_requested=0, updated_at=?"
+        " WHERE id=? AND status IN ('failed','canceled')",
+        (ts, job_id),
+    )
+    return cur.rowcount == 1
+
+
+def enqueue_line(conn, book_id: str, chapter_index: int, line_id: str, now=None) -> int:
+    """单行重合成任务：具体行 id 记在 progress.pending_line 上。"""
+    job_id = enqueue(conn, "synthesize_line", book_id, chapter_index, now=now)
+    conn.execute(
+        "UPDATE jobs SET progress=? WHERE id=?",
+        (json.dumps({"pending_line": line_id}, ensure_ascii=False), job_id),
+    )
+    return job_id
 
 
 def is_canceled(conn, job_id) -> bool:
