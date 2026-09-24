@@ -57,7 +57,8 @@
 
 | 部分 | 选择 | 理由 |
 |---|---|---|
-| 后端 | Python 3.11 + FastAPI | 与 TTS 生态（IndexTTS/OmniVoice）同语言；异步 IO 适合调度 |
+| 后端 | Python 3.13 + FastAPI（uv 管理解释器与依赖） | 与 TTS 生态同语言；异步 IO 适合调度；uv 提供可复现的锁定环境 |
+| TTS 服务 | Python 3.10–3.11（IndexTTS-2.5 的硬性要求）+ FastAPI | 独立项目、独立虚拟环境，与后端版本解耦；升级后端不受其限制 |
 | 队列/状态 | SQLite（WAL） | 单机、任务量级为每日数百，原子领取 + 租约足够；**不引入 Redis/Celery** |
 | 内容存储 | 本机文件（JSON/JSONL + WAV） | 可直接查看、备份、diff、手工修正；符合"分析结果落文件"的要求 |
 | 前端 | React + Vite + CSS 变量（由 `serve` 托管） | 单页应用，手机浏览器同款 |
