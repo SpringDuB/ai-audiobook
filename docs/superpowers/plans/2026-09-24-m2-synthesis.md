@@ -3063,3 +3063,31 @@ git commit -m "feat: TTS 契约级端到端与部署清单" -m "Co-authored-by: 
 2. **不做的事**：停顿响度、mkv、整本合本（M3）、UI（M4）、音色迁移（M6）。
 3. **类型一致性**：`EngineCapabilities` / `SynthParams` / `AudioResult` 沿用 M0 定义，`HttpTtsEngine` 与 `TtsPool` 都满足 `EngineAdapter`；线上字段（`refId/emoVector/rate/pronunciation/format`）与冻结契约一致。
 4. **已知取舍**：`rate` 线上语义是语速倍率，服务端做 `1/rate` 换算（避免后端绑死引擎语义）；长句分块放在客户端（可单独重试与记账）；辅助模型缺失只告警（否则离线机器首次推理永远卡住）。
+
+---
+
+## M2 验收记录（2026-09-24 实跑）
+
+环境：本机 Windows + PowerShell，后端 Python 3.13，TTS 服务用 `--backend fake`（真实 GPU 推理留给部署机器）。
+
+| 项 | 结果 |
+|---|---|
+| B1 后端测试 | `uv run pytest` → **164 passed** |
+| B2 服务端测试 | `uv run --project tts pytest tts/tests` → **27 passed** |
+| B3 契约级端到端 | `tests/test_tts_contract_e2e.py`：子进程起真实 TTS 服务 → 后端走 HTTP 跑完整章 → 通过 |
+| B4 真实 IndexTTS-2.5 | ⛔ 待 GPU 机器按 `docs/tts-deploy.md` 的 G1–G8 清单执行 |
+| B5 全书实跑（HTTP + fake 后端） | 9 章 / 822 片段全部 `done`、0 失败；`audio/**/*.meta.json` 的 `engine=fake-tts`、`engine_version=fake-1`；章节 wav 合计 33.3 分钟；`issues.jsonl` 为空 |
+| B6 改一句只重算一句 | 改第 1 章第 2 句后重跑：44 个片段里只有 `c0000-s01-l002.wav` 的 mtime 变化；重拼后 SRT 44 条、末条 `01:58,300 → 01:59,680`、wav 120.13s（时间轴与音频一致） |
+| B7 冷启动 | 服务未加载时 `/health` 报 `status=unloaded` + 容量；首次合成自动 warmup，无需人工预热 |
+
+实跑修掉的 3 个真实缺陷（都已补测试）：
+
+1. **健康契约**：服务冷启动时 `recommendedConcurrency=0` 会让后端池把端点判为故障，从而永远触发不了首次加载 —— 改成容量恒报、`status` 如实汇报；池把 `ok|loading|unloaded` 都视为可用。
+2. **错误分类**：本地缺参考音频（`TtsVoiceMissing`）原本被池当成"端点不可用"，第一次失败就把整个服务拖下线并刷出 2465 条 `tts_line_failed` —— 现在本地/请求类错误直接上抛，端点保持健康。
+3. **空值参数**：后端把 `pronunciation=None` 发给服务端，被 pydantic 拒绝成 `bad_request` —— 客户端改为缺省不下发该字段，服务端也容忍 `null`。
+
+遗留：
+
+1. 音色库仍未迁移（M6），实跑用 `data/voices/default/ref.wav` 占位（取自旧系统的一个真实参考音频；`data/` 不入库）。
+2. `rate → duration_factor`、注音内联写法、显存并发估算都只有单元测试与假模块验证，真实音质与显存表现必须在 GPU 机器上按 G1–G8 记录。
+3. 第一次失败尝试的异常记录保留在 `data/books/<bookId>/issues.first-attempt.jsonl`，可对照复查。
