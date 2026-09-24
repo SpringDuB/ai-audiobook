@@ -55,7 +55,28 @@ uv run --project tts aiab-tts download --source local
   否则第一次推理会卡在下载上。
 - 已存在且校验通过的文件不会重复下载（断点续传 + 幂等）。
 
-## 3. 起服务
+## 3. 起服务（一键启动）
+
+日常使用不用敲命令：浏览器界面 **设置 → TTS 服务** 里选好后端与模型来源，点「一键启动 TTS 服务」。
+它会做三件事：
+
+1. 在本机拉起独立进程 `uv run --project tts aiab-tts serve --backend … --port …`（日志写到 `data/logs/tts-service.log`，
+   界面上可展开实时看）；
+2. 把合成引擎自动切到 `http` 并指向刚起来的地址（写进 `data/settings.json` 的 `engine` / `tts_endpoints`）；
+3. 运行中的 worker **下一轮任务前会重读设置**，所以不用重启 worker 就能用上新服务。
+
+停止用同一页的「停止」（Windows 下按进程树 `taskkill`，不会留孤儿进程）。
+
+命令行等价物：
+
+```powershell
+uv run aiab tts start --backend indextts --model-source local --wait 120   # --wait 健康检查最长等的秒数
+uv run aiab tts status
+uv run aiab tts logs --lines 40
+uv run aiab tts stop
+```
+
+想手工起、手工接（多实例 / 跨机器）时再走下面两条命令：
 
 ```powershell
 uv run --project tts aiab-tts serve --backend indextts --host 0.0.0.0 --port 8020

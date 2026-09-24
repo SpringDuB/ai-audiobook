@@ -17,7 +17,9 @@
 | `book_章节.txt` | 章节时间点清单（人可读） |
 | `merge-report.txt` | 导出报告（章节明细 + 输出文件清单） |
 
-依赖：本机安装 `ffmpeg` 与 `ffprobe`（在 PATH 上，或用 `AB_FFMPEG_PATH` 指定 ffmpeg 的完整路径，ffprobe 需在同目录）。
+依赖：**不需要你装 ffmpeg** —— `uv sync` 时项目就带上了静态构建（`imageio-ffmpeg` 依赖），
+解析顺序是 `AB_FFMPEG_PATH`（可选覆盖）→ 项目自带 → PATH。`ffprobe` 是可选的：
+没有它时导出校验改用 `ffmpeg -i` 的输出解析，结果一样。
 
 ## 2. 常用命令
 
@@ -76,6 +78,6 @@ LUFS 走 ffmpeg `loudnorm` **两遍**（先测后归，`linear=true`），时长
 
 ## 7. 排错
 
-- `导出失败：找不到 ffmpeg` → 装 ffmpeg 并加入 PATH，或设 `AB_FFMPEG_PATH`（同目录要有 ffprobe）。
+- `找不到 ffmpeg：项目自带的依赖缺失` → 先 `uv sync`；想指定自己的构建再设 `AB_FFMPEG_PATH`。
 - 字幕与音频不同步 → 看 `chapter_XXXX.render.json` 的 `warnings` 与 `issues.jsonl` 里的 `render_duration_mismatch`；同时确认 `audio_missing`（缺片段）的情况。
 - `第 N 章缺少 wav/srt，已跳过` → 该章还没跑完 `post`；先 `uv run aiab run <bookId>` + `uv run aiab worker`。
