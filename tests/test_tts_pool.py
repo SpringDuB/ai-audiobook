@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from audiobook.engines.base import AudioResult, EngineCapabilities, SynthParams
-from audiobook.engines.errors import TtsBusy, TtsOom, TtsUnavailable
+from audiobook.engines.errors import TtsBusy, TtsOom, TtsUnavailable, TtsVoiceMissing
 from audiobook.engines.pool import TtsPool
 
 
@@ -100,6 +100,19 @@ def test_busy_downgrades_by_one(settings):
     assert pool.states[0].limit == 3
 
 
+def test_local_voice_missing_does_not_take_endpoint_down(settings):
+    """缺参考音频是本地问题，端点必须保持健康（否则第一次失败就把服务拖下线）。"""
+    pool, endpoints = _pool(settings, [FakeEndpoint(2, error=TtsVoiceMissing("缺少参考音频"))])
+    pool.refresh()
+    for index in range(3):
+        with pytest.raises(TtsVoiceMissing):
+            pool.synthesize("第一句。", "v", SynthParams(), _out(settings, f"{index}.wav"))
+    assert pool.states[0].ok is True
+    assert pool.states[0].limit == 2
+    assert pool.concurrency_hint() == 2
+    assert endpoints[0].calls == 3
+
+
 def test_successes_restore_limit_gradually(settings):
     pool, _ = _pool(settings, [FakeEndpoint(4)])
     pool.refresh()
@@ -110,10 +123,19 @@ def test_successes_restore_limit_gradually(settings):
 
 
 def test_all_endpoints_down_raises_unavailable(settings):
-    pool, _ = _pool(settings, [FakeEndpoint(0, status="unloaded")])
+    pool, _ = _pool(settings, [FakeEndpoint(0, status="error")])
     pool.refresh()
     with pytest.raises(TtsUnavailable):
         pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+
+
+def test_unloaded_endpoint_is_still_usable(settings):
+    """冷启动的服务必须算可用，否则永远触发不了首次 warmup。"""
+    pool, endpoints = _pool(settings, [FakeEndpoint(2, status="unloaded")])
+    pool.refresh()
+    assert pool.status()["endpoints"][0]["ok"] is True
+    pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+    assert endpoints[0].calls == 1
 
 
 def test_full_endpoint_is_skipped(settings):

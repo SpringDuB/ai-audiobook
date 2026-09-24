@@ -56,7 +56,9 @@ M2 结束时：`uv run aiab worker` 能把一本书的每一行投给 TTS 服务
 }
 ```
 
-`status ∈ ok | loading | unloaded | error`；未就绪时 `recommendedConcurrency` 可为 0。
+`status ∈ ok | loading | unloaded | error`。`recommendedConcurrency` 是"这台机器能跑多少"的容量，
+**冷启动（unloaded）时也必须如实上报**；报 0 会让后端池把它当成故障端点，从而永远触发不了首次加载
+（这是实施时发现并修正的契约细节）。后端池把 `ok | loading | unloaded` 都视为可用，只有 `error` 视为不可用。
 
 ### `GET /capabilities`
 
@@ -1564,8 +1566,8 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.7", "pydantic-settings>=2.3", "python-multipart>=0.0.9", "httpx>=0.27"]
 
-[project.optional-dependencies]
-indextts = ["index-tts"]        # 真实后端：GPU 机器上按 docs/tts-deploy.md 安装
+# 真实后端不写进依赖：index-tts 不在 PyPI 上，GPU 机器按 docs/tts-deploy.md
+# 从官方仓库安装（uv pip install -e <index-tts checkout>），避免 uv 解析阶段就失败。
 
 [project.scripts]
 aiab-tts = "aiab_tts.cli:main"

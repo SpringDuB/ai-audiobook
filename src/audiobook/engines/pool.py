@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from .errors import TtsBusy, TtsOom, TtsUnavailable
+from .errors import TtsBadRef, TtsBadRequest, TtsBusy, TtsOom, TtsUnavailable, TtsVoiceMissing
 from .http_tts import HttpTtsEngine
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,8 @@ class TtsPool:
                 state.last_health_at = now
                 continue
             state.last_health_at = now
-            state.ok = str(health.get("status") or "").lower() in ("ok", "loading")
+            # unloaded 也算可用：首次合成会触发服务端 warmup
+            state.ok = str(health.get("status") or "").lower() in ("ok", "loading", "unloaded")
             state.capacity = int(health.get("recommendedConcurrency") or 0)
             state.extra = dict(health)
             state.last_error = None
@@ -119,6 +120,9 @@ class TtsPool:
             raise
         except TtsBusy as exc:
             self._downgrade(state, factor=None, cooldown=BUSY_COOLDOWN_SECONDS, reason=str(exc))
+            raise
+        except (TtsVoiceMissing, TtsBadRef, TtsBadRequest):
+            # 本地缺参考音频 / 请求本身不合法：端点没问题，不能把它拖下线
             raise
         except Exception as exc:  # 连接失败/协议错：该端点标记不可用并冷却
             state.ok = False

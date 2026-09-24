@@ -108,7 +108,9 @@ class ServiceState:
         return {
             "status": self._status if self.backend.is_loaded() else "unloaded",
             "modelLoaded": self.backend.is_loaded(),
-            "recommendedConcurrency": self.capacity if self.backend.is_loaded() else 0,
+            # 容量是"这台机器/这份配置能跑多少"，与是否已加载无关；
+            # 报 0 会让客户端把冷启动中的服务当成故障，永远触发不了首次加载。
+            "recommendedConcurrency": self.capacity,
             "inflight": self.inflight,
             "avgInferenceSecPerAudioSec": round(average, 3),
             "engine": self.backend.name,

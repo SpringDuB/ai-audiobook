@@ -105,11 +105,13 @@ class HttpTtsEngine:
             "text": text,
             "refId": self._ref_id(voice_id),
             "lang": params.lang or "ZH",
-            "emoVector": list(params.emo_vector) if params.emo_vector else None,
             "rate": params.rate,
-            "pronunciation": params.pronunciation or None,
             "format": "wav",
         }
+        if params.emo_vector:
+            payload["emoVector"] = list(params.emo_vector)
+        if params.pronunciation:
+            payload["pronunciation"] = params.pronunciation
         try:
             response = self._post_synthesize(payload)
         except TtsBadRef:

@@ -42,3 +42,8 @@ class SynthPayload(BaseModel):
         if value != "wav":
             raise ValueError("目前只支持 wav")
         return value
+
+    @field_validator("pronunciation", mode="before")
+    @classmethod
+    def _pronunciation_none(cls, value):
+        return {} if value is None else value

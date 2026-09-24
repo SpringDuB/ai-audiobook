@@ -17,7 +17,8 @@ def _serve(args) -> int:
     if args.host:
         settings = settings.model_copy(update={"host": args.host})
     print(f"启动 TTS 服务：backend={settings.backend} host={settings.host} port={settings.port}")
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+    # 逐行合成会产生成百上千次请求，默认关掉访问日志，需要排错时加 --access-log
+    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, access_log=args.access_log)
     return 0
 
 
@@ -78,6 +79,7 @@ def main(argv=None) -> int:
     serve.add_argument("--backend", default=None, choices=["fake", "indextts"])
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", type=int, default=None)
+    serve.add_argument("--access-log", action="store_true", help="打开逐请求访问日志（默认关闭）")
 
     check = sub.add_parser("check", help="检查运行中的 TTS 服务")
     check.add_argument("--url", default="http://127.0.0.1:8020")

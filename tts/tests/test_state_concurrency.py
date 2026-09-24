@@ -81,7 +81,7 @@ def test_unload_then_synthesize_reloads_automatically(tmp_path):
     ref_id = _ref(state)
     state.unload()
     assert state.health()["status"] == "unloaded"
-    assert state.health()["recommendedConcurrency"] == 0
+    assert state.health()["recommendedConcurrency"] == state.capacity
 
     result = state.synthesize({"text": "第一句。", "refId": ref_id})
     assert result.duration_sec > 0
