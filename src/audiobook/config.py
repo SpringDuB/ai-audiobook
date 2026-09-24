@@ -9,6 +9,11 @@ OVERLAY_KEYS = (
     "tts_endpoints",
     "synth_concurrency",
     "synth_concurrency_max",
+    "tts_backend",
+    "tts_model_source",
+    "tts_model_dir",
+    "tts_hf_endpoint",
+    "tts_port",
     "llm_base_url",
     "llm_model",
     "llm_temperature",
@@ -57,6 +62,13 @@ class Settings(BaseSettings):
     tts_endpoints: list[str] = []
     worker_poll_seconds: float = 1.0
     lease_seconds: int = 30
+
+    # 一键启动的本机 TTS 服务（tts/ 子项目）的启动参数
+    tts_backend: str = "fake"  # fake | indextts
+    tts_model_source: str = "local"  # modelscope | huggingface | local
+    tts_model_dir: str = "checkpoints"
+    tts_hf_endpoint: str = ""
+    tts_port: int = 8020
 
     # ffmpeg（M3 产物导出）
     ffmpeg_path: str = ""

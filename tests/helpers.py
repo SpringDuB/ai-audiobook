@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-requires_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要本机安装 ffmpeg")
+from audiobook.render.ffmpeg import bundled_ffmpeg
+
+requires_ffmpeg = pytest.mark.skipif(
+    bundled_ffmpeg() is None and shutil.which("ffmpeg") is None,
+    reason="需要 ffmpeg（项目自带构建缺失且 PATH 里也没有）",
+)
 
 
 def wav_bytes(seconds: float = 0.1, rate: int = 22050) -> bytes:

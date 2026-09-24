@@ -118,3 +118,32 @@ def test_resume_book_enqueues_the_planned_jobs(settings, conn):
     assert plan == [("characters", None)]
     row = conn.execute("SELECT kind, status FROM jobs WHERE book_id='b1'").fetchone()
     assert (row["kind"], row["status"]) == ("characters", "queued")
+
+
+def test_phase_analysis_only_queues_the_analysis_chain(settings, conn):
+    """「分析角色文本」按钮：只推分章→角色→场景→逐句→选角。"""
+    assert resume_book(settings, conn, "b1", phase="analysis") == [("chapter_split", None)]
+    _chapters(settings, "b1")
+    assert resume_book(settings, conn, "b1", phase="analysis") == [("characters", None)]
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    plan = resume_book(settings, conn, "b1", phase="analysis")
+    assert plan == [("scenes", 1), ("scenes", 2)]
+    for index in (1, 2):
+        _scenes(settings, "b1", index)
+        _lines(settings, "b1", index)
+    assert resume_book(settings, conn, "b1", phase="analysis") == [("casting", None)]
+    store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
+    # 分析链跑完了：合成链的任务不该被这个按钮带出来
+    assert resume_book(settings, conn, "b1", phase="analysis") == []
+
+
+def test_phase_audio_only_queues_the_synthesis_chain(settings, conn):
+    """「生成有声书」按钮：分析没好时什么都不推，分析好了只推合成/渲染/合本。"""
+    _chapters(settings, "b1")
+    assert resume_book(settings, conn, "b1", phase="audio") == []
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
+    for index in (1, 2):
+        _scenes(settings, "b1", index)
+        _lines(settings, "b1", index)
+    assert resume_book(settings, conn, "b1", phase="audio") == [("synthesize", 1), ("synthesize", 2)]

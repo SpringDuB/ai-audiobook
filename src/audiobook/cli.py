@@ -42,6 +42,19 @@ def main(argv=None) -> int:
 
     sub.add_parser("llm-check", help="验证 LLM 端点连通性并做一次 JSON 往返")
 
+    p_tts = sub.add_parser("tts", help="一键启动/停止本机 TTS 推理服务（tts/ 子项目）")
+    tts_sub = p_tts.add_subparsers(dest="tts_cmd", required=True)
+    p_tts_start = tts_sub.add_parser("start")
+    p_tts_start.add_argument("--backend", choices=["fake", "indextts"], default=None)
+    p_tts_start.add_argument("--port", type=int, default=None)
+    p_tts_start.add_argument("--model-source", choices=["modelscope", "huggingface", "local"], default=None)
+    p_tts_start.add_argument("--model-dir", default=None)
+    p_tts_start.add_argument("--wait", type=float, default=0.0, help="等健康检查通过的秒数（0=不等）")
+    tts_sub.add_parser("stop")
+    tts_sub.add_parser("status")
+    p_tts_logs = tts_sub.add_parser("logs")
+    p_tts_logs.add_argument("--lines", type=int, default=40)
+
     p_migrate = sub.add_parser("migrate", help="从旧系统迁移音色库或书籍")
     migrate_sub = p_migrate.add_subparsers(dest="what", required=True)
     p_migrate_voices = migrate_sub.add_parser("voices", help="迁移内置音色库到 data/voices")
@@ -95,6 +108,50 @@ def main(argv=None) -> int:
             print(f"LLM 不可用：{exc}")
             return 2
         print(f"LLM 可用：{settings.llm_base_url} / {settings.llm_model} → {result.model_dump()}")
+        return 0
+
+    if args.cmd == "tts":
+        import time as _time
+
+        from .config import save_overlay
+        from .tts_service import LocalTtsService
+
+        service = LocalTtsService(settings)
+        if args.tts_cmd == "status":
+            info = service.status()
+            state = "运行中" if info["running"] else "未运行"
+            health = "健康" if info["healthy"] else ("启动中" if info["starting"] else "无响应")
+            print(f"TTS {state}：{info['url']}（backend={info['backend']} pid={info['pid']} {health}）")
+            print(f"日志：{info['log_path']}")
+            return 0
+        if args.tts_cmd == "logs":
+            payload = service.logs(limit=args.lines)
+            for line in payload["lines"]:
+                print(line)
+            return 0
+        if args.tts_cmd == "stop":
+            info = service.stop()
+            print(f"已停止 TTS：{info['url']}")
+            return 0
+        try:
+            info = service.start(
+                backend=args.backend,
+                port=args.port,
+                model_source=args.model_source,
+                model_dir=args.model_dir,
+            )
+        except (RuntimeError, OSError) as exc:
+            print(f"启动失败：{exc}")
+            return 1
+        deadline = _time.time() + max(0.0, args.wait)
+        while args.wait and not service.status()["healthy"] and _time.time() < deadline:
+            _time.sleep(2.0)
+        info = service.status()
+        print(f"TTS 已启动：{info['url']}（backend={info['backend']} pid={info['pid']}）")
+        print(f"健康检查：{'通过' if info['healthy'] else '还没通过（模型加载中或启动失败，看日志）'}")
+        overlay = save_overlay(settings, {"engine": "http", "tts_endpoints": [info["url"]]})
+        print(f"已把合成引擎切到 http → {info['url']}（{', '.join(sorted(overlay))}）")
+        print(f"日志：{info['log_path']}")
         return 0
 
     if args.cmd == "run":
@@ -302,6 +359,14 @@ def main(argv=None) -> int:
             worker_id=args.worker_id or f"w-{os.getpid()}-{uuid.uuid4().hex[:6]}",
             engine=build_engine(settings),
             llm=llm,
+            # 每轮任务前重读 data/settings.json：改并发 / 端点 / 引擎不用重启 worker
+            reload_settings=lambda: get_settings(),
+            engine_factory=build_engine,
+            llm_factory=lambda fresh: LlmJsonRunner(
+                build_client(fresh),
+                AdaptiveLimiter(max_concurrency=fresh.llm_concurrency),
+                fresh,
+            ),
         )
         if args.once:
             run_once(ctx)

@@ -36,8 +36,9 @@ def test_static_assets_are_offline_only(settings):
 
 def test_view_modules_are_served(settings):
     client = _client(settings)
-    for name in ("shelf", "book", "chapter", "jobs", "issues", "voices", "settings"):
+    for name in ("shelf", "workspace", "jobs", "issues", "voices", "settings"):
         assert client.get(f"/static/js/views/{name}.js").status_code == 200, name
+    assert client.get("/static/js/voicepicker.js").status_code == 200
 
 
 def test_unknown_static_path_is_404(settings):

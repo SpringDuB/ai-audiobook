@@ -12,6 +12,7 @@ from ..config import OVERLAY_KEYS, get_settings, load_overlay, save_overlay
 from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
 from ..pipeline import resume_book
+from ..tts_service import LocalTtsService
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -32,22 +33,39 @@ def _chapter_meta(settings, book_id: str, index: int) -> dict | None:
     return None
 
 
-def _chapters_with_role(settings, book_id: str, role_id: str) -> list[int]:
-    chapters = []
+def _role_occurrences(settings, book_id: str) -> dict[str, dict]:
+    """扫一遍逐句标注，统计每个角色出现在哪些章节、共多少句。"""
+    result: dict[str, dict] = {}
     for path in sorted(store.book_dir(settings, book_id).glob("analysis/lines/chapter_*.jsonl")):
+        index = int(path.stem.rsplit("_", 1)[-1])
         rows = store.read_jsonl(path)
-        if any(row.get("speaker") == role_id or row.get("addressee") == role_id for row in rows):
-            chapters.append(int(path.stem.rsplit("_", 1)[-1]))
-    return chapters
+        for row in rows:
+            for key in ("speaker", "addressee"):
+                role_id = row.get(key)
+                if not role_id:
+                    continue
+                bucket = result.setdefault(role_id, {"chapters": set(), "lines": 0})
+                bucket["chapters"].add(index)
+                if key == "speaker":
+                    bucket["lines"] += 1
+    return {role_id: {"chapters": sorted(bucket["chapters"]), "lines": bucket["lines"]} for role_id, bucket in result.items()}
+
+
+def _chapters_with_role(settings, book_id: str, role_id: str) -> list[int]:
+    return _role_occurrences(settings, book_id).get(role_id, {}).get("chapters", [])
 
 
 def _lines_payload(settings, book_id: str, index: int, scene: str | None = None) -> list[dict]:
     rows = store.read_jsonl(store.lines_path(settings, book_id, index))
     clips_dir = store.audio_dir(settings, book_id, index)
     payload = []
-    for row in rows:
+    scene_order: dict[str, int] = {}
+    for position, row in enumerate(rows):
         if scene and row.get("scene") != scene:
             continue
+        # 老数据没有 seq / scene_index：按行序兜底，别让校对台显示 null
+        scene_id = row.get("scene") or ""
+        scene_order.setdefault(scene_id, len(scene_order) + 1)
         clip = clips_dir / f"{row['id']}.wav"
         duration = 0.0
         if clip.exists():
@@ -60,7 +78,7 @@ def _lines_payload(settings, book_id: str, index: int, scene: str | None = None)
                 **{
                     key: row.get(key)
                     for key in (
-                        "id", "seq", "scene", "scene_index", "speaker", "speaker_name",
+                        "id", "scene", "speaker", "speaker_name",
                         "addressee", "addressee_name", "text", "emotion", "delivery",
                         "pause_after_ms", "rate", "lang",
                     )
@@ -68,6 +86,8 @@ def _lines_payload(settings, book_id: str, index: int, scene: str | None = None)
                 "duration_sec": duration,
                 "has_audio": clip.exists(),
                 "audio_url": f"/api/books/{book_id}/lines/{row['id']}/audio",
+                "seq": row.get("seq") or position + 1,
+                "scene_index": row.get("scene_index") or scene_order[scene_id],
             }
         )
     return payload
@@ -83,6 +103,7 @@ def jobs_snapshot(conn, book_id: str | None = None) -> dict:
 
 def create_app(settings, conn) -> FastAPI:
     app = FastAPI(title="AI 有声书")
+    tts_service = LocalTtsService(settings)
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
@@ -166,6 +187,18 @@ def create_app(settings, conn) -> FastAPI:
             raise HTTPException(status_code=404, detail="chapter not found")
         return {"lines": _lines_payload(settings, book_id, index, scene)}
 
+    @app.get("/api/books/{book_id}/chapters/{index}/text")
+    def chapter_text(book_id: str, index: int):
+        chapter = _chapter_meta(settings, book_id, index)
+        if chapter is None:
+            raise HTTPException(status_code=404, detail="chapter not found")
+        return {
+            "index": index,
+            "title": chapter.get("title") or f"第{index}章",
+            "chars": chapter.get("chars") or len(chapter.get("content") or ""),
+            "content": chapter.get("content") or "",
+        }
+
     @app.get("/api/books/{book_id}/lines/{line_id}/audio")
     def line_audio(book_id: str, line_id: str):
         for chapter_dir in sorted(store.book_dir(settings, book_id).glob("audio/chapter_*")):
@@ -185,13 +218,27 @@ def create_app(settings, conn) -> FastAPI:
         for path in sorted(settings.voices_dir.glob("*/voice.json")):
             meta = store.read_json(path, default={}) or {}
             voice_id = meta.get("id") or path.parent.name
+            # 迁移过来的音色把标签拆成了好几栏，这里合并一份方便前端分类
+            tags = []
+            for key in ("tags", "personality", "genres", "mood", "voice_quality", "language_style"):
+                for value in meta.get(key) or []:
+                    if value and value not in tags:
+                        tags.append(value)
             voices.append(
                 {
                     "id": voice_id,
                     "name": meta.get("name") or voice_id,
                     "gender": meta.get("gender"),
                     "age_group": meta.get("age_group"),
-                    "tags": meta.get("tags") or [],
+                    "speech_rate": meta.get("speech_rate"),
+                    "personality": meta.get("personality") or [],
+                    "genres": meta.get("genres") or [],
+                    "mood": meta.get("mood") or [],
+                    "voice_quality": meta.get("voice_quality") or [],
+                    "usage_type": meta.get("usage_type") or [],
+                    "description": meta.get("description") or "",
+                    "tags": tags,
+                    "needs_review": bool(meta.get("needs_review")),
                     "has_ref": (path.parent / "ref.wav").exists(),
                     "sample_url": f"/api/voices/{voice_id}/sample",
                 }
@@ -211,15 +258,28 @@ def create_app(settings, conn) -> FastAPI:
     def book_casting(book_id: str):
         casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
         names = _character_names(settings, book_id)
+        occurrences = _role_occurrences(settings, book_id)
         roles = [
-            {**role, "name": role.get("name") or names.get(role_id, role_id)}
+            {
+                **role,
+                "name": role.get("name") or names.get(role_id, role_id),
+                "chapters": occurrences.get(role_id, {}).get("chapters", []),
+                "lines": occurrences.get(role_id, {}).get("lines", 0),
+            }
             for role_id, role in (casting.get("roles") or {}).items()
         ]
+        roles.sort(key=lambda role: (-role["lines"], role["role_id"]))
         voices = []
         for path in sorted(settings.voices_dir.glob("*/voice.json")):
             meta = store.read_json(path, default={}) or {}
             voices.append({"id": path.parent.name, "name": meta.get("name") or path.parent.name})
-        return {"narrator_voice": casting.get("narrator_voice") or "default", "roles": roles, "voices": voices}
+        role_ids = [role["role_id"] for role in roles]
+        return {
+            "narrator_voice": casting.get("narrator_voice") or "default",
+            "roles": roles,
+            "role_ids": role_ids,
+            "voices": voices,
+        }
 
     @app.get("/api/settings")
     def read_settings():
@@ -295,10 +355,27 @@ def create_app(settings, conn) -> FastAPI:
         casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
         roles = casting.setdefault("roles", {})
         if role_id not in roles:
-            raise HTTPException(status_code=404, detail="role not found")
+            known = _character_names(settings, book_id)
+            if role_id not in known:
+                raise HTTPException(status_code=404, detail="role not found")
+            # 角色分析里有、选角落下的角色：允许在这里手工补一条
+            roles[role_id] = {
+                "role_id": role_id,
+                "name": known[role_id],
+                "voice_id": "default",
+                "voice_name": "",
+                "score": None,
+                "reasons": [],
+                "overrides": {},
+            }
+            casting["roles"] = roles
+            store.atomic_replace_json(store.casting_path(settings, book_id), casting)
         roles[role_id]["voice_id"] = str(payload.get("voice_id") or roles[role_id].get("voice_id") or "default")
         roles[role_id]["overrides"] = payload.get("overrides") or roles[role_id].get("overrides") or {}
         roles[role_id]["source"] = "manual"
+        voice_name = payload.get("voice_name")
+        if voice_name:
+            roles[role_id]["voice_name"] = str(voice_name)
         store.atomic_replace_json(store.casting_path(settings, book_id), casting)
         chapters = _chapters_with_role(settings, book_id, role_id)
         for index in chapters:
@@ -333,6 +410,18 @@ def create_app(settings, conn) -> FastAPI:
         plan = resume_book(settings, conn, book_id)
         return {"ok": True, "queued": len(plan), "plan": plan}
 
+    @app.post("/api/books/{book_id}/analyze")
+    def analyze_book(book_id: str):
+        """只推分析链：分章 → 角色 → 场景 → 逐句 → 选角。"""
+        plan = resume_book(settings, conn, book_id, phase="analysis")
+        return {"ok": True, "queued": len(plan), "plan": plan}
+
+    @app.post("/api/books/{book_id}/generate")
+    def generate_book(book_id: str):
+        """只推合成链：逐句合成 → 章节渲染 → 整本合本。"""
+        plan = resume_book(settings, conn, book_id, phase="audio")
+        return {"ok": True, "queued": len(plan), "plan": plan}
+
     @app.get("/api/jobs")
     def list_jobs(book_id: str | None = None):
         return {"jobs": [j.__dict__ for j in jobs.list_jobs(conn, book_id)]}
@@ -358,6 +447,69 @@ def create_app(settings, conn) -> FastAPI:
             close = getattr(engine, "close", None)
             if callable(close):
                 close()
+
+    @app.get("/api/tts/local")
+    def tts_local_status():
+        fresh = _fresh_settings()
+        return {
+            "service": tts_service.status(),
+            "engine": fresh.engine,
+            "endpoints": list(fresh.tts_endpoints),
+            "launch": {
+                "backend": fresh.tts_backend,
+                "model_source": fresh.tts_model_source,
+                "model_dir": fresh.tts_model_dir,
+                "hf_endpoint": fresh.tts_hf_endpoint,
+                "port": fresh.tts_port,
+            },
+        }
+
+    @app.post("/api/tts/local/start")
+    def tts_local_start(payload: dict | None = None):
+        payload = payload or {}
+        fresh = _fresh_settings()
+        backend = str(payload.get("backend") or fresh.tts_backend)
+        port = int(payload.get("port") or fresh.tts_port)
+        model_source = str(payload.get("model_source") or fresh.tts_model_source)
+        model_dir = str(payload.get("model_dir") or fresh.tts_model_dir)
+        hf_endpoint = str(payload.get("hf_endpoint") if payload.get("hf_endpoint") is not None else fresh.tts_hf_endpoint)
+        try:
+            service = tts_service.start(
+                backend=backend,
+                port=port,
+                model_source=model_source,
+                model_dir=model_dir,
+                hf_endpoint=hf_endpoint,
+            )
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 一键启动的副作用：主服务自动把合成引擎切到刚起来的本机服务（worker 每轮会重读设置）
+        overlay = save_overlay(
+            settings,
+            {
+                "tts_backend": backend,
+                "tts_port": service["port"],
+                "tts_model_source": model_source,
+                "tts_model_dir": model_dir,
+                "tts_hf_endpoint": hf_endpoint,
+                "engine": "http",
+                "tts_endpoints": [service["url"]],
+            },
+        )
+        return {
+            "service": service,
+            "engine": "http",
+            "endpoints": [service["url"]],
+            "overlay_keys": sorted(overlay),
+        }
+
+    @app.post("/api/tts/local/stop")
+    def tts_local_stop():
+        return {"service": tts_service.stop()}
+
+    @app.get("/api/tts/local/logs")
+    def tts_local_logs(offset: int = 0, limit: int = 300):
+        return tts_service.logs(offset=offset, limit=limit)
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: int):
