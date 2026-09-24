@@ -1,0 +1,84 @@
+import time
+from pathlib import Path
+
+from . import store
+from .analysis.models import DELIVERIES, EMOTIONS, clamp01
+
+EDITABLE_FIELDS = ("text", "speaker", "addressee", "emotion", "intensity", "delivery", "pause_after_ms")
+MAX_PAUSE_MS = 5000
+
+
+def _role_name(names: dict[str, str], role_id: str) -> str:
+    return next((name for name, rid in names.items() if rid == role_id), role_id)
+
+
+def _resolve_role(target: str, names: dict[str, str]) -> str | None:
+    return target if target in set(names.values()) else names.get(target)
+
+
+def apply_line_patch(row: dict, patch: dict, names: dict[str, str]) -> dict:
+    """人工修改一行标注：字段白名单 + 取值校验 + 上限保护。"""
+    unknown = sorted(set(patch) - set(EDITABLE_FIELDS))
+    if unknown:
+        raise ValueError(f"不可修改的字段：{', '.join(unknown)}")
+    updated = dict(row)
+    if "text" in patch:
+        text = str(patch["text"]).strip()
+        if not text:
+            raise ValueError("台词不能为空")
+        updated["text"] = text
+    if "speaker" in patch:
+        speaker = str(patch["speaker"])
+        role_id = _resolve_role(speaker, names)
+        if not role_id:
+            raise ValueError(f"未知说话人：{speaker}")
+        updated["speaker"] = role_id
+        updated["speaker_name"] = _role_name(names, role_id)
+    if "addressee" in patch:
+        target = str(patch["addressee"] or "")
+        if not target:
+            updated["addressee"] = None
+            updated["addressee_name"] = None
+        else:
+            role_id = _resolve_role(target, names)
+            if not role_id:
+                raise ValueError(f"未知受话人：{target}")
+            updated["addressee"] = role_id
+            updated["addressee_name"] = _role_name(names, role_id)
+    if "emotion" in patch or "intensity" in patch:
+        dominant = str(patch.get("emotion") or (updated.get("emotion") or {}).get("dominant") or "平静")
+        if dominant not in EMOTIONS:
+            raise ValueError(f"未知情绪：{dominant}")
+        raw = patch.get("intensity", (updated.get("emotion") or {}).get("intensity", 0.5))
+        updated["emotion"] = {
+            "dominant": dominant,
+            "intensity": round(clamp01(float(raw)), 3),
+            "source": "manual",
+        }
+    if "delivery" in patch:
+        delivery = str(patch["delivery"])
+        if delivery not in DELIVERIES:
+            raise ValueError(f"未知语气：{delivery}")
+        updated["delivery"] = delivery
+    if "pause_after_ms" in patch:
+        pause = int(patch["pause_after_ms"])
+        if pause < 0:
+            raise ValueError("停顿不能为负")
+        updated["pause_after_ms"] = pause
+        updated["pause_override_ms"] = min(pause, MAX_PAUSE_MS)
+    updated["edited_at"] = int(time.time() * 1000)
+    return updated
+
+
+def invalidate_chapter(settings, book_id: str, index: int) -> bool:
+    """人工改动后让该章成品失效：删 render.json 与容器，post 会按新输入重渲染。"""
+    removed = False
+    for path in (
+        store.chapter_render_meta_path(settings, book_id, index),
+        store.chapter_media_path(settings, book_id, index, "mkv"),
+        store.chapter_media_path(settings, book_id, index, "mp4"),
+    ):
+        if Path(path).exists():
+            Path(path).unlink()
+            removed = True
+    return removed
