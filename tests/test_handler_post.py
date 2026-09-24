@@ -46,3 +46,14 @@ def test_post_records_render_metadata(conn, settings, narrator_lines):
     meta = store.read_json(store.chapter_render_meta_path(settings, "b1", 1))
     assert (meta["cues"], meta["clips"]) == (2, 2)
     assert meta["duration"] == pytest.approx(0.70, abs=1e-2)
+
+
+def test_post_is_idempotent_when_nothing_changed(conn, settings, narrator_lines):
+    _run_pipeline(conn, settings, narrator_lines)
+    wav = store.output_dir(settings, "b1") / "chapter_0001.wav"
+    stamp = wav.stat().st_mtime_ns
+    jobs.enqueue(conn, "post", "b1", 1)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=FakeEngine())
+    while run_once(ctx):
+        pass
+    assert wav.stat().st_mtime_ns == stamp          # 没变输入 → 不重编码

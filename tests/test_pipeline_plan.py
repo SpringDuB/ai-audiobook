@@ -20,6 +20,13 @@ def _lines(settings, book_id: str, index: int) -> None:
     store.write_jsonl_atomic(store.lines_path(settings, book_id, index), [{"id": "x", "text": "第一句。"}])
 
 
+def _render_meta(settings, index: int) -> None:
+    store.atomic_replace_json(
+        store.chapter_render_meta_path(settings, "b1", index),
+        {"render_key": f"sha256:{index}", "duration": 1.0, "cues": 1, "clips": 1, "sample_rate": 22050},
+    )
+
+
 def test_plan_starts_with_chapter_split(settings, conn):
     assert plan_book(settings, conn, "b1") == [("chapter_split", None)]
 
@@ -70,6 +77,7 @@ def test_plan_is_empty_when_everything_exists(settings, conn):
         _lines(settings, "b1", index)
         store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
         store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
+        _render_meta(settings, index)
     store.atomic_write_bytes(store.book_wav_path(settings, "b1"), b"RIFF")
     assert plan_book(settings, conn, "b1") == []
 
@@ -83,9 +91,25 @@ def test_plan_requests_book_export_after_all_chapters(settings, conn):
         _lines(settings, "b1", index)
         store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
         store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
+        _render_meta(settings, index)
     assert plan_book(settings, conn, "b1") == [("book_export", None)]
     store.atomic_write_bytes(store.book_wav_path(settings, "b1"), b"RIFF")
     assert plan_book(settings, conn, "b1") == []
+
+
+def test_plan_rerenders_chapters_without_render_meta(settings, conn):
+    """M2 时代产出的章节（有 wav 没 render.json）要按 M3 设置补渲染。"""
+    _chapters(settings, "b1")
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
+    for index in (1, 2):
+        _scenes(settings, "b1", index)
+        _lines(settings, "b1", index)
+        store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
+        store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
+    assert plan_book(settings, conn, "b1") == [("post", 1), ("post", 2)]
+    _render_meta(settings, 1)
+    assert plan_book(settings, conn, "b1") == [("post", 2)]
 
 
 def test_resume_book_enqueues_the_planned_jobs(settings, conn):

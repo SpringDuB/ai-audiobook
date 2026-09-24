@@ -14,26 +14,28 @@ def handle_post(ctx, job) -> None:
     def progress(done: int, total: int, message: str) -> None:
         ctx.progress(job, done, total, message)
 
-    result = render_chapter(settings, book_id, chapter, force=True, on_progress=progress)
-    for line_id in result.skipped:
-        record_issue(
-            settings,
-            book_id,
-            "audio_missing",
-            reason="缺少音频片段",
-            chapter=chapter,
-            line=line_id,
-            fallback="跳过该行，字幕与音频同步偏移",
-        )
-    for warning in result.warnings:
-        record_issue(
-            settings,
-            book_id,
-            "render_duration_mismatch",
-            reason=warning,
-            chapter=chapter,
-            fallback="以实际音频时长为准，请复核该章字幕",
-        )
+    # 幂等：输入与设置没变时 render_chapter 直接复用已有产物（不重编码）
+    result = render_chapter(settings, book_id, chapter, force=False, on_progress=progress)
+    if not result.cached:
+        for line_id in result.skipped:
+            record_issue(
+                settings,
+                book_id,
+                "audio_missing",
+                reason="缺少音频片段",
+                chapter=chapter,
+                line=line_id,
+                fallback="跳过该行，字幕与音频同步偏移",
+            )
+        for warning in result.warnings:
+            record_issue(
+                settings,
+                book_id,
+                "render_duration_mismatch",
+                reason=warning,
+                chapter=chapter,
+                fallback="以实际音频时长为准，请复核该章字幕",
+            )
     logger.info(
         "第 %s 章产出完成：%.2fs，%d 条字幕，%d 个片段（跳过 %d）",
         chapter,

@@ -22,12 +22,18 @@ def plan_book(settings, conn, book_id: str) -> list[tuple[str, int | None]]:
         return [("casting", None)]
 
     missing: list[tuple[str, int | None]] = []
+    stale: list[tuple[str, int | None]] = []
     for chapter in chapters:
         index = chapter["index"]
         if not store.chapter_wav_path(settings, book_id, index).exists():
             missing.append(("synthesize", index))
+        elif not store.chapter_render_meta_path(settings, book_id, index).exists():
+            # 音频在但没按当前设置渲染过（例如 M2 时代产出的章节）→ 用 post 补渲染
+            stale.append(("post", index))
     if missing:
         return missing
+    if stale:
+        return stale
     # 全部章节都有成品音频 → 收尾出整本
     if not store.book_wav_path(settings, book_id).exists():
         return [("book_export", None)]
