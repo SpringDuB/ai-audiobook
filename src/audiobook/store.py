@@ -35,6 +35,14 @@ def issues_path(settings, book_id: str) -> Path:
     return book_dir(settings, book_id) / "issues.jsonl"
 
 
+def logs_dir(settings, book_id: str) -> Path:
+    return book_dir(settings, book_id) / "logs"
+
+
+def llm_log_path(settings, book_id: str) -> Path:
+    return logs_dir(settings, book_id) / "llm.jsonl"
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
