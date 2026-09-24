@@ -1,6 +1,33 @@
+import json
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 浏览器 UI 允许修改的设置白名单；data_dir 与密钥不在其中
+OVERLAY_KEYS = (
+    "engine",
+    "tts_endpoints",
+    "synth_concurrency",
+    "synth_concurrency_max",
+    "llm_base_url",
+    "llm_model",
+    "llm_temperature",
+    "llm_concurrency",
+    "ffmpeg_path",
+    "export_target_sample_rate",
+    "export_container",
+    "export_mkv",
+    "pause_scale",
+    "pause_min_ms",
+    "pause_max_ms",
+    "pause_scene_extra_ms",
+    "pause_tail_ms",
+    "loudness_mode",
+    "loudness_target_lufs",
+    "loudness_true_peak",
+    "loudness_rms_target_db",
+)
+SECRET_KEYS = ("llm_api_key",)
 
 
 class Settings(BaseSettings):
@@ -64,4 +91,35 @@ class Settings(BaseSettings):
 
 
 def get_settings(**overrides) -> Settings:
-    return Settings(**overrides)
+    base = Settings()
+    # overlay 必须从"最终生效的 data_dir"里读：显式传参优先，其次 .env/环境变量
+    data_dir = Path(overrides.get("data_dir") or base.data_dir)
+    overlay = load_overlay(base.model_copy(update={"data_dir": data_dir}))
+    return Settings(**{**overlay, **overrides})
+
+
+def load_overlay(settings) -> dict:
+    """读 data/settings.json（UI 写的覆盖层）；文件缺失或损坏都返回空。"""
+    path = Path(settings.data_dir) / "settings.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: data[key] for key in OVERLAY_KEYS if key in data}
+
+
+def save_overlay(settings, patch: dict) -> dict:
+    unknown = sorted(set(patch) - set(OVERLAY_KEYS))
+    if unknown:
+        raise ValueError(f"不可通过界面修改的设置项：{', '.join(unknown)}")
+    overlay = {**load_overlay(settings), **patch}
+    path = Path(settings.data_dir) / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(overlay, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return overlay
