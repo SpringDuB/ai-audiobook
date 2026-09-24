@@ -1,35 +1,8 @@
-import re
-
+from ..text.chunking import chunk_text  # noqa: F401  兼容旧导入路径（M1 的 Pass A 分块）
 from .models import NARRATOR_NAMES, PassAOutput
 from .prompts import PASS_A_SYSTEM, pass_a_user
 
-SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
 NARRATOR_ID = "narrator"
-
-
-def chunk_text(text: str, max_chars: int) -> list[str]:
-    """按句子边界把正文切成不超过 max_chars 的分块，拼接后等于原文。"""
-    limit = max(1, int(max_chars))
-    if len(text) <= limit:
-        return [text] if text else []
-    pieces = [piece for piece in SENTENCE_SPLIT.split(text) if piece]
-    chunks: list[str] = []
-    current = ""
-    for piece in pieces:
-        while len(piece) > limit:  # 单句超长时硬切，保证不丢字
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(piece[:limit])
-            piece = piece[limit:]
-        if len(current) + len(piece) > limit:
-            chunks.append(current)
-            current = piece
-        else:
-            current += piece
-    if current:
-        chunks.append(current)
-    return chunks
 
 
 def extract_chapter(runner, *, settings, book_id: str, chapter_index: int, title: str, content: str) -> PassAOutput:
