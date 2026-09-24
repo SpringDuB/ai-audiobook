@@ -42,6 +42,33 @@ def main(argv=None) -> int:
 
     sub.add_parser("llm-check", help="验证 LLM 端点连通性并做一次 JSON 往返")
 
+    p_migrate = sub.add_parser("migrate", help="从旧系统迁移音色库或书籍")
+    migrate_sub = p_migrate.add_subparsers(dest="what", required=True)
+    p_migrate_voices = migrate_sub.add_parser("voices", help="迁移内置音色库到 data/voices")
+    p_migrate_voices.add_argument("--source", required=True, help="旧音色库目录（含各音色子目录）")
+    p_migrate_voices.add_argument("--dry-run", action="store_true")
+    p_migrate_voices.add_argument("--force", action="store_true", help="连参考音频也重新复制")
+    p_migrate_book = migrate_sub.add_parser("book", help="迁移一本书（清洗分章 + 封面 + 旧件留档）")
+    p_migrate_book.add_argument("txt")
+    p_migrate_book.add_argument("--title", required=True)
+    p_migrate_book.add_argument("--legacy", default=None, help="旧系统的任务目录（含 chapters.json / roles_*.json）")
+    p_migrate_book.add_argument("--cover", default=None)
+    p_migrate_book.add_argument("--book-id", default=None)
+
+    p_compare = sub.add_parser("compare", help="用旧 roles_*.json 复核新系统的说话人标注")
+    p_compare.add_argument("book_id")
+    p_compare.add_argument("--legacy", required=True)
+
+    p_snapshot = sub.add_parser("snapshot", help="导出/导入单本书的 JSON 快照")
+    snapshot_sub = p_snapshot.add_subparsers(dest="snapshot_cmd", required=True)
+    p_snapshot_export = snapshot_sub.add_parser("export")
+    p_snapshot_export.add_argument("book_id")
+    p_snapshot_export.add_argument("--out", default=None)
+    p_snapshot_import = snapshot_sub.add_parser("import")
+    p_snapshot_import.add_argument("path")
+    p_snapshot_import.add_argument("--force", action="store_true")
+    p_snapshot_import.add_argument("--book-id", default=None)
+
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = get_settings()
@@ -78,6 +105,94 @@ def main(argv=None) -> int:
         plan = resume_book(settings, conn, args.book_id)
         text = "、".join(f"{kind}#{chapter}" for kind, chapter in plan) or "（无，全部已完成）"
         print(f"入队：{text}")
+        return 0
+
+    if args.cmd == "migrate" and args.what == "voices":
+        from .migrate.voices import migrate_voices
+
+        try:
+            report = migrate_voices(settings, args.source, dry_run=args.dry_run, force=args.force)
+        except FileNotFoundError as exc:
+            print(f"参数错误：{exc}")
+            return 2
+        mode = "dry-run：" if report.dry_run else ""
+        print(f"{mode}迁移 {len(report.migrated)} 个音色 → {report.target_root}")
+        print(f"  参考音频合计 {report.total_bytes / 1024 / 1024:.1f} MB")
+        if report.needs_review:
+            print(f"  待补标签：{', '.join(report.needs_review)}")
+        if report.skipped:
+            print(f"  跳过（无 wav）：{', '.join(report.skipped)}")
+        if not report.dry_run:
+            print(f"  区间：{report.migrated[0]} … {report.migrated[-1]}" if report.migrated else "  （无）")
+        return 0
+
+    if args.cmd == "migrate" and args.what == "book":
+        from .migrate.books import migrate_book
+        from . import store
+
+        conn = connect(settings.db_path)
+        init_db(conn)
+        txt = Path(args.txt)
+        if not txt.exists():
+            print(f"参数错误：找不到 {txt}")
+            return 2
+        report = migrate_book(
+            settings,
+            conn,
+            txt,
+            title=args.title,
+            legacy_dir=Path(args.legacy) if args.legacy else None,
+            cover=Path(args.cover) if args.cover else None,
+            book_id=args.book_id,
+        )
+        chapters = report["chapters"]
+        print(f"book_id: {report['book_id']}")
+        print(f"章节：旧 {chapters['old_count']} → 新 {chapters['new_count']}（标题命中 {chapters['title_match_count']}）")
+        print(f"字符差：{chapters['chars_delta_total']:+d}")
+        if chapters["old_only"]:
+            print(f"  仅旧系统有：{'、'.join(chapters['old_only'][:6])}")
+        if report["legacy"]["roles_files"]:
+            print(f"  旧角色文件 {len(report['legacy']['roles_files'])} 个已留档到 legacy/")
+        print(f"报告：{store.book_dir(settings, report['book_id']) / 'migration.json'}")
+        return 0
+
+    if args.cmd == "compare":
+        from .migrate.books import compare_book_roles
+
+        result = compare_book_roles(settings, args.book_id, Path(args.legacy))
+        print(
+            f"旧标注 {result['old_lines']} 句，匹配上 {result['matched']} 句，"
+            f"其中一致 {result['agree']} 句"
+        )
+        if result["agreement_rate"] is not None:
+            print(f"一致率：{result['agreement_rate'] * 100:.1f}%")
+        for row in result["mismatches"][:6]:
+            print(f"  不一致：旧={row['legacy']} 新={row['new']} | {str(row['text'])[:40]}")
+        return 0
+
+    if args.cmd == "snapshot":
+        from .migrate.snapshot import default_snapshot_path, export_snapshot, import_snapshot
+
+        conn = connect(settings.db_path)
+        init_db(conn)
+        if args.snapshot_cmd == "export":
+            out = Path(args.out) if args.out else default_snapshot_path(settings, args.book_id)
+            try:
+                manifest = export_snapshot(settings, args.book_id, out)
+            except FileNotFoundError as exc:
+                print(f"参数错误：{exc}")
+                return 2
+            print(f"已导出 {manifest['files']} 个 JSON 文件 → {out}")
+            return 0
+        try:
+            result = import_snapshot(settings, conn, Path(args.path), force=args.force, book_id=args.book_id)
+        except FileExistsError as exc:
+            print(f"导入失败：{exc}")
+            return 1
+        except (FileNotFoundError, ValueError, KeyError) as exc:
+            print(f"导入失败：{exc}")
+            return 1
+        print(f"已还原 {result['restored']} 个文件 → book_id={result['book_id']}（{result['title']}）")
         return 0
 
     if args.cmd == "export":
