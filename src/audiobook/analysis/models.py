@@ -107,3 +107,32 @@ class PassBOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scenes: list[SceneSpan]
+
+
+class LineAnnotation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    speaker: str
+    addressee: str | None = None
+    emotion: str = "继承"
+    intensity: float | None = None
+    delivery: str = "normal"
+
+    @field_validator("emotion", "delivery", mode="before")
+    @classmethod
+    def _str_or_default(cls, value, info):
+        if value is None:
+            return "继承" if info.field_name == "emotion" else "normal"
+        return value
+
+    @field_validator("intensity", mode="before")
+    @classmethod
+    def _clamp(cls, value):
+        return None if value is None else clamp01(value)
+
+
+class PassCOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lines: list[LineAnnotation]

@@ -53,3 +53,34 @@ def pass_b_user(chapter_index: int, title: str, character_names: list[str], numb
         f"{PASS_B_FORMAT}\n\n"
         f"句子列表：\n{numbered}"
     )
+
+
+PASS_C_SYSTEM = """你是中文小说的配音导演。你只输出 JSON 对象，不输出解释、不输出 Markdown 代码块。
+你要为给定场景的每一句标注：谁在说（speaker）、对谁说（addressee）、什么情绪（emotion）、
+怎么说话（delivery）。没有台词、是描写的句子一律算"旁白"。"""
+
+PASS_C_FORMAT = """输出格式（严格遵守，不要增删字段，每条句子都要有一条记录）：
+{"lines":[{"index":1,"speaker":"角色名或旁白","addressee":"角色名或null",
+"emotion":"喜悦|愤怒|悲伤|恐惧|厌恶|忧郁|惊讶|平静|继承","intensity":0.5,
+"delivery":"normal|shout|whisper|sneer"}]}"""
+
+PASS_C_RULES = """要求：
+1. speaker 只能从"本场景角色"里选，或写"旁白"；不要发明新名字；
+2. addressee 只能是本场景在场角色，无法判断就写 null；
+3. 引号内的直接引语必须有具体说话人；叙述、描写、心理活动默认"旁白"；
+4. emotion 不确定时写"继承"（表示沿用场景基调）；
+5. delivery：喊叫 shout、耳语 whisper、冷笑/讥讽 sneer、其余 normal。"""
+
+
+def pass_c_user(chapter_index: int, scene: dict, numbered: str, context_block: str) -> str:
+    return (
+        "【PASS_C】\n"
+        f"章节序号：{chapter_index}\n"
+        f"场景：{scene['id']} {scene.get('title', '')}\n"
+        f"场景摘要：{scene.get('summary', '')}\n"
+        f"场景基调：{scene['tone']['dominant']}（强度 {scene['tone']['intensity']}）\n\n"
+        f"{context_block}\n\n"
+        f"{PASS_C_RULES}\n\n"
+        f"{PASS_C_FORMAT}\n\n"
+        f"句子列表：\n{numbered}"
+    )

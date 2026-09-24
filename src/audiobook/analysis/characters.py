@@ -140,22 +140,35 @@ def aggregate_characters(per_chapter: list[tuple[int, PassAOutput]]) -> dict:
             names.add(_norm(card.name))
             names.update(_norm(alias) for alias in card.aliases if _norm(alias))
 
-        def appearance(name: str) -> tuple[int, int]:
-            chapters = {
-                chapter_index
-                for chapter_index, card in items
-                if name in {_norm(card.name), *[_norm(alias) for alias in card.aliases]}
-            }
-            return len(chapters), (min(chapters) if chapters else 10 ** 6)
+        stats: dict[str, dict] = {}
+        for order, (chapter_index, card) in enumerate(items):
+            for name, is_primary in [
+                (_norm(card.name), True),
+                *[(_norm(alias), False) for alias in card.aliases if _norm(alias)],
+            ]:
+                entry = stats.setdefault(name, {"primary": 0, "chapters": set(), "order": order})
+                if is_primary:
+                    entry["primary"] += 1
+                entry["chapters"].add(chapter_index)
 
-        ordered_names = sorted(names, key=lambda name: (-appearance(name)[0], appearance(name)[1], name))
+        def canonical_key(name: str) -> tuple:
+            entry = stats[name]
+            return (-entry["primary"], -len(entry["chapters"]), min(entry["chapters"]), entry["order"], name)
+
+        def alias_key(name: str) -> tuple:
+            entry = stats[name]
+            return (-len(entry["chapters"]), min(entry["chapters"]), entry["order"], name)
+
+        # 主名优先取模型写在 name 字段里的名字，别名只在没有别的选择时才当主名
+        ordered_names = sorted(names, key=canonical_key)
         canonical = ordered_names[0]
+        alias_names = sorted((name for name in names if name != canonical), key=alias_key)
         primary = next((card for _, card in items if _norm(card.name) == canonical), items[0][1])
         chapters = sorted({chapter_index for chapter_index, _ in items})
         built.append(
             {
                 "name": canonical,
-                "aliases": ordered_names[1:],
+                "aliases": alias_names,
                 "gender": _vote(items, "gender"),
                 "age_group": _vote(items, "age_group"),
                 "personality": _ordered_union(items, "personality", cap=8),
