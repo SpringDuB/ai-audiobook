@@ -166,6 +166,10 @@ def main(argv=None) -> int:
         )
         if result["agreement_rate"] is not None:
             print(f"一致率：{result['agreement_rate'] * 100:.1f}%")
+        print(
+            f"  不一致 {result['mismatch_total']} 句：旧旁白→新角色 {result['legacy_narrator_reassigned']}，"
+            f"旧角色→新旁白 {result['new_narrator_fallback']}"
+        )
         for row in result["mismatches"][:6]:
             print(f"  不一致：旧={row['legacy']} 新={row['new']} | {str(row['text'])[:40]}")
         return 0

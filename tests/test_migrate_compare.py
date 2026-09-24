@@ -23,6 +23,21 @@ def test_compare_chapters_all_equal():
     assert result["title_match_count"] == 1 and result["chars_delta_total"] == 0
 
 
+def test_compare_chapters_matches_titles_with_bracket_suffixes():
+    old = [
+        {"index": 0, "title": "第三章 洗髓伐脉（新书求收藏）", "content": "a" * 10},
+        {"index": 1, "title": "第六章 种菜（求收藏推荐包养）", "content": "b" * 10},
+    ]
+    new = [
+        {"index": 0, "title": "第三章 洗髓伐脉", "content": "a" * 8},
+        {"index": 1, "title": "第六章 种菜", "content": "b" * 9},
+    ]
+    result = compare_chapters(old, new)
+    assert result["title_match_count"] == 2
+    assert [row["aligned_by"] for row in result["rows"]] == ["title_loose", "title_loose"]
+    assert result["old_only"] == [] and result["new_only"] == []
+
+
 def test_compare_roles_matches_sentences_and_counts_agreement():
     old = [
         [
@@ -50,6 +65,18 @@ def test_compare_roles_lists_mismatches():
     assert (result["matched"], result["agree"]) == (1, 0)
     assert result["agreement_rate"] == 0.0
     assert result["mismatches"][0] == {"text": "你是谁？", "legacy": "张卫东", "new": "旁白"}
+    assert result["mismatch_total"] == 1
+    assert result["new_narrator_fallback"] == 1
+    assert result["legacy_narrator_reassigned"] == 0
+
+
+def test_compare_roles_counts_narrator_reassignment():
+    """旧系统含糊标成旁白、新系统认出说话人 —— 这类差异要单独计数。"""
+    old = [[{"text": "小张起来了，吃点什么。", "role": "旁白"}]]
+    new = {0: [{"text": "小张起来了，吃点什么。", "speaker_name": "老刘"}]}
+    result = compare_roles(old, new)
+    assert (result["agree"], result["legacy_narrator_reassigned"]) == (0, 1)
+    assert result["new_narrator_fallback"] == 0
 
 
 def test_compare_roles_ignores_unmatched_old_sentences():

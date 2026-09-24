@@ -11,6 +11,14 @@ def _normalize_title(text) -> str:
     return re.sub(r"\s+", "", str(text or ""))
 
 
+BRACKETS = re.compile(r"[（(【\[][^）)】\]]*[）)】\]]")
+
+
+def _loose_title(text) -> str:
+    """去掉"（求收藏）"这类后缀再比，避免只因为尾巴不同就整体错位。"""
+    return BRACKETS.sub("", _normalize_title(text))
+
+
 def _row(old: dict | None, new: dict | None, aligned_by: str) -> dict:
     old_title = str((old or {}).get("title") or "")
     new_title = str((new or {}).get("title") or "")
@@ -39,18 +47,21 @@ def compare_chapters(old_chapters: list[dict], new_chapters: list[dict]) -> dict
     used_old: set[int] = set()
     used_new: set[int] = set()
     rows: list[dict] = []
-    for old_position, old_row in enumerate(old):
-        key = _normalize_title(old_row.get("title"))
-        if not key:
-            continue
-        for new_position, new_row in enumerate(new):
-            if new_position in used_new:
+    for matcher, label in ((_normalize_title, "title"), (_loose_title, "title_loose")):
+        for old_position, old_row in enumerate(old):
+            if old_position in used_old:
                 continue
-            if _normalize_title(new_row.get("title")) == key:
-                rows.append(_row(old_row, new_row, "title"))
-                used_old.add(old_position)
-                used_new.add(new_position)
-                break
+            key = matcher(old_row.get("title"))
+            if not key:
+                continue
+            for new_position, new_row in enumerate(new):
+                if new_position in used_new:
+                    continue
+                if matcher(new_row.get("title")) == key:
+                    rows.append(_row(old_row, new_row, label))
+                    used_old.add(old_position)
+                    used_new.add(new_position)
+                    break
     rest_old = [position for position in range(len(old)) if position not in used_old]
     rest_new = [position for position in range(len(new)) if position not in used_new]
     for old_position, new_position in zip(rest_old, rest_new):
@@ -63,7 +74,7 @@ def compare_chapters(old_chapters: list[dict], new_chapters: list[dict]) -> dict
     return {
         "old_count": len(old),
         "new_count": len(new),
-        "title_match_count": sum(1 for row in rows if row["title_match"]),
+        "title_match_count": sum(1 for row in rows if row["aligned_by"] in ("title", "title_loose")),
         "chars_delta_total": sum(row["chars_delta"] for row in rows),
         "old_only": [row["old_title"] for row in rows if row["aligned_by"] == "old_only"],
         "new_only": [row["new_title"] for row in rows if row["aligned_by"] == "new_only"],
@@ -80,6 +91,7 @@ def compare_roles(old_roles: list[list[dict]], new_lines: dict[int, list[dict]])
             if key:
                 index.setdefault(key, str(row.get("speaker_name") or row.get("speaker") or ""))
     old_lines = matched = agree = 0
+    legacy_narrator_reassigned = new_narrator_fallback = 0
     mismatches: list[dict] = []
     for chapter_rows in old_roles:
         for row in chapter_rows or []:
@@ -91,12 +103,21 @@ def compare_roles(old_roles: list[list[dict]], new_lines: dict[int, list[dict]])
             new_name = index[key]
             if new_name == str(row.get("role") or ""):
                 agree += 1
-            elif len(mismatches) < 20:
-                mismatches.append({"text": row.get("text"), "legacy": row.get("role"), "new": new_name})
+                continue
+            legacy = str(row.get("role") or "")
+            if legacy in ("旁白", "narrator") and new_name not in ("旁白", "narrator"):
+                legacy_narrator_reassigned += 1
+            elif new_name in ("旁白", "narrator") and legacy not in ("旁白", "narrator"):
+                new_narrator_fallback += 1
+            if len(mismatches) < 20:
+                mismatches.append({"text": row.get("text"), "legacy": legacy, "new": new_name})
     return {
         "old_lines": old_lines,
         "matched": matched,
         "agree": agree,
         "agreement_rate": round(agree / matched, 4) if matched else None,
+        "mismatch_total": matched - agree,
+        "legacy_narrator_reassigned": legacy_narrator_reassigned,
+        "new_narrator_fallback": new_narrator_fallback,
         "mismatches": mismatches,
     }

@@ -412,3 +412,33 @@ uv run aiab migrate book "D:\workspace\datavrapCastV1.1.0\data\audiobook\17c3a1c
 2. **不做的事**：不用旧 `roles_*.json` 当分析输入；不迁移 mp3（只保留 wav）；不做全库快照。
 3. **类型一致性**：`voice.json` 字段与 `analysis/casting.load_voice_library` 的读取键一一对应（snake_case 优先、camelCase 兼容）；`store.voice_ref_path` 是 TTS 侧唯一引用路径；快照清单字段在导出/导入两侧同名。
 4. **已知取舍**：音色 id 用排序序号（源库冻结、可复现）；缺标签的音色标 `needs_review` 而不是伪造字段；书籍迁移创建新 bookId（老 id 的既有产物不动）。
+
+---
+
+## M6 验收记录（2026-09-24 实跑）
+
+环境：本机 Windows + PowerShell，Python 3.13；旧系统只读引用 `D:\workspace\datavrapCastV1.1.0`。
+
+| 项 | 结果 |
+|---|---|
+| C1 单元测试 | `uv run pytest` → **296 passed**（M6 新增 24 个用例） |
+| C2 96 音色迁移 | `aiab migrate voices` → 96 个、参考音频 61.1 MB、待补标签 1（v094 霸道总裁）、缺参考音频 0；`GET /api/voices` 返回 96 条，`/api/voices/v001/sample` → 200 / audio/wav / 433 KB |
+| C3 选角生效 | 重跑 casting：`voice_library_size=96`，14 个角色全部分到真实音色（王胖子→v058 热血兄弟、许老爷子→v041 沉稳老者、黄老板→v023 市井小贩…），不再有 `default` 与 `voice_library_empty` |
+| C4 样本书迁移 | `aiab migrate book …` → 新 bookId `2a48641cedee4e7e8bfaeece8012dfbb`；**旧 10 章 → 新 9 章，标题命中 9，字符差 -3218**，仅旧系统有"前言"（推广页，被清洗规则丢弃）；封面与 10 个 `roles_*.json` 已留档 |
+| C5 角色标注对照 | `aiab compare` → 旧标注 846 句 / 匹配 812 / 一致 673 → **一致率 82.9%**；139 处不一致**全部**是"旧旁白→新角色"，反向 0 句 |
+| C6 全新链路 | 迁移后的书：38 个分析任务全绿 → 合成 818 句用 **14 个音色**（旁白 v014 ×665、张卫东 v001 ×71、王胖子 v058 ×28…）→ 9 章渲染 + 整本 `book.wav/srt/mkv`（1547.72s / 818 条字幕 / 15 个产物）；1 条 `scene_hint_not_found` 降级（该章场景边界定位失败 → 均匀切分，已进 `issues.jsonl`） |
+| C7 快照往返 | 863 个 JSON 导出 → 以新 id 导入 → `book.json`/`casting.json` 的 id 改写正确、章节与句子数一致；测试副本验证后已删除 |
+| C8 真实音质 | ⛔ 需要 GPU 机器按 `docs/tts-deploy.md` 跑真机 |
+
+实跑修掉/发现的问题：
+
+1. **迁移拿不到分章结果**：`import_book` 只入队 `chapter_split`，迁移当场读 `chapters.json` 会拿到空 → 把分章逻辑抽成 `handlers.split.split_book()`，迁移同步执行并撤掉刚入队的任务。
+2. **对照错位**：旧章节标题带"（新书求收藏）"后缀时，标题匹配失败退化成按位置配对，整张对照表右移一格 → 增加"去括号后缀"的模糊标题匹配（`title_loose`），命中数从 5 升到 9。
+3. **差异无法解释**：只统计"一致率"看不出好坏 → 增加 `legacy_narrator_reassigned` / `new_narrator_fallback` 两个分类计数，才看清 139 处差异全是新系统更准。
+
+遗留：
+
+1. `霸道总裁`（v094）标签待补，字段补齐后把 `needs_review` 改成 `false`。
+2. 参考音频未统一格式（旧库采样率/声道不一），需要的话用 ffmpeg 批量转换。
+3. 真机音质与显存表现要按 `docs/tts-deploy.md` 在 GPU 机器上复测。
+4. M1 时代那本 `0e686403…` 仍保留（已用真实音色重跑过一轮），它是早期验收的存档，不是迁移产物。
