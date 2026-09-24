@@ -51,6 +51,18 @@ def test_start_is_idempotent_when_already_running(tmp_path):
         service.stop()
 
 
+def test_start_restarts_when_running_backend_was_removed(tmp_path):
+    """状态文件里是已删掉的 fake：一键启动要把它换掉，而不是"已经在跑"就返回。"""
+    service = _service(tmp_path)
+    first = service.start(backend="fake", port=8099)
+    try:
+        second = service.start(backend="indextts", port=8099)
+        assert second["backend"] == "indextts"
+        assert second["pid"] != first["pid"]
+    finally:
+        service.stop()
+
+
 def test_logs_stream_incrementally(tmp_path):
     service = _service(tmp_path)
     service.start(backend="indextts", port=8099)

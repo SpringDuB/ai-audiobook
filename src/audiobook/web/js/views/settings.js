@@ -246,6 +246,9 @@ async function build() {
         h("span", { class: "mono muted" }, `backend ${service.backend || settings.tts_backend}`),
         service.pid ? h("span", { class: "mono muted" }, `pid ${service.pid}`) : null,
         info.engine ? h("span", { class: "mono muted" }, `合成引擎 ${info.engine}`) : null,
+        service.running && service.backend !== "indextts"
+          ? h("span", { class: "tag tag--alert" }, "跑着的不是 indextts，点「一键启动」会重启它")
+          : null,
       ].filter(Boolean),
     );
   };

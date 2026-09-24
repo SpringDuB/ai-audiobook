@@ -153,7 +153,10 @@ class LocalTtsService:
     ) -> dict:
         current = self.status()
         if current["running"]:
-            return current
+            if current.get("backend") == (backend or self.settings.tts_backend):
+                return current
+            # 状态文件里是别的后端（例如已经删掉的 fake）：先停掉再按现在的配置起
+            self.stop()
         backend = backend or self.settings.tts_backend
         port = int(port or self.settings.tts_port)
         model_source = model_source or self.settings.tts_model_source
