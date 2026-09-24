@@ -47,12 +47,15 @@ class FakeEngine:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         base = 220.0 + (abs(hash(voice_id)) % 200)
-        payload = bytearray()
-        for i in range(frames):
-            payload += struct.pack("<h", int(12000 * math.sin(2 * math.pi * base * i / self.sample_rate)))
+        # 生成一个完整周期后复制，避免逐样本 Python 循环拖慢长文本
+        period = max(1, int(round(self.sample_rate / base)))
+        single = b"".join(
+            struct.pack("<h", int(12000 * math.sin(2 * math.pi * base * i / self.sample_rate))) for i in range(period)
+        )
+        payload = (single * (frames // period + 1))[: frames * 2]
         with wave.open(str(out_path), "wb") as fh:
             fh.setnchannels(1)
             fh.setsampwidth(2)
             fh.setframerate(self.sample_rate)
-            fh.writeframes(bytes(payload))
+            fh.writeframes(payload)
         return AudioResult(path=out_path, duration=frames / self.sample_rate, sample_rate=self.sample_rate)
