@@ -43,6 +43,34 @@ def llm_log_path(settings, book_id: str) -> Path:
     return logs_dir(settings, book_id) / "llm.jsonl"
 
 
+def characters_path(settings, book_id: str) -> Path:
+    return book_dir(settings, book_id) / "analysis" / "characters.json"
+
+
+def scenes_dir(settings, book_id: str) -> Path:
+    return book_dir(settings, book_id) / "analysis" / "scenes"
+
+
+def scenes_path(settings, book_id: str, index: int) -> Path:
+    return scenes_dir(settings, book_id) / f"chapter_{chapter_tag(index)}.json"
+
+
+def casting_path(settings, book_id: str) -> Path:
+    return book_dir(settings, book_id) / "voices" / "casting.json"
+
+
+def voice_library_dir(settings) -> Path:
+    return settings.voices_dir
+
+
+def voice_path(settings, voice_id: str) -> Path:
+    return settings.voices_dir / voice_id / "voice.json"
+
+
+def pronounce_path(settings) -> Path:
+    return settings.data_dir / "pronounce.json"
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
