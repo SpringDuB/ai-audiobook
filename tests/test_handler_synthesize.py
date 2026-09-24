@@ -1,0 +1,90 @@
+from audiobook import jobs, store
+from audiobook.engines.fake import FakeEngine
+from audiobook.handlers import synthesize  # noqa: F401  导入即注册
+from audiobook.text import lines_stub
+from audiobook.worker import WorkerContext, run_once
+
+
+class CountingEngine(FakeEngine):
+    def __init__(self, **kwargs):
+        super().__init__(ms_per_char=10.0, **kwargs)
+        self.calls = 0
+
+    def synthesize(self, text, voice_id, params, out_path):
+        self.calls += 1
+        return super().synthesize(text, voice_id, params, out_path)
+
+
+def _prepare_book(settings, book_id="b1", chapter=1, text="第一句。第二句。"):
+    store.atomic_replace_json(store.book_dir(settings, book_id) / "book.json", {"id": book_id, "title": "T"})
+    store.write_jsonl_atomic(store.lines_path(settings, book_id, chapter), lines_stub.stub_lines(chapter, text))
+    return book_id
+
+
+def _run_synthesize(conn, ctx, book_id="b1", chapter=1):
+    """只跑合成：先取消上一轮遗留的 post 任务，避免它抢在合成任务之前被领取。"""
+    for job in jobs.list_jobs(conn, book_id):
+        if job.kind == "post" and job.status == "queued":
+            jobs.request_cancel(conn, job.id)
+    jobs.enqueue(conn, "synthesize", book_id, chapter)
+    run_once(ctx)
+
+
+def test_synthesize_writes_clips_and_meta_then_enqueues_post(conn, settings):
+    engine = CountingEngine()
+    _prepare_book(settings)
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+
+    assert run_once(ctx) is True
+    clips = sorted(store.audio_dir(settings, "b1", 1).glob("*.wav"))
+    assert [c.name for c in clips] == ["c0001-s01-l001.wav", "c0001-s01-l002.wav"]
+    meta = store.read_json(clips[0].with_suffix(".meta.json"))
+    assert meta["engine"] == "fake"
+    assert meta["cache_key"]
+    assert meta["duration"] > 0
+    assert [j.kind for j in jobs.list_jobs(conn, "b1")] == ["synthesize", "post"]
+
+
+def test_second_run_reuses_cache_and_does_not_call_engine(conn, settings):
+    engine = CountingEngine()
+    _prepare_book(settings)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+    run_once(ctx)
+    first_calls = engine.calls
+    assert first_calls == 2
+
+    _run_synthesize(conn, ctx)
+    assert engine.calls == first_calls
+
+
+def test_changed_text_regenerates_only_that_line(conn, settings):
+    engine = CountingEngine()
+    _prepare_book(settings)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+    run_once(ctx)
+
+    rows = store.read_jsonl(store.lines_path(settings, "b1", 1))
+    rows[1]["text"] = "改过的第二句。"
+    store.write_jsonl_atomic(store.lines_path(settings, "b1", 1), rows)
+    before = engine.calls
+
+    _run_synthesize(conn, ctx)
+    assert engine.calls == before + 1
+
+
+def test_failed_line_is_recorded_and_others_continue(conn, settings):
+    engine = CountingEngine(fail_on={"第二句"})
+    _prepare_book(settings)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+    run_once(ctx)
+
+    assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.wav").exists()
+    issues = store.read_jsonl(store.issues_path(settings, "b1"))
+    assert any(row["id"] == "c0001-s01-l002" for row in issues)
+    synth_job = [j for j in jobs.list_jobs(conn, "b1") if j.kind == "synthesize"][0]
+    assert jobs.get_job(conn, synth_job.id).status == "done"
