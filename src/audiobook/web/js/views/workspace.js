@@ -232,6 +232,9 @@ function roleRow(role, scope, ctx) {
   const voiceName = role.voice_name || role.voice_id || "未绑定";
   const bound = role.voice_id && role.voice_id !== "default";
   const chapters = role.chapters || [];
+  const recommendations = (role.recommendations || []).filter((item) => item.voice_id);
+  const picked = recommendations.findIndex((item) => item.voice_id === role.voice_id);
+  const badge = role.source === "manual" ? "已手选" : picked === 0 ? "按推荐" : picked > 0 ? "推荐备选" : "";
   return h(
     "article",
     { class: "cast-row", dataset: { roleId: role.role_id } },
@@ -244,13 +247,36 @@ function roleRow(role, scope, ctx) {
         { class: "cast-row__head" },
         h("span", { class: "cast-row__name" }, role.name),
         h("span", { class: bound ? "tag" : "tag tag--alert", title: voiceName }, voiceName),
+        badge ? h("span", { class: "tag tag--rec" }, badge) : null,
       ),
       h(
         "p",
         { class: "cast-row__meta mono" },
         scope === "chapter" ? `${role.lines} 句（本章）` : `${role.lines} 句 · ${chapters.length} 章`,
-        role.score ? ` · 匹配 ${Math.round(role.score)}` : "",
+        picked >= 0 && recommendations[picked].reason ? ` · ${recommendations[picked].reason}` : "",
       ),
+      recommendations.length
+        ? h(
+            "div",
+            { class: "cast-row__recs" },
+            ...recommendations.map((item, position) =>
+              h(
+                "button",
+                {
+                  class: "chip",
+                  type: "button",
+                  title: item.reason || "",
+                  "aria-pressed": String(item.voice_id === role.voice_id),
+                  onClick: () => ctx.pickRecommended(role, item),
+                },
+                `${position + 1}. ${item.voice_name || item.voice_id}`,
+                item.confidence
+                  ? h("span", { class: "chip__num mono" }, ` ${Math.round(Number(item.confidence) * 100)}%`)
+                  : null,
+              ),
+            ),
+          )
+        : null,
     ),
     h(
       "button",
@@ -385,6 +411,7 @@ async function build(route, host) {
       anchor,
       roleName: role.name,
       currentVoiceId: role.voice_id,
+      recommended: role.recommendations || [],
       onPick: async (voice) => {
         const result = await api.setCasting(state.bookId, role.role_id, { voice_id: voice.id, voice_name: voice.name });
         const invalidated = result.invalidated || [];
@@ -397,6 +424,24 @@ async function build(route, host) {
         await refreshChapters();
       },
     });
+  };
+
+  // 点推荐音色：直接用这一条（不打开悬浮窗），用户不选时用的就是第一条
+  const pickRecommended = (role, item) => {
+    Promise.resolve(
+      api
+        .setCasting(state.bookId, role.role_id, { voice_id: item.voice_id, voice_name: item.voice_name || item.voice_id })
+        .then(async (result) => {
+          const invalidated = result.invalidated || [];
+          toast(
+            invalidated.length
+              ? `「${role.name}」→ ${item.voice_name || item.voice_id}；第 ${invalidated.slice(0, 6).join("、")}${invalidated.length > 6 ? " 等" : ""} 章成品已失效，重渲染后生效`
+              : `「${role.name}」→ ${item.voice_name || item.voice_id}`,
+          );
+          await reloadCasting();
+          await refreshChapters();
+        }),
+    ).catch((error) => toast(error.message, "error"));
   };
 
   const paintCast = () => {
@@ -431,7 +476,7 @@ async function build(route, host) {
     const roles = state.scope === "chapter" ? chapterRoles() : state.casting;
     castList.replaceChildren(
       ...(roles.length
-        ? roles.map((role) => roleRow(role, state.scope, { pick }))
+        ? roles.map((role) => roleRow(role, state.scope, { pick, pickRecommended }))
         : [h("p", { class: "muted" }, state.scope === "chapter" ? "这一章还没有标注结果。" : "全书还没有选角结果。")]),
     );
   };

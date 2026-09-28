@@ -415,8 +415,8 @@ def create_app(settings, conn) -> FastAPI:
         plan: list[tuple[str, int | None]] = []
         if not store.characters_path(settings, book_id).exists():
             plan.append(("characters", None))
-        # 删掉本章的原始分析结果 → lines handler 会重新调 LLM（而不是只重算落盘）
-        store.chapter_analysis_path(settings, book_id, index).unlink(missing_ok=True)
+        # 删掉本章的提取结果 → lines handler 会重新调 LLM 提取（而不是只重算落盘）
+        store.extract_path(settings, book_id, index).unlink(missing_ok=True)
         plan.append(("lines", index))
         job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
         return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}

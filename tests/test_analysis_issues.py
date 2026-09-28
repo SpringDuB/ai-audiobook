@@ -8,7 +8,7 @@ def test_record_issue_appends_machine_readable_row(settings):
     row = record_issue(
         settings,
         "book1",
-        "pass_c_failed",
+        "extract_window_failed",
         reason="LlmJsonError: 2 次都失败",
         chapter=1,
         scene="c0001-s02",
@@ -31,16 +31,16 @@ def test_record_issue_rejects_unknown_kind(settings):
 
 def test_issue_kinds_are_frozen():
     assert ISSUE_KINDS == (
-        "pass_a_failed",
-        "pass_a_chapter_skipped",
-        "pass_c_failed",
-        "chapter_analysis_failed",
-        "chapter_window_failed",
-        "line_index_missing",
+        "chapter_extract_failed",
+        "extract_window_failed",
+        "extract_text_drift",
         "unknown_speaker",
+        "emotion_missing",
+        "role_merge_failed",
+        "role_merge_incomplete",
         "voice_library_empty",
-        "casting_voice_reused",
-        "casting_no_match",
+        "voice_recommend_failed",
+        "voice_recommend_invalid",
         "tts_line_failed",
         "tts_ref_missing",
         "tts_endpoint_down",

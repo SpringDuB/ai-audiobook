@@ -1,4 +1,5 @@
 from . import jobs, store
+from .analysis.casting import voice_for_speaker
 
 # 分析链（书稿 → 角色 → 逐句情感 → 选角）与合成链（合成 → 渲染 → 合本）
 ANALYSIS_KINDS = {"chapter_split", "characters", "lines", "casting"}
@@ -35,11 +36,15 @@ def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, in
     if not store.casting_path(settings, book_id).exists():
         return [("casting", None)]
 
+    casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
     missing: list[tuple[str, int | None]] = []
     stale: list[tuple[str, int | None]] = []
     for chapter in chapters:
         index = chapter["index"]
         if not store.chapter_wav_path(settings, book_id, index).exists():
+            missing.append(("synthesize", index))
+        elif _voice_stale(settings, book_id, index, casting):
+            # 换过音色：这一章要按新音色重合成（缓存键会只让受影响的行重跑）
             missing.append(("synthesize", index))
         elif not store.chapter_render_meta_path(settings, book_id, index).exists():
             # 音频在但没按当前设置渲染过（例如 M2 时代产出的章节）→ 用 post 补渲染
@@ -52,6 +57,26 @@ def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, in
     if not store.book_wav_path(settings, book_id).exists():
         return [("book_export", None)]
     return []
+
+
+def _voice_stale(settings, book_id: str, index: int, casting: dict) -> bool:
+    """逐句音频记的音色和当前选角不一致吗？（换音色后要真的重合成，不能拿旧片段重渲染）"""
+    if not casting.get("roles"):
+        return False
+    rows = store.read_jsonl(store.lines_path(settings, book_id, index))
+    clips = store.audio_dir(settings, book_id, index)
+    for row in rows:
+        speaker = row.get("speaker")
+        if not speaker:
+            continue
+        expected = voice_for_speaker(casting, speaker)
+        if not expected:
+            continue
+        meta = store.read_json(clips / f"{row['id']}.meta.json", default={}) or {}
+        recorded = meta.get("voice_id")
+        if recorded and recorded != expected:
+            return True
+    return False
 
 
 def enqueue_plan(conn, book_id: str, plan) -> list[int]:

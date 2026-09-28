@@ -1,87 +1,144 @@
+"""选角：音色推荐由大模型给出（1–3 个），本地只做校验、兜底与手选保留。"""
+
 from audiobook.analysis.casting import (
     VoiceProfile,
     build_casting,
-    character_rate,
     load_voice_library,
-    score_voice,
+    samples_by_role,
+    voice_catalog_text,
     voice_for_speaker,
 )
+from audiobook.llm.fake import FakeLLM
+from audiobook.llm.limiter import AdaptiveLimiter
+from audiobook.llm.runner import LlmJsonRunner
 
 
 def _voice(voice_id: str, **overrides) -> VoiceProfile:
     base = dict(
-        id=voice_id, name=voice_id, gender="男", age_group="青年", personality=(), genres=(),
-        mood=(), speech_rate="中", voice_quality=(), language_style=("普通话",), usage_type=("角色对话",),
-        description="",
+        id=voice_id, name=f"音色{voice_id}", gender="男", age_group="青年", personality=("冷酷",), genres=("都市",),
+        mood=("沉稳",), speech_rate="中", voice_quality=("磁性",), language_style=("普通话",),
+        usage_type=("角色对话",), description="冷酷而沉稳的男声",
     )
     base.update(overrides)
     return VoiceProfile(**base)
 
 
-def _character(**overrides) -> dict:
-    base = {
-        "id": "role_0001", "name": "秦风", "aliases": [], "gender": "男", "age_group": "青年",
-        "personality": ["冷酷", "沉稳"], "speaking_style": "语速偏慢", "base_emotion": "平静",
-        "base_intensity": 0.4, "chapters": [1, 2], "mentions": 4, "is_narrator": False,
-    }
-    base.update(overrides)
-    return base
+CHARACTERS = {
+    "characters": [
+        {"id": "narrator", "name": "旁白", "aliases": [], "is_narrator": True, "chapters": [1]},
+        {"id": "role_0001", "name": "苏锐", "aliases": ["老苏"], "is_narrator": False, "chapters": [1]},
+    ]
+}
+
+SAMPLES = {"narrator": ["夜色很深。"], "role_0001": ["不急。", "别废话。"]}
 
 
-def _narrator() -> dict:
+def _runner(settings, llm):
+    return LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=2), settings)
+
+
+def _route(user: str) -> dict:
+    """旁白拿 v_nar，其余角色拿 v_hero，并带一个不存在的 id 试校验。"""
+    if "角色：旁白" in user:
+        return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "适合旁白"}]}
     return {
-        "id": "narrator", "name": "旁白", "aliases": [], "gender": "未知", "age_group": "未知",
-        "personality": [], "speaking_style": "平稳", "base_emotion": "平静", "base_intensity": 0.3,
-        "chapters": [1], "mentions": 1, "is_narrator": True,
+        "recommendations": [
+            {"voiceId": "不存在", "confidence": 0.99, "reason": "编的"},
+            {"voiceId": "v_hero", "confidence": 0.8, "reason": "冷峻克制"},
+            {"voiceId": "v_nar", "confidence": 0.4, "reason": "备选"},
+        ]
     }
 
 
-def test_character_rate_maps_speaking_style():
-    assert character_rate({"speaking_style": "说话很快"}) == "快"
-    assert character_rate({"speaking_style": "语速偏慢"}) == "慢"
-    assert character_rate({"speaking_style": ""}) == "中"
+def test_voice_catalog_lists_every_voice_with_its_id_and_tags():
+    text = voice_catalog_text([_voice("v001"), _voice("v002", name="优雅女设计师", gender="女")])
+    assert "v001" in text and "音色v001" in text
+    assert "v002" in text and "优雅女设计师" in text and "女" in text
 
 
-def test_gender_mismatch_disqualifies():
-    score, reasons, qualified = score_voice(_character(), _voice("v_f", gender="女"))
-    assert qualified is False and score == 0.0
-    assert "性别不符" in reasons[0]
+def test_samples_by_role_prefers_dialogue_and_keeps_order():
+    lines = {
+        1: [
+            {"speaker_name": "苏锐", "kind": "dialogue", "text": "别废话。"},
+            {"speaker_name": "旁白", "kind": "narration", "text": "夜色很深。"},
+            {"speaker_name": "苏锐", "kind": "dialogue", "text": "不急。"},
+        ]
+    }
+    samples = samples_by_role(lines)
+    assert samples["苏锐"] == ["别废话。", "不急。"]
+    assert samples["旁白"] == ["夜色很深。"]
 
 
-def test_full_score_is_sum_of_weighted_items():
-    voice = _voice(
-        "v_1", age_group="青年", speech_rate="慢", personality=("冷酷", "沉稳"),
-        mood=("冷酷",), voice_quality=("磁性",), usage_type=("角色对话",), description="冷酷而沉稳的男声",
+def test_build_casting_keeps_llm_order_and_drops_invalid_ids(settings):
+    voices = [_voice("v_nar", gender="女", usage_type=("旁白叙述",)), _voice("v_hero")]
+    llm = FakeLLM(routes={"【VOICE_RECOMMEND】": _route})
+    casting, issues = build_casting(
+        _runner(settings, llm),
+        book_id="b1",
+        characters=CHARACTERS,
+        samples=SAMPLES,
+        voices=voices,
     )
-    score, reasons, qualified = score_voice(_character(), voice)
-    # 年龄 30 + 语速 20 + 性格 16（2×8）+ 基调 6 + 用途 6 + 描述 6（2×3）= 84
-    # voice_quality 是"磁性"，与角色性格词不重合，所以不加分
-    assert qualified is True
-    assert score == 84.0
-    assert "年龄段一致 +30" in reasons
-    assert "语速一致 +20" in reasons
+    assert issues == []
+    narrator = casting["roles"]["narrator"]
+    assert narrator["voice_id"] == "v_nar"
+    assert narrator["recommendations"][0]["voice_name"] == "音色v_nar"
+    hero = casting["roles"]["role_0001"]
+    # 不存在的 voiceId 被剔除，第一推荐顺位变成 v_hero
+    assert [item["voice_id"] for item in hero["recommendations"]] == ["v_hero", "v_nar"]
+    assert hero["voice_id"] == "v_hero"
+    assert hero["source"] == "llm"
+    assert casting["narrator_voice"] == "v_nar"
+    assert len(llm.calls) == 2
+    assert voice_for_speaker(casting, "老苏") == "v_hero"
 
 
-def test_voice_quality_and_book_genres_add_points():
-    voice = _voice(
-        "v_1", personality=("冷酷", "沉稳"), voice_quality=("沉稳",),
-        genres=("都市", "言情"), speech_rate="慢",
+def test_build_casting_keeps_a_manual_choice(settings):
+    voices = [_voice("v_nar", gender="女"), _voice("v_hero")]
+    previous = {"roles": {"role_0001": {"role_id": "role_0001", "voice_id": "v_nar", "source": "manual"}}}
+    llm = FakeLLM(routes={"【VOICE_RECOMMEND】": _route})
+    casting, _ = build_casting(
+        _runner(settings, llm),
+        book_id="b1",
+        characters=CHARACTERS,
+        samples=SAMPLES,
+        voices=voices,
+        previous=previous,
     )
-    score, reasons, _ = score_voice(_character(), voice, book_genres=("都市", "古风"))
-    # 年龄 30 + 语速 20 + 性格 16 + 质地 5（沉稳）+ 题材 5（都市）+ 用途 6 = 82
-    assert score == 82.0
-    assert "音色匹配 +5" in reasons
-    assert "题材先验 +5" in reasons
+    hero = casting["roles"]["role_0001"]
+    assert hero["voice_id"] == "v_nar"
+    assert hero["source"] == "manual"
+    assert hero["recommendations"][0]["voice_id"] == "v_hero"
 
 
-def test_narrator_prefers_narration_voices():
-    narrator_voice = _voice(
-        "v_nar", gender="女", age_group="中年", usage_type=("旁白叙述",), description="沉稳旁白", mood=("平稳",)
+def test_build_casting_falls_back_when_llm_fails(settings):
+    voices = [_voice("v_nar"), _voice("v_hero")]
+    llm = FakeLLM(routes={"【VOICE_RECOMMEND】": _route}, fail_on={"【VOICE_RECOMMEND】"})
+    casting, issues = build_casting(
+        _runner(settings, llm),
+        book_id="b1",
+        characters=CHARACTERS,
+        samples=SAMPLES,
+        voices=voices,
     )
-    dialogue_voice = _voice("v_dia", usage_type=("角色对话",))
-    score, reasons, _ = score_voice(_narrator(), narrator_voice, is_narrator=True)
-    assert score > 0 and "旁白叙述用途 +12" in reasons
-    assert score_voice(_narrator(), dialogue_voice, is_narrator=True)[0] < score
+    assert [issue["kind"] for issue in issues] == ["voice_recommend_failed", "voice_recommend_failed"]
+    # 兜底也要尽量不撞音色：旁白先拿 v_nar，角色拿 v_hero
+    assert casting["roles"]["narrator"]["voice_id"] == "v_nar"
+    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
+    assert casting["roles"]["role_0001"]["source"] == "fallback"
+
+
+def test_build_casting_without_voices_falls_back_to_default(settings):
+    casting, issues = build_casting(
+        _runner(settings, FakeLLM(routes={"【VOICE_RECOMMEND】": _route})),
+        book_id="b1",
+        characters=CHARACTERS,
+        samples=SAMPLES,
+        voices=[],
+    )
+    assert casting["voice_library_size"] == 0
+    assert {role["voice_id"] for role in casting["roles"].values()} == {"default"}
+    assert [issue["kind"] for issue in issues] == ["voice_library_empty"]
 
 
 def test_load_voice_library_reads_directory(settings):
@@ -100,55 +157,12 @@ def test_load_voice_library_reads_directory(settings):
     assert voices[0].speech_rate == "慢"
 
 
-def test_build_casting_assigns_narrator_first_and_avoids_reuse():
-    characters = {
-        "characters": [
-            _narrator(),
-            _character(),
-            _character(id="role_0002", name="王胖子", chapters=[1], personality=[]),
-        ]
+def test_voice_for_speaker_accepts_role_id_name_and_alias():
+    casting = {
+        "names": {"苏锐": "role_0001", "老苏": "role_0001"},
+        "roles": {"role_0001": {"voice_id": "v_hero"}},
     }
-    voices = [
-        _voice("v_nar", gender="女", usage_type=("旁白叙述",)),
-        _voice("v_hero", personality=("冷酷", "沉稳"), speech_rate="慢"),
-        _voice("v_buddy", personality=(), speech_rate="中"),
-    ]
-    casting, issues = build_casting(characters, voices, book_id="b1")
-    assert casting["roles"]["narrator"]["voice_id"] == "v_nar"
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
-    assert casting["roles"]["role_0002"]["voice_id"] == "v_buddy"
-    assert casting["narrator_voice"] == "v_nar"
-    assert issues == []
-    assert casting["names"]["秦风"] == "role_0001"
-    assert voice_for_speaker(casting, "秦风") == "v_hero"
-    assert voice_for_speaker(casting, "role_0002") == "v_buddy"
+    assert voice_for_speaker(casting, "role_0001") == "v_hero"
+    assert voice_for_speaker(casting, "苏锐") == "v_hero"
+    assert voice_for_speaker(casting, "老苏") == "v_hero"
     assert voice_for_speaker(casting, "不存在") is None
-
-
-def test_build_casting_records_reuse_when_pool_is_exhausted():
-    characters = {
-        "characters": [_narrator(), _character(), _character(id="role_0002", name="王胖子", chapters=[1])]
-    }
-    voices = [_voice("v_nar", gender="女", usage_type=("旁白叙述",)), _voice("v_only")]
-    casting, issues = build_casting(characters, voices, book_id="b1")
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_only"
-    assert casting["roles"]["role_0002"]["voice_id"] == "v_only"
-    assert [issue["kind"] for issue in issues] == ["casting_voice_reused"]
-    assert issues[0]["detail"]["shared_with"] == "role_0001"
-
-
-def test_build_casting_without_voices_falls_back_to_default():
-    casting, issues = build_casting({"characters": [_narrator(), _character()]}, [], book_id="b1")
-    assert casting["voice_library_size"] == 0
-    assert {role["voice_id"] for role in casting["roles"].values()} == {"default"}
-    assert [issue["kind"] for issue in issues] == ["voice_library_empty"]
-    assert voice_for_speaker(casting, "秦风") == "default"
-
-
-def test_build_casting_relaxes_gender_when_nothing_matches():
-    characters = {"characters": [_narrator(), _character()]}
-    voices = [_voice("v_nar", gender="女", usage_type=("旁白叙述",)), _voice("v_f", gender="女")]
-    casting, issues = build_casting(characters, voices, book_id="b1")
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_f"
-    assert [issue["kind"] for issue in issues] == ["casting_no_match"]
-    assert "放宽性别约束" in issues[0]["reason"]

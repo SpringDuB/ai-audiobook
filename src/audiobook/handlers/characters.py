@@ -1,12 +1,17 @@
+"""分析链第一步：逐章提取（大模型直出「句子 + 说话人 + 情绪」），再做全书角色整合。
+
+提取和整合都是 LLM：提取按章并发，整合在全部章提取完后跑一次。
+角色表落盘后为每一章入队 lines（物化落盘）；单章失败不拖垮全书，但会写异常清单。
+"""
+
 import logging
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs, store
-from ..analysis.attribution import names_from_payload
-from ..analysis.chapter import analyze_chapter, dump_chapter_analysis
-from ..analysis.characters import aggregate_characters
+from ..analysis.extract import dump_extraction, extract_chapter
 from ..analysis.issues import record_issue
+from ..analysis.merge import merge_roles, role_entries
+from ..analysis.roles import names_from_payload
 from ..worker import register
 
 logger = logging.getLogger(__name__)
@@ -26,22 +31,22 @@ def handle_characters(ctx, job) -> None:
     if not chapters:
         raise RuntimeError("没有分章结果，请先跑 chapter_split")
 
-    # 重新分析时拿旧角色表里的名字当参照，保证跨章叫法一致（不是让它照抄）
+    # 重跑时拿旧角色表里的名字当参照，保证跨章叫法一致（不是让它照抄）
     existing = store.read_json(store.characters_path(ctx.settings, book_id), default={}) or {}
     known_names = names_from_payload(existing)
 
-    results = []
+    results: list[tuple[int, list]] = []
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, ctx.settings.llm_concurrency)) as pool:
         futures = {
             pool.submit(
-                analyze_chapter,
+                extract_chapter,
                 runner,
-                settings=ctx.settings,
                 book_id=book_id,
                 chapter_index=chapter["index"],
-                title=chapter["title"],
+                title=chapter.get("title") or f"第{chapter['index']}章",
                 content=chapter["content"],
+                window_chars=ctx.settings.llm_line_window_chars,
                 known_names=known_names,
             ): chapter
             for chapter in chapters
@@ -51,20 +56,20 @@ def handle_characters(ctx, job) -> None:
             try:
                 result = future.result()
             except Exception as exc:  # 单章失败不拖垮全书，但必须可见
-                logger.warning("第 %s 章整章分析失败: %s", chapter["index"], exc)
+                logger.warning("第 %s 章提取失败: %s", chapter["index"], exc)
                 record_issue(
                     ctx.settings,
                     book_id,
-                    "chapter_analysis_failed",
+                    "chapter_extract_failed",
                     reason=f"{type(exc).__name__}: {exc}",
                     chapter=chapter["index"],
-                    fallback="本章不参与角色聚合，行数据留空（可稍后单独重跑本章）",
-                    detail={"title": chapter["title"]},
+                    fallback="本章不参与角色整合，行数据留空（可单独重跑本章）",
+                    detail={"title": chapter.get("title")},
                 )
             else:
                 store.atomic_replace_json(
-                    store.chapter_analysis_path(ctx.settings, book_id, chapter["index"]),
-                    dump_chapter_analysis(result.analysis),
+                    store.extract_path(ctx.settings, book_id, chapter["index"]),
+                    dump_extraction(result),
                 )
                 for issue in result.issues:
                     record_issue(
@@ -76,20 +81,28 @@ def handle_characters(ctx, job) -> None:
                         fallback=issue.get("fallback"),
                         detail=issue.get("detail"),
                     )
-                results.append((chapter["index"], result.analysis))
+                results.append((chapter["index"], result.lines))
             finally:
                 done += 1
                 ctx.progress(job, done, len(chapters), f"第 {chapter['index']} 章")
     if not results:
-        raise RuntimeError("整章分析全部章节失败，请检查 LLM 端点")
+        raise RuntimeError("整章提取全部失败，请检查 LLM 端点")
 
     results.sort(key=lambda item: item[0])
-    aggregate = aggregate_characters(results)
-    store.atomic_replace_json(
-        store.characters_path(ctx.settings, book_id),
-        {"book_id": book_id, "generated_at": int(time.time() * 1000), **aggregate},
+    payload, issues = merge_roles(
+        runner, book_id=book_id, entries=role_entries(results), known=known_names
     )
+    for issue in issues:
+        record_issue(
+            ctx.settings,
+            book_id,
+            issue["kind"],
+            reason=issue["reason"],
+            fallback=issue.get("fallback"),
+            detail=issue.get("detail"),
+        )
+    store.atomic_replace_json(store.characters_path(ctx.settings, book_id), payload)
     for chapter in chapters:
         jobs.enqueue(ctx.conn, "lines", book_id, chapter["index"])
     ctx.conn.execute("UPDATE books SET status='analyzed' WHERE id=?", (book_id,))
-    ctx.progress(job, len(chapters), len(chapters), f"角色 {len(aggregate['characters'])} 个")
+    ctx.progress(job, len(chapters), len(chapters), f"角色 {len(payload['characters'])} 个")

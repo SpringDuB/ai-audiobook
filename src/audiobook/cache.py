@@ -22,13 +22,15 @@ def params_from_line(row: dict, caps: EngineCapabilities, mode: str = "text") ->
     mode = text（默认）：用 emotion_text 这句自然语言描述驱动情绪；
     mode = vector：用 emotion.mix 拼出的 8 维向量。
     服务端没加载 QwenEmotion（caps.emotion_text=False）时，文本模式自动退回向量。
+    旁白（kind=narration）不带情绪：只出文本，不拼向量。
     """
     emotion = row.get("emotion") or {}
     emotion_text = str(row.get("emotion_text") or "").strip()
-    use_text = (mode or "text").lower() == "text" and caps.emotion_text and bool(emotion_text)
+    narration = (row.get("kind") or "dialogue") == "narration"
+    use_text = (mode or "text").lower() == "text" and caps.emotion_text and bool(emotion_text) and not narration
     vector = None
     dominant = dim_name_for(emotion.get("dominant"), caps.emotion_dims)
-    if not use_text and caps.emotions and dominant in caps.emotion_dims:
+    if not narration and not use_text and caps.emotions and dominant in caps.emotion_dims:
         intensity = emotion.get("intensity")
         weights = {dim: 0.0 for dim in caps.emotion_dims}
         # mix = 主情绪 + 副情绪（同一句话里的两层情绪），直接拼成 IndexTTS 的 8 维向量

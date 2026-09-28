@@ -10,22 +10,22 @@ from audiobook.text.split_chapters import split_sentences
 
 
 def make_narrator_lines(chapter_index: int, text: str, scene_index: int = 1) -> list[dict]:
-    """测试用行工厂：整章一个场景、全部旁白（字段与真实分析结果完全一致）。"""
+    """测试用行工厂：整章一个场景、全部旁白（字段与真实分析结果完全一致）。
+
+    旁白不带情绪向量（emotion.source=none），只有人物话术才需要情绪。
+    """
     rows: list[dict] = []
     for seq, sentence in enumerate(split_sentences(text), start=1):
         rows.append(
             derive_line(
-                {"emotion": None, "intensity": None, "delivery": "normal"},
+                {},
                 chapter_index=chapter_index,
                 scene_index=scene_index,
                 seq=seq,
                 sentence=sentence,
                 speaker_id="narrator",
                 speaker_name="旁白",
-                addressee_id=None,
-                addressee_name=None,
-                character=None,
-                relationship=None,
+                kind="narration",
                 pronounce_table={},
             )
         )

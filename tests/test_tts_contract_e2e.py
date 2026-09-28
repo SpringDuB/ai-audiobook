@@ -38,33 +38,28 @@ STUB_SERVER = (
 ).replace("{tests}", str(TTS_TESTS))
 
 SAMPLE = "第一章 开场\n\n苏锐说：“走。”\n\n王胖子说：“好。”"
-CARDS = [
-    {"name": "苏锐", "aliases": ["老苏"], "gender": "男", "age_group": "青年"},
-    {"name": "王胖子", "aliases": [], "gender": "男", "age_group": "青年"},
-    {"name": "旁白", "gender": "未知", "age_group": "未知"},
-]
 
 
-def _route_chapter(user: str) -> dict:
-    """整章分析假模型：角色 + 每句标注一趟出。"""
-    tail = user.split("需要标注的句子：", 1)[-1]
-    rows = []
-    for line in tail.splitlines():
-        if ". " not in line:
+def _route_extract(user: str) -> list[dict]:
+    """提取假模型：归属句留在旁白，引语归到说话人。"""
+    body = user.split("【正文】", 1)[-1]
+    rows: list[dict] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
             continue
-        number, body = line.split(". ", 1)
-        if not number.strip().isdigit():
-            continue
-        if "[对白" not in body:
-            speaker = "旁白"
-        elif "苏锐" in body:
-            speaker = "苏锐"
-        elif "王胖子" in body:
-            speaker = "王胖子"
+        if "说：“" in line:
+            head, rest = line.split("说：“", 1)
+            rows.append({"text": f"{head}说：", "role": "旁白", "emotion": None})
+            rows.append({"text": f"“{rest}", "role": head, "emotion": "平静", "intensity": 0.4})
         else:
-            speaker = "旁白"
-        rows.append({"index": int(number), "speaker": speaker, "emotion": "平静", "intensity": 0.4})
-    return {"characters": CARDS, "relationships": [], "lines": rows}
+            rows.append({"text": line, "role": "旁白", "emotion": None})
+    return rows
+
+
+def _route_merge(user: str) -> dict:
+    people = [{"name": name, "aliases": []} for name in ("苏锐", "王胖子") if name in user]
+    return {"characters": people}
 
 
 def _free_port() -> int:
@@ -144,7 +139,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         txt.write_text(SAMPLE, encoding="utf-8")
         book_id = import_book(settings, conn, txt, title="TTS 契约测试")
 
-        llm = FakeLLM(routes={"CHAPTER_ANALYSIS": _route_chapter})
+        llm = FakeLLM(routes={"【EXTRACT】": _route_extract, "【MERGE_ROLES】": _route_merge})
         engine = build_engine(settings)
         ctx = WorkerContext(
             settings=settings,

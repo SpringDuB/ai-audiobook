@@ -93,6 +93,35 @@ def test_plan_rerenders_chapters_without_render_meta(settings, conn):
     assert plan_book(settings, conn, "b1") == [("post", 2)]
 
 
+def test_plan_resynthesizes_chapters_after_a_voice_change(settings, conn):
+    """换过音色：章节成品要重合成（只重跑缓存键变了的行），不能拿旧片段重渲染。"""
+    _chapters(settings, "b1", indexes=(1,))
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    store.write_jsonl_atomic(
+        store.lines_path(settings, "b1", 1),
+        [{"id": "c0001-s01-l001", "speaker": "role_0001", "text": "第一句。"}],
+    )
+    store.atomic_replace_json(
+        store.casting_path(settings, "b1"),
+        {"roles": {"role_0001": {"role_id": "role_0001", "voice_id": "v_new"}}},
+    )
+    store.atomic_replace_json(
+        store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.meta.json",
+        {"voice_id": "v_old", "cache_key": "x", "duration": 1.0},
+    )
+    store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", 1), b"RIFF")
+    store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", 1), b"1\n")
+    _render_meta(settings, 1)
+    assert plan_book(settings, conn, "b1") == [("synthesize", 1)]
+
+    # 已经按新音色合成过 → 不再重复入队，正常收尾合本
+    store.atomic_replace_json(
+        store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.meta.json",
+        {"voice_id": "v_new", "cache_key": "y", "duration": 1.0},
+    )
+    assert plan_book(settings, conn, "b1") == [("book_export", None)]
+
+
 def test_resume_book_enqueues_the_planned_jobs(settings, conn):
     _chapters(settings, "b1")
     plan = resume_book(settings, conn, "b1")

@@ -1,3 +1,9 @@
+"""把一行标注推导成落盘记录：id / 停顿 / 语速 / 语言 / 注音。
+
+情绪完全来自提取阶段的大模型结果（主情绪 + 可选副情绪），这里不再有
+规则推断的情绪层；唯一的约定是：**旁白不带情绪向量**，只有人物话术带。
+"""
+
 import re
 
 from ..text.prosody import derive_pause_ms, derive_rate
@@ -8,10 +14,8 @@ KANA = re.compile(r"[\u3040-\u30ff]")
 CJK = re.compile(r"[\u4e00-\u9fff]")
 LATIN = re.compile(r"[A-Za-z]")
 
-HOSTILITY_THRESHOLD = 0.6
-INTIMACY_THRESHOLD = 0.6
-
 DELIVERY_ZH = {"shout": "喊叫", "whisper": "压低声音", "sneer": "带讥讽", "normal": "正常语气"}
+DEFAULT_INTENSITY = 0.5
 
 
 def line_id(chapter_index: int, scene_index: int, seq: int) -> str:
@@ -32,70 +36,29 @@ def derive_lang(text: str) -> str:
     return "ZH"
 
 
-def relationship_emotion(relationship: dict | None) -> tuple[str, float] | None:
-    if not relationship:
-        return None
-    hostility = float(relationship.get("hostility") or 0.0)
-    intimacy = float(relationship.get("intimacy") or 0.0)
-    if hostility >= HOSTILITY_THRESHOLD:
-        return "愤怒", round(hostility, 3)
-    if intimacy >= INTIMACY_THRESHOLD:
-        return "喜悦", round(intimacy, 3)
-    return None
+def resolve_emotion(row: dict, kind: str = "dialogue") -> dict:
+    """旁白不带情绪；人物话术用模型给的主/副情绪，缺了按平静 + default 记录。"""
+    if kind == "narration":
+        return {"dominant": "平静", "intensity": 0.0, "source": "none"}
+    dominant = row.get("emotion")
+    if dominant not in EMOTIONS:
+        return {"dominant": "平静", "intensity": DEFAULT_INTENSITY, "source": "default"}
+    intensity = DEFAULT_INTENSITY if row.get("intensity") is None else clamp01(row.get("intensity"))
+    mix = [{"name": dominant, "weight": round(intensity, 3)}]
+    secondary = row.get("secondary")
+    if secondary in EMOTIONS and secondary != dominant:
+        weight = clamp01(0.3 if row.get("secondary_weight") is None else row.get("secondary_weight"))
+        if weight > 0:
+            mix.append({"name": secondary, "weight": round(min(weight, 0.5), 3)})
+    return {"dominant": dominant, "intensity": round(intensity, 3), "source": "line", "mix": mix}
 
 
-def derive_emotion_text(explicit, emotion: dict, delivery: str) -> str:
-    """文本描述情绪通道用的一句话指令：模型给了就用模型的，没给就用情绪+幅度+语气兜底。"""
-    text = str(explicit or "").strip()
-    if text:
-        return text[:60]
+def derive_emotion_text(emotion: dict, delivery: str) -> str:
+    """文本描述情绪通道用的一句话指令（通道默认关闭，这里只留兜底描述）。"""
     return (
         f"{emotion['dominant']}，幅度{emotion['intensity']:.2f}，"
         f"{DELIVERY_ZH.get(delivery, DELIVERY_ZH['normal'])}"
     )
-
-
-def resolve_emotion(
-    line_emotion,
-    line_intensity,
-    secondary=None,
-    secondary_weight=None,
-    previous_emotion=None,
-    relationship=None,
-    character=None,
-) -> dict:
-    """优先级：句级 > 上一句（模型写"继承"时）> 人物关系 > 角色底色。
-
-    句级结果带 mix：主情绪 + 可选的副情绪（同一句话里的第二层情绪），
-    合成时按这两个权重拼出 IndexTTS 的 8 维情感向量。
-    """
-    if line_emotion in EMOTIONS:
-        intensity = 0.6 if line_intensity is None else clamp01(line_intensity)
-        mix = [{"name": line_emotion, "weight": round(intensity, 3)}]
-        if secondary in EMOTIONS and secondary != line_emotion:
-            weight = clamp01(0.3 if secondary_weight is None else secondary_weight)
-            if weight > 0:
-                mix.append({"name": secondary, "weight": round(min(weight, 0.5), 3)})
-        return {"dominant": line_emotion, "intensity": round(intensity, 3), "source": "line", "mix": mix}
-    if previous_emotion and previous_emotion.get("dominant") in EMOTIONS:
-        inherited = {
-            "dominant": previous_emotion["dominant"],
-            "intensity": round(clamp01(previous_emotion.get("intensity", 0.4)), 3),
-            "source": "inherit",
-        }
-        if previous_emotion.get("mix"):
-            inherited["mix"] = previous_emotion["mix"]
-        return inherited
-    from_relationship = relationship_emotion(relationship)
-    if from_relationship:
-        return {"dominant": from_relationship[0], "intensity": from_relationship[1], "source": "relationship"}
-    if character and character.get("base_emotion") in EMOTIONS:
-        return {
-            "dominant": character["base_emotion"],
-            "intensity": round(clamp01(character.get("base_intensity", 0.4)), 3),
-            "source": "character",
-        }
-    return {"dominant": "平静", "intensity": 0.3, "source": "none"}
 
 
 def derive_line(
@@ -107,40 +70,28 @@ def derive_line(
     sentence: str,
     speaker_id: str,
     speaker_name: str,
-    addressee_id: str | None,
-    addressee_name: str | None,
-    character: dict | None,
-    relationship: dict | None,
-    pronounce_table: dict[str, str],
-    previous_emotion: dict | None = None,
-    kind: str = "narration",
+    kind: str = "dialogue",
+    pronounce_table: dict[str, str] | None = None,
 ) -> dict:
-    emotion = resolve_emotion(
-        row.get("emotion"),
-        row.get("intensity"),
-        row.get("secondary"),
-        row.get("secondary_weight"),
-        previous_emotion,
-        relationship,
-        character,
-    )
+    kind = kind if kind in ("narration", "dialogue") else "narration"
+    emotion = resolve_emotion(row, kind)
     delivery = row.get("delivery") if row.get("delivery") in DELIVERIES else "normal"
     return {
         "id": line_id(chapter_index, scene_index, seq),
         "scene": scene_id(chapter_index, scene_index),
         "scene_index": scene_index,
         "seq": seq,
-        "kind": kind if kind in ("narration", "dialogue") else "narration",
+        "kind": kind,
         "speaker": speaker_id,
         "speaker_name": speaker_name,
-        "addressee": addressee_id,
-        "addressee_name": addressee_name,
+        "addressee": None,
+        "addressee_name": None,
         "text": sentence,
         "emotion": emotion,
-        "emotion_text": derive_emotion_text(row.get("emotion_text"), emotion, delivery),
+        "emotion_text": None if kind == "narration" else derive_emotion_text(emotion, delivery),
         "delivery": delivery,
         "lang": derive_lang(sentence),
         "pause_after_ms": derive_pause_ms(sentence, intensity=emotion["intensity"]),
-        "rate": derive_rate(delivery, emotion),
-        "pronounce": match_pronunciations(sentence, pronounce_table),
+        "rate": derive_rate(delivery, emotion if kind == "dialogue" else None),
+        "pronounce": match_pronunciations(sentence, pronounce_table or {}),
     }

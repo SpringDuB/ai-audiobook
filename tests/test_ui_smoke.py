@@ -106,7 +106,19 @@ def _seed_book(settings, narrator_lines, book_id="smoke"):
         store.casting_path(settings, book_id),
         {
             "narrator_voice": "v1",
-            "roles": {"narrator": {"role_id": "narrator", "name": "旁白", "voice_id": "v1", "voice_name": "测试男声"}},
+            "roles": {
+                "narrator": {
+                    "role_id": "narrator",
+                    "name": "旁白",
+                    "voice_id": "v1",
+                    "voice_name": "测试男声",
+                    "source": "llm",
+                    "recommendations": [
+                        {"voice_id": "v1", "voice_name": "测试男声", "confidence": 0.9, "reason": "叙述平稳"},
+                        {"voice_id": "v2", "voice_name": "备选女声", "confidence": 0.5, "reason": "情绪更亮"},
+                    ],
+                }
+            },
         },
     )
     return book_id
@@ -148,9 +160,11 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert workspace["counts"]["chapterItems"] == 1
     assert workspace["counts"]["lines"] == 2
     assert workspace["counts"]["castRows"] == 1
+    assert workspace["counts"]["recChips"] == 2   # 推荐音色直接排在角色行上
     assert workspace["counts"]["seals"] >= 2
     assert "第一句。" in workspace["text"]
     assert "角色音色" in workspace["text"]
+    assert "推荐" in workspace["text"]
 
     # 切到「原文」页签，原文要能直接看
     raw = _probe(f"{served}/#/book/{book_id}", tmp_path / "raw", extra=("--click=.script__tools .tab:nth-child(2)",))

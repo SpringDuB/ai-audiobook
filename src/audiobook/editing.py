@@ -53,7 +53,11 @@ def apply_line_patch(row: dict, patch: dict, names: dict[str, str]) -> dict:
         dominant = str(patch.get("emotion") or (updated.get("emotion") or {}).get("dominant") or "平静")
         if dominant not in EMOTIONS:
             raise ValueError(f"未知情绪：{dominant}")
-        raw = patch.get("intensity", (updated.get("emotion") or {}).get("intensity", 0.5))
+        fallback = (updated.get("emotion") or {}).get("intensity")
+        if not isinstance(fallback, (int, float)) or fallback <= 0:
+            # 旁白的 intensity 是 0（不带情绪）；人工给它加情绪时用中位数兜底
+            fallback = 0.5
+        raw = patch.get("intensity", fallback)
         updated["emotion"] = {
             "dominant": dominant,
             "intensity": round(clamp01(float(raw)), 3),

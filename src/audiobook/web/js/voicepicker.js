@@ -67,7 +67,7 @@ function place(node, anchor) {
   node.style.top = `${Math.max(12, Math.min(rect.top, window.innerHeight - height - 12))}px`;
 }
 
-export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = "", onPick }) {
+export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = "", recommended = [], onPick }) {
   closeVoicePicker();
   let voices;
   try {
@@ -82,6 +82,8 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
   }
   const groups = facets(voices);
   const filter = { q: "", gender: null, age: null, usage: null };
+  // 大模型推荐过的音色置顶，并在卡片上标出来（reason 直接显示）
+  const picks = new Map((recommended || []).map((item, position) => [item.voice_id, { position, ...item }]));
   const list = h("div", { class: "picker__list" });
   const audio = new Audio();
   audio.preload = "none";
@@ -89,12 +91,14 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
 
   const paint = () => {
     const needle = filter.q.trim().toLowerCase();
-    const matched = voices.filter((voice) => {
-      if (filter.gender && voice.gender !== filter.gender) return false;
-      if (filter.age && voice.age_group !== filter.age) return false;
-      if (filter.usage && !(voice.usage_type || []).includes(filter.usage)) return false;
-      return !needle || haystack(voice).includes(needle);
-    });
+    const matched = voices
+      .filter((voice) => {
+        if (filter.gender && voice.gender !== filter.gender) return false;
+        if (filter.age && voice.age_group !== filter.age) return false;
+        if (filter.usage && !(voice.usage_type || []).includes(filter.usage)) return false;
+        return !needle || haystack(voice).includes(needle);
+      })
+      .sort((a, b) => (picks.get(a.id)?.position ?? 99) - (picks.get(b.id)?.position ?? 99));
     list.replaceChildren(
       h("p", { class: "picker__count mono" }, `${matched.length} / ${voices.length} 个音色`),
       ...(matched.length
@@ -120,10 +124,14 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
     button.textContent = "停止";
   };
 
-  const voiceRow = (voice) =>
-    h(
+  const voiceRow = (voice) => {
+    const pick = picks.get(voice.id);
+    const classes = ["picker__row"];
+    if (voice.id === currentVoiceId) classes.push("is-current");
+    if (pick) classes.push("picker__row--rec");
+    return h(
       "article",
-      { class: voice.id === currentVoiceId ? "picker__row is-current" : "picker__row" },
+      { class: classes.join(" ") },
       h(
         "button",
         {
@@ -138,6 +146,7 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
           "div",
           { class: "picker__pick-head" },
           h("span", { class: "picker__name letterpress" }, voice.name),
+          pick ? h("span", { class: "tag tag--rec" }, `推荐 ${pick.position + 1}`) : null,
           h("span", { class: "mono muted" }, voice.id),
         ),
         h(
@@ -148,6 +157,7 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
           ...(voice.usage_type || []).map((usage) => h("span", { class: "tag" }, usage)),
           ...(voice.voice_quality || []).slice(0, 2).map((tag) => h("span", { class: "tag" }, tag)),
         ),
+        pick?.reason ? h("p", { class: "picker__desc" }, `推荐理由：${pick.reason}`) : null,
         voice.description ? h("p", { class: "picker__desc muted" }, voice.description) : null,
       ),
       h(
@@ -164,6 +174,7 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
         ),
       ),
     );
+  };
 
   const search = h("input", {
     type: "search",

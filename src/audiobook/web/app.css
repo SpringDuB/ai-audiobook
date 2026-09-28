@@ -364,6 +364,9 @@
 .cast-row__head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .cast-row__name { font-family: var(--font-serif); }
 .cast-row__meta { margin: 0; color: var(--paper-500); font-size: var(--text-xs); }
+.cast-row__body { display: grid; gap: var(--space-1); min-inline-size: 0; }
+.cast-row__recs { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.chip__num { color: var(--paper-500); }
 .cast__foot { margin-top: var(--space-3); font-size: var(--text-xs); display: grid; gap: var(--space-1); }
 
 @media (min-width: 1100px) {
@@ -423,6 +426,7 @@
   border-radius: var(--radius-sm);
 }
 .picker__row.is-current { border-color: var(--cinnabar-500); }
+.picker__row--rec { box-shadow: inset 2px 0 0 var(--cinnabar-500); }
 .picker__pick { display: grid; gap: var(--space-1); background: transparent; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer; }
 .picker__pick-head { display: flex; align-items: baseline; gap: var(--space-2); }
 .picker__name { font-family: var(--font-serif); }

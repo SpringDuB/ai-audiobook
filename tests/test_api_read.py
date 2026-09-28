@@ -104,7 +104,7 @@ def test_issues_endpoint_returns_newest_first(settings):
     from audiobook.analysis.issues import record_issue
 
     client = _client(settings)
-    record_issue(settings, "b1", "pass_c_failed", reason="第一条")
+    record_issue(settings, "b1", "extract_text_drift", reason="第一条")
     record_issue(settings, "b1", "audio_missing", reason="第二条", line="c0000-s01-l002")
     issues = client.get("/api/books/b1/issues").json()["issues"]
     assert [row["reason"] for row in issues] == ["第二条", "第一条"]

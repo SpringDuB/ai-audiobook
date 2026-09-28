@@ -1,10 +1,17 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+"""分析链的数据模型：提取（整章一次）/ 角色整合 / 音色推荐。
 
-GENDERS = ("男", "女", "中性", "未知")
-AGE_GROUPS = ("儿童", "少年", "青年", "中年", "老年", "未知")
+分析结果全部由大模型直出，这里的模型只负责严格校验与归一化：
+提取阶段出「每句话 + 说话人 + 对白情绪」；整合阶段出「主名 + 别名」；
+推荐阶段出「1–3 个音色 id + 置信度 + 理由」。
+"""
+
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
+
+# 情绪枚举：中文名，落盘与 UI 用它；合成时再翻成引擎的 8 维向量维度名
 EMOTIONS = ("喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静")
 DELIVERIES = ("normal", "shout", "whisper", "sneer")
 NARRATOR_NAMES = ("旁白", "叙述", "旁白叙述")
+UNKNOWN_ROLES = ("未知", "未知角色", "?", "？")
 
 
 def clamp01(value) -> float:
@@ -15,19 +22,73 @@ def clamp01(value) -> float:
     return max(0.0, min(1.0, number))
 
 
-class CharacterCard(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+def is_narrator(name: str | None) -> bool:
+    return (name or "").strip() in NARRATOR_NAMES
+
+
+def is_unknown(name: str | None) -> bool:
+    return (name or "").strip() in UNKNOWN_ROLES
+
+
+class SpokenLine(BaseModel):
+    """提取阶段的一行：原文句子 + 说话人 + （仅人物话术的）情绪。
+
+    extra="ignore"：一整章会输出上百条记录，多一个字段不该让整段白跑；
+    缺字段/写错类型的记录会在落盘阶段按可见的降级规则处理。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    text: str = ""
+    role: str = "未知"
+    emotion: str | None = None
+    intensity: float | None = None
+    secondary: str | None = None
+    secondary_weight: float | None = None
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _strip_text(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _strip_role(cls, value):
+        return str(value or "").strip() or "未知"
+
+    @field_validator("emotion", "secondary", mode="before")
+    @classmethod
+    def _known_emotion(cls, value):
+        text = str(value or "").strip()
+        return text if text in EMOTIONS else None
+
+    @field_validator("intensity", "secondary_weight", mode="before")
+    @classmethod
+    def _clamp(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            return round(clamp01(value), 3)
+        except (TypeError, ValueError):
+            return None
+
+
+class ExtractionOutput(RootModel[list[SpokenLine]]):
+    """整章提取的返回值：严格的 JSON 数组。"""
+
+
+class CharacterMerge(BaseModel):
+    model_config = ConfigDict(extra="ignore")
 
     name: str
     aliases: list[str] = Field(default_factory=list)
-    gender: str = "未知"
-    age_group: str = "未知"
-    personality: list[str] = Field(default_factory=list)
-    speaking_style: str = ""
-    base_emotion: str = "平静"
-    base_intensity: float = 0.4
 
-    @field_validator("aliases", "personality", mode="before")
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("aliases", mode="before")
     @classmethod
     def _list_or_empty(cls, value):
         if value is None:
@@ -36,88 +97,39 @@ class CharacterCard(BaseModel):
             return [value]
         return value
 
-    @field_validator("speaking_style", mode="before")
+
+class MergeOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    characters: list[CharacterMerge] = Field(default_factory=list)
+
+
+class VoiceRecommendation(BaseModel):
+    """音色推荐的一条：voiceId 用驼峰（与大模型输出、前端字段一致）。"""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    voice_id: str = Field(alias="voiceId")
+    confidence: float = 0.5
+    reason: str = ""
+
+    @field_validator("voice_id", mode="before")
     @classmethod
-    def _str_or_empty(cls, value):
-        return "" if value is None else value
+    def _strip_id(cls, value):
+        return str(value or "").strip()
 
-    @field_validator("base_intensity", mode="before")
-    @classmethod
-    def _clamp(cls, value):
-        return clamp01(value)
-
-
-class Relationship(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    source: str = Field(alias="from")
-    target: str = Field(alias="to")
-    closeness: float = 0.5
-    hierarchy: float = 0.5
-    hostility: float = 0.0
-    intimacy: float = 0.0
-    note: str = ""
-
-    @field_validator("closeness", "hierarchy", "hostility", "intimacy", mode="before")
-    @classmethod
-    def _clamp(cls, value):
-        return clamp01(value)
-
-
-class PassAOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    characters: list[CharacterCard]
-    relationships: list[Relationship]
-
-
-class LineAnnotation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    index: int
-    speaker: str
-    addressee: str | None = None
-    emotion: str = "继承"
-    intensity: float | None = None
-    # 副情绪：表面情绪底下藏着的那层（如"笑着威胁"＝喜悦 + 愤怒），让合成更像人而不是念稿
-    secondary: str | None = None
-    secondary_weight: float | None = None
-    delivery: str = "normal"
-    # 给配音演员的一句话指令（文本描述情绪通道用它）："压着火气、语速比平时快"
-    emotion_text: str | None = None
-
-    @field_validator("emotion", "delivery", "secondary", mode="before")
-    @classmethod
-    def _str_or_default(cls, value, info):
-        if value is None:
-            if info.field_name == "secondary":
-                return None
-            return "继承" if info.field_name == "emotion" else "normal"
-        return value
-
-    @field_validator("intensity", "secondary_weight", mode="before")
+    @field_validator("confidence", mode="before")
     @classmethod
     def _clamp(cls, value):
-        return None if value is None else clamp01(value)
+        return 0.5 if value is None else round(clamp01(value), 3)
 
-    @field_validator("emotion_text", mode="before")
+    @field_validator("reason", mode="before")
     @classmethod
-    def _short_text(cls, value):
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text[:60] or None
+    def _short_reason(cls, value):
+        return str(value or "").strip()[:60]
 
 
-class ChapterAnalysis(BaseModel):
-    """一次 LLM 调用直出的整章结果：角色 + 关系 + 每句标注。
+class RecommendOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
 
-    角色和逐句情感在同一趟里产出，模型是带着全章上下文判情绪和说话人的，
-    比"先抽角色、再单独给句子打情绪"准得多。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    characters: list[CharacterCard] = Field(default_factory=list)
-    relationships: list[Relationship] = Field(default_factory=list)
-    lines: list[LineAnnotation] = Field(default_factory=list)
+    recommendations: list[VoiceRecommendation] = Field(default_factory=list)

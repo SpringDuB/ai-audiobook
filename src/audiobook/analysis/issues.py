@@ -3,16 +3,18 @@ import time
 from .. import store
 
 ISSUE_KINDS = (
-    "pass_a_failed",
-    "pass_a_chapter_skipped",
-    "pass_c_failed",
-    "chapter_analysis_failed",
-    "chapter_window_failed",
-    "line_index_missing",
+    # 提取 / 整合 / 推荐
+    "chapter_extract_failed",
+    "extract_window_failed",
+    "extract_text_drift",
     "unknown_speaker",
+    "emotion_missing",
+    "role_merge_failed",
+    "role_merge_incomplete",
     "voice_library_empty",
-    "casting_voice_reused",
-    "casting_no_match",
+    "voice_recommend_failed",
+    "voice_recommend_invalid",
+    # 合成 / 渲染
     "tts_line_failed",
     "tts_ref_missing",
     "tts_endpoint_down",

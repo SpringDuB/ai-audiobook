@@ -1,8 +1,14 @@
+"""端到端：导入 → 分析角色文本（提取/整合/推荐）→ 生成有声书（合成/渲染/合本）。
+
+全程离线：LLM 用 FakeLLM（按提示词标记路由），TTS 用 FakeEngine。
+这与产品里"只有真引擎"的约束不冲突——替身只存在于 tests/。
+"""
+
 from audiobook import audio, jobs, store
 from audiobook.api.app import create_app  # noqa: F401  确保导入链路完整
 from audiobook.db import connect, init_db
 from fake_engine import FakeEngine
-from audiobook.handlers import casting, characters, lines, post, split, synthesize  # noqa: F401
+from audiobook.handlers import book_export, casting, characters, lines, post, split, synthesize  # noqa: F401
 from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
@@ -20,49 +26,72 @@ SAMPLE = (
 )
 
 
-def _route_chapter(user: str) -> dict:
-    """整章分析假模型：角色 + 关系 + 每句标注一趟出。
-
-    王胖子只出现在含"胖子"的章，让角色 id 排序有确定性。
-    """
-    people = [
-        {"name": "苏锐", "aliases": ["老苏"], "gender": "男", "age_group": "青年", "personality": ["冷静"]},
-        {"name": "旁白", "gender": "未知", "age_group": "未知"},
-    ]
-    relationships = []
-    if "胖子" in user:
-        people.insert(1, {"name": "王胖子", "aliases": ["胖子"], "gender": "男", "age_group": "青年"})
-        relationships.append(
-            {"from": "王胖子", "to": "苏锐", "closeness": 0.8, "hierarchy": 0.2, "hostility": 0.0, "intimacy": 0.6}
-        )
-    lines = []
-    tail = user.split("需要标注的句子：", 1)[-1]
-    for line in tail.splitlines():
-        if ". " not in line:
+def _route_extract(user: str) -> list[dict]:
+    """假模型：引语归说话人、归属句留在旁白、X： 前缀剥掉。"""
+    body = user.split("【正文】", 1)[-1]
+    rows: list[dict] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
             continue
-        number, body = line.split(". ", 1)
-        if not number.strip().isdigit():
-            continue
-        dialogue = "[对白" in body
-        if not dialogue:
-            speaker = "旁白"
-        elif "老苏" in body:
-            speaker = "王胖子"
+        if line.startswith("“") and "”" in line:
+            end = line.index("”") + 1
+            rows.append({"text": line[:end], "role": "王胖子", "emotion": "喜悦", "intensity": 0.6})
+            tail = line[end:]
+            if tail:
+                rows.append({"text": tail, "role": "旁白", "emotion": None})
+        elif "说：“" in line:
+            head, rest = line.split("说：“", 1)
+            rows.append({"text": f"{head}说：", "role": "旁白", "emotion": None})
+            rows.append({"text": f"“{rest}", "role": head, "emotion": "愤怒", "intensity": 0.8})
         else:
-            speaker = "苏锐"
-        lines.append(
+            rows.append({"text": line, "role": "旁白", "emotion": None})
+    return rows
+
+
+def _route_merge(user: str) -> dict:
+    people = []
+    if "苏锐" in user:
+        people.append({"name": "苏锐", "aliases": []})
+    if "王胖子" in user:
+        people.append({"name": "王胖子", "aliases": []})
+    return {"characters": people}
+
+
+def _route_recommend(user: str) -> dict:
+    if "角色：旁白" in user:
+        return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "叙述平稳"}]}
+    return {"recommendations": [{"voiceId": "v_hero", "confidence": 0.85, "reason": "冷峻克制"}]}
+
+
+def _seed_voices(settings) -> None:
+    for voice_id, name, usage in (("v_nar", "沉稳旁白", "旁白叙述"), ("v_hero", "冷峻男声", "角色对话")):
+        store.atomic_replace_json(
+            settings.voices_dir / voice_id / "voice.json",
             {
-                "index": int(number),
-                "speaker": speaker,
-                "emotion": "平静",
-                "intensity": 0.4,
-            }
+                "id": voice_id,
+                "name": name,
+                "gender": "男",
+                "age_group": "青年",
+                "speech_rate": "中",
+                "personality": ["冷静"],
+                "genres": ["都市"],
+                "mood": ["沉稳"],
+                "voice_quality": ["磁性"],
+                "usage_type": [usage],
+                "description": "测试用音色",
+            },
         )
-    return {"characters": people, "relationships": relationships, "lines": lines}
 
 
 def _ctx(settings, conn, engine=None) -> WorkerContext:
-    llm = FakeLLM(routes={"CHAPTER_ANALYSIS": _route_chapter})
+    llm = FakeLLM(
+        routes={
+            "【EXTRACT】": _route_extract,
+            "【MERGE_ROLES】": _route_merge,
+            "【VOICE_RECOMMEND】": _route_recommend,
+        }
+    )
     return WorkerContext(
         settings=settings,
         conn=conn,
@@ -80,15 +109,16 @@ def _drain(ctx) -> None:
         assert guard < 100, "任务链没有收敛"
 
 
-def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(settings, tmp_path):
+def test_full_pipeline_offline_produces_chapter_and_book_artifacts(settings, tmp_path):
     conn = connect(settings.db_path)
     init_db(conn)
+    _seed_voices(settings)
     txt = tmp_path / "地球最后一个修仙者.txt"
     txt.write_text(SAMPLE, encoding="utf-8")
     book_id = import_book(settings, conn, txt, title="地球最后一个修仙者")
     ctx = _ctx(settings, conn)
 
-    # 导入只自动分章：LLM 要等用户点「一键分析」
+    # 导入只自动分章：LLM 要等用户点「分析角色文本」
     _drain(ctx)
     assert store.read_json(store.characters_path(settings, book_id)) is None
 
@@ -97,21 +127,25 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
 
     analysis = store.read_json(store.characters_path(settings, book_id))
     assert analysis["characters"][0]["id"] == "narrator"
-    assert [c["name"] for c in analysis["characters"][1:]] == ["苏锐", "王胖子"]
+    assert {c["name"] for c in analysis["characters"]} == {"旁白", "苏锐", "王胖子"}
+    assert analysis["names"]["王胖子"] == "role_0002"
+    assert analysis["names"]["苏锐"] == "role_0001"
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 1))
-    assert [row["speaker"] for row in rows] == ["narrator", "role_0002", "narrator"]
     assert [row["kind"] for row in rows] == ["narration", "dialogue", "narration"]
-    assert rows[1]["addressee"] is None  # 受话人标签已下线
+    assert [row["speaker"] for row in rows] == ["narrator", "role_0002", "narrator"]
     assert rows[1]["emotion"]["source"] == "line"
+    assert rows[1]["emotion"]["mix"] == [{"name": "喜悦", "weight": 0.6}]
+    assert rows[0]["emotion"] == {"dominant": "平静", "intensity": 0.0, "source": "none"}
     rows_ch2 = store.read_jsonl(store.lines_path(settings, book_id, 2))
-    # “苏锐说：”是旁白行，“胖子，别废话。”是引语行（靠归属句提示落到苏锐）
     assert [row["kind"] for row in rows_ch2] == ["narration", "dialogue"]
     assert [row["speaker"] for row in rows_ch2] == ["narrator", "role_0001"]
 
     casting = store.read_json(store.casting_path(settings, book_id))
-    assert casting["voice_library_size"] == 0
-    assert casting["names"]["老苏"] == "role_0001"
+    assert casting["narrator_voice"] == "v_nar"
+    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
+    assert casting["roles"]["role_0001"]["recommendations"][0]["voice_name"] == "冷峻男声"
+    assert casting["names"]["苏锐"] == "role_0001"
 
     # 分析跑完不该自己开始合成：那是「生成有声书」的事
     assert [j for j in jobs.list_jobs(conn, book_id) if j.status == "queued"] == []
@@ -124,16 +158,21 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
     assert (out / "chapter_0001.wav").exists() and (out / "chapter_0001.srt").exists()
     assert (out / "chapter_0002.wav").exists()
     assert audio.wav_duration(out / "chapter_0001.wav") > 0.1
+
+    # 全部章节都有成品后，再点一次「生成有声书 / 导出成品」就合出整本
+    resume_book(settings, conn, book_id, phase="audio")
+    _drain(ctx)
+    assert (out / "book.wav").exists() and (out / "book.srt").exists()
     assert all(j.status == "done" for j in jobs.list_jobs(conn, book_id))
 
-    log = store.read_jsonl(store.llm_log_path(settings, book_id))
-    assert {row["pass"] for row in log} == {"A"}   # 角色 + 逐句情感同一趟，只有一次调用
-    assert all(row["ok"] is True for row in log)
+    passes = {row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))}
+    assert passes == {"extract", "merge", "casting"}
 
 
 def test_rerun_after_line_change_only_regenerates_changed_line(settings, tmp_path):
     conn = connect(settings.db_path)
     init_db(conn)
+    _seed_voices(settings)
     txt = tmp_path / "b.txt"
     txt.write_text(SAMPLE, encoding="utf-8")
     book_id = import_book(settings, conn, txt, title="T")
@@ -148,10 +187,10 @@ def test_rerun_after_line_change_only_regenerates_changed_line(settings, tmp_pat
 
     engine.synthesize = counting  # type: ignore[method-assign]
     ctx = _ctx(settings, conn, engine=engine)
-    _drain(ctx)                                            # 分章
-    resume_book(settings, conn, book_id, phase="analysis")  # 「一键分析」
+    _drain(ctx)                                             # 分章
+    resume_book(settings, conn, book_id, phase="analysis")   # 「分析角色文本」
     _drain(ctx)
-    resume_book(settings, conn, book_id, phase="audio")     # 「一键生成」
+    resume_book(settings, conn, book_id, phase="audio")      # 「生成有声书」
     _drain(ctx)
     first = calls["n"]
 

@@ -87,7 +87,7 @@ def main(argv=None) -> int:
     settings = get_settings()
 
     if args.cmd == "llm-check":
-        from .analysis.models import PassAOutput
+        from .analysis.models import MergeOutput
         from .llm.base import LLMError
         from .llm.limiter import AdaptiveLimiter
         from .llm.openai_compat import build_client
@@ -99,8 +99,8 @@ def main(argv=None) -> int:
             )
             result = runner.run(
                 system="你是 JSON 生成器，只输出 JSON。",
-                user='只输出 {"characters": [], "relationships": []}',
-                model_cls=PassAOutput,
+                user='只输出 {"characters": []}',
+                model_cls=MergeOutput,
                 pass_name="check",
                 book_id="",
             )

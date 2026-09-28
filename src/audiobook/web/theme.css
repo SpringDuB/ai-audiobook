@@ -202,6 +202,7 @@ label { display: block; font-size: var(--text-sm); color: var(--paper-300); marg
 .state-tag[data-state="synthesizing"], .state-tag[data-state="analyzing"] { border-color: var(--cinnabar-700); color: var(--cinnabar-300); }
 .state-tag[data-state="empty"] { color: var(--paper-500); }
 .tag--alert { border-color: var(--cinnabar-700); color: var(--cinnabar-300); }
+.tag--rec { border-color: var(--cinnabar-500); color: var(--cinnabar-300); }
 
 .progress {
   display: flex;

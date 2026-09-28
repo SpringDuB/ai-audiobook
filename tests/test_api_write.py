@@ -13,7 +13,8 @@ def test_patch_line_writes_file_and_invalidates(settings, narrator_lines):
     assert response.status_code == 200
     body = response.json()
     assert body["line"]["text"] == "改过的第一句。"
-    assert body["line"]["emotion"] == {"dominant": "愤怒", "intensity": 0.3, "source": "manual"}
+    # 旁白原本不带情绪（intensity=0），人工加情绪时用中位数 0.5 兜底
+    assert body["line"]["emotion"] == {"dominant": "愤怒", "intensity": 0.5, "source": "manual"}
     assert body["invalidated"] == {"chapter": 0, "render_meta_removed": True}
     assert store.read_jsonl(store.lines_path(settings, book_id, 0))[0]["text"] == "改过的第一句。"
     assert client.patch(f"/api/books/{book_id}/lines/nope", json={"text": "x"}).status_code == 404
@@ -77,7 +78,7 @@ def test_issues_retry_requeues_affected_chapters(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
     record_issue(settings, book_id, "tts_line_failed", reason="失败", chapter=0)
-    record_issue(settings, book_id, "pass_c_failed", reason="别的类型", chapter=None)
+    record_issue(settings, book_id, "extract_text_drift", reason="别的类型", chapter=None)
     body = client.post(f"/api/books/{book_id}/issues/retry", json={"kinds": ["tts_line_failed"]}).json()
     assert body["chapters"] == [0]
     job = jobs.get_job(_conn(settings), body["job_ids"][0])

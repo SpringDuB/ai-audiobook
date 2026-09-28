@@ -1,41 +1,41 @@
 import pytest
 from pydantic import ValidationError
 
-from audiobook.analysis.models import CharacterCard, PassAOutput, Relationship
+from audiobook.analysis.models import ExtractionOutput, MergeOutput, RecommendOutput, SpokenLine
 
 
-def test_character_card_rejects_unknown_fields_and_missing_name():
+def test_spoken_line_normalizes_missing_role_and_unknown_emotion():
+    line = SpokenLine.model_validate({"text": "  走。 ", "role": "  ", "emotion": "不存在的情绪", "intensity": 3})
+    assert line.text == "走。"
+    assert line.role == "未知"
+    assert line.emotion is None
+    assert line.intensity == 1.0
+
+
+def test_extraction_output_must_be_a_json_array():
+    out = ExtractionOutput.model_validate_json('[{"text":"走。","role":"苏锐","emotion":"愤怒","intensity":0.8}]')
+    assert out.root[0].role == "苏锐"
+    assert out.root[0].emotion == "愤怒"
     with pytest.raises(ValidationError):
-        CharacterCard.model_validate({"name": "秦风", "unknown_key": 1})
-    with pytest.raises(ValidationError):
-        CharacterCard.model_validate({"aliases": ["秦少"]})
+        ExtractionOutput.model_validate_json('{"lines":[]}')
 
 
-def test_character_card_is_lenient_about_optional_details():
-    card = CharacterCard.model_validate({"name": "秦风", "aliases": None, "personality": "冷酷"})
-    assert card.aliases == []
-    assert card.personality == ["冷酷"]
-    assert card.speaking_style == ""
-    assert card.base_intensity == 0.4
+def test_spoken_line_ignores_extra_fields_so_one_bad_row_does_not_kill_the_window():
+    line = SpokenLine.model_validate({"text": "走。", "role": "苏锐", "index": 3})
+    assert line.text == "走。" and line.role == "苏锐"
 
 
-def test_character_card_clamps_intensity():
-    assert CharacterCard.model_validate({"name": "X", "base_intensity": 3.5}).base_intensity == 1.0
-    assert CharacterCard.model_validate({"name": "X", "base_intensity": -1}).base_intensity == 0.0
+def test_merge_output_accepts_a_single_alias_string():
+    out = MergeOutput.model_validate({"characters": [{"name": "苏锐", "aliases": "老苏"}]})
+    assert out.characters[0].name == "苏锐"
+    assert out.characters[0].aliases == ["老苏"]
 
 
-def test_relationship_uses_from_to_in_json_and_named_fields_in_python():
-    rel = Relationship.model_validate(
-        {"from": "秦风", "to": "张卫东", "closeness": 0.2, "hierarchy": 0.1, "hostility": 0.9, "intimacy": 0.0}
+def test_voice_recommendation_uses_camel_case_voice_id_and_clamps_confidence():
+    out = RecommendOutput.model_validate(
+        {"recommendations": [{"voiceId": "v001", "confidence": 1.5, "reason": "冷静克制"}]}
     )
-    assert rel.source == "秦风" and rel.target == "张卫东"
-    dumped = rel.model_dump(by_alias=True)
-    assert dumped["from"] == "秦风" and dumped["to"] == "张卫东"
-    assert Relationship(source="A", target="B").closeness == 0.5
-
-
-def test_pass_a_output_requires_both_lists():
-    with pytest.raises(ValidationError):
-        PassAOutput.model_validate({"characters": []})
-    ok = PassAOutput.model_validate_json('{"characters": [], "relationships": []}')
-    assert ok.characters == [] and ok.relationships == []
+    rec = out.recommendations[0]
+    assert rec.voice_id == "v001"
+    assert rec.confidence == 1.0
+    assert rec.model_dump(by_alias=True)["voiceId"] == "v001"

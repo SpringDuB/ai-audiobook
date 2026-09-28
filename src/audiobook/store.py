@@ -2,10 +2,14 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 
 _BOOK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# 多线程（整章并发分析）会同时写 logs/llm.jsonl 与 issues.jsonl：
+# Windows 上文本模式追加写不是原子的，会互相覆盖丢行，所以串行化并重试。
+_APPEND_LOCK = threading.Lock()
 
 
 def book_dir(settings, book_id: str) -> Path:
@@ -78,9 +82,9 @@ def lines_path(settings, book_id: str, index: int) -> Path:
     return book_dir(settings, book_id) / "analysis" / "lines" / f"chapter_{chapter_tag(index)}.jsonl"
 
 
-def chapter_analysis_path(settings, book_id: str, index: int) -> Path:
-    """整章分析原始结果（角色 + 关系 + 每句标注，说话人还是名字不是 role_id）。"""
-    return book_dir(settings, book_id) / "analysis" / "chapters" / f"chapter_{chapter_tag(index)}.json"
+def extract_path(settings, book_id: str, index: int) -> Path:
+    """整章提取原始结果（每句话 + 说话人 + 对白情绪，说话人还是名字不是 role_id）。"""
+    return book_dir(settings, book_id) / "analysis" / "extract" / f"chapter_{chapter_tag(index)}.json"
 
 
 def audio_dir(settings, book_id: str, index: int) -> Path:
@@ -283,5 +287,16 @@ def read_jsonl(path: Path) -> list[dict]:
 def append_jsonl(path: Path, obj) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    with _APPEND_LOCK:
+        for attempt in range(3):
+            try:
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(line)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                return
+            except PermissionError:  # 另一个进程/线程正开着这个文件
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
