@@ -71,6 +71,11 @@ class IndexTtsBackend:
                 "注意 index-tts 自己声明 requires-python >=3.10,<3.12，所以它的 venv 要用 3.11 建。"
             ) from exc
 
+        # 上游别名表缺 BigVGAN：不补就会先 404、再退回很慢的 hf-mirror
+        from ..indextts_compat import apply_modelscope_aliases
+
+        apply_modelscope_aliases()
+
         try:
             import torch  # index-tts 的依赖；这里只用来判断有没有 CUDA
 

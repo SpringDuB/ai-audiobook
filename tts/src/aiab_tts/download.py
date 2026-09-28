@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 
+from .indextts_compat import modelscope_repo_id
+
 MANIFEST_NAME = "manifest.json"
 AUX_DIR_MARKER = "hf_cache/"
 
@@ -62,7 +64,8 @@ def fetch_modelscope(model_id: str, target_dir: Path, revision: str | None = Non
         from modelscope.hub.snapshot_download import snapshot_download
     except ImportError as exc:  # pragma: no cover - 只在真实下载时需要
         raise RuntimeError("未安装 modelscope：请先 uv pip install modelscope，或把 model_source 改成 local") from exc
-    snapshot_download(model_id, local_dir=str(target_dir), revision=revision)
+    # 同一个别名表：HF 名字在 ModelScope 上叫别的名字时（如 BigVGAN）换成真名
+    snapshot_download(modelscope_repo_id(model_id), local_dir=str(target_dir), revision=revision)
     return Path(target_dir)
 
 

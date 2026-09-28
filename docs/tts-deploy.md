@@ -161,3 +161,4 @@ uv run --project tts aiab-tts unload --url http://127.0.0.1:8020
 | `oom` | 降 `AIAB_TTS_MAX_CONCURRENCY`，或先 `unload` 别的 GPU 任务 |
 | `busy` | 并发打满；后端会自动降档重试，持续出现说明该加实例 |
 | 首次推理卡住 | 辅助模型在下载；离线机器请提前放置 `hf_cache/` 并写进 manifest |
+| `Repo nvidia/bigvgan_v2_22khz_80band_256x not exists` + 掉到 hf-mirror 下载 | 上游 index-tts 的 HF→ModelScope 别名表缺 BigVGAN（ModelScope 上它在 `nv-community/` 命名空间）。我们启动时会自动补上这条别名（`tts/src/aiab_tts/indextts_compat.py`），要拿旧日志里那种慢下载，更新代码后重启 TTS 服务即可 |

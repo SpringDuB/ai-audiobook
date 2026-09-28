@@ -38,9 +38,18 @@ def fake_indextts(monkeypatch):
     module.IndexTTS2 = FakeIndexTTS2
     package = types.ModuleType("indextts")
     package.infer_v2_5 = module
+    # 上游的 HF→ModelScope 别名表：load() 里应该被我们补上 BigVGAN
+    utils = types.ModuleType("indextts.utils")
+    model_download = types.ModuleType("indextts.utils.model_download")
+    model_download.HF_TO_MODELSCOPE_REPO_MAP = {}
+    utils.model_download = model_download
+    package.utils = utils
     monkeypatch.setitem(sys.modules, "indextts", package)
     monkeypatch.setitem(sys.modules, "indextts.infer_v2_5", module)
+    monkeypatch.setitem(sys.modules, "indextts.utils", utils)
+    monkeypatch.setitem(sys.modules, "indextts.utils.model_download", model_download)
     monkeypatch.setattr(sys, "version_info", (3, 11, 9))
+    calls["repo_map"] = model_download.HF_TO_MODELSCOPE_REPO_MAP
     return calls
 
 
@@ -69,6 +78,16 @@ def test_load_passes_paths_and_bf16(fake_indextts, tmp_path):
     assert fake_indextts["init"]["cfg_path"].endswith("config.yaml")
     assert fake_indextts["init"]["use_bf16"] is False
     assert backend.is_loaded() is True
+
+
+def test_load_patches_modelscope_bigvgan_alias(fake_indextts, tmp_path):
+    """BigVGAN 在 ModelScope 上叫 nv-community/...，加载前必须把别名补进去。"""
+    backend = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path))
+    backend.load()
+    assert (
+        fake_indextts["repo_map"]["nvidia/bigvgan_v2_22khz_80band_256x"]
+        == "nv-community/bigvgan_v2_22khz_80band_256x"
+    )
 
 
 def test_synthesize_maps_rate_to_duration_factor(fake_indextts, tmp_path):
