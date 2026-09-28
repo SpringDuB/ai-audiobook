@@ -14,6 +14,7 @@ CAPS = {
     "engineVersion": "2.5.0",
     "emotions": True,
     "emotionDims": ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"],
+    "emotionText": True,
     "rate": True,
     "rateRange": [0.5, 2.0],
     "pronunciation": True,
@@ -52,8 +53,57 @@ def test_capabilities_are_mapped_and_cached(settings):
     assert caps.name == "indextts-2.5" and caps.version == "2.5.0"
     assert caps.emotion_dims[0] == "happy" and caps.sample_rate == 22050
     assert caps.max_text_chars == 300
+    assert caps.emotion_text is True
     engine.capabilities()
     assert calls["n"] == 1
+
+
+def test_synthesize_prefers_emotion_text_over_vector(settings):
+    make_voice(settings)
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/refs":
+            return httpx.Response(200, json={"refId": "ref_1"})
+        if request.url.path == "/v1/synthesize":
+            captured.update(json.loads(request.content))
+        return httpx.Response(200, content=wav_bytes(), headers={"X-Duration-Sec": "0.1"})
+
+    engine = engine_with(with_caps(handler), settings)
+    engine.synthesize(
+        "你给我住手！",
+        "v_test",
+        SynthParams(emo_vector=(0, 0.9, 0, 0, 0, 0, 0, 0), emotion_text="压着火气，语速比平时快"),
+        Path(settings.data_dir) / "b.wav",
+    )
+    assert captured["emoText"] == "压着火气，语速比平时快"
+    assert "emoVector" not in captured
+
+
+def test_emotion_text_is_dropped_when_service_does_not_support_it(settings):
+    """服务端没加载 QwenEmotion 时，文本描述要退回 8 维向量，别让合成直接失败。"""
+    make_voice(settings)
+    captured = {}
+    caps_without_text = {**CAPS, "emotionText": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capabilities":
+            return httpx.Response(200, json=caps_without_text)
+        if request.url.path == "/v1/refs":
+            return httpx.Response(200, json={"refId": "ref_1"})
+        if request.url.path == "/v1/synthesize":
+            captured.update(json.loads(request.content))
+        return httpx.Response(200, content=wav_bytes(), headers={"X-Duration-Sec": "0.1"})
+
+    engine = engine_with(handler, settings)
+    engine.synthesize(
+        "你给我住手！",
+        "v_test",
+        SynthParams(emo_vector=(0, 0.9, 0, 0, 0, 0, 0, 0), emotion_text="压着火气"),
+        Path(settings.data_dir) / "c.wav",
+    )
+    assert "emoText" not in captured
+    assert captured["emoVector"][1] == 0.9
 
 
 def test_uploads_reference_once_and_reuses_ref_id(settings):

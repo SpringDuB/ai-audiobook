@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 浏览器 UI 允许修改的设置白名单；data_dir 与密钥不在其中
 OVERLAY_KEYS = (
     "engine",
+    "emotion_mode",
     "tts_endpoints",
     "synth_concurrency",
     "synth_concurrency_max",
@@ -58,6 +60,8 @@ class Settings(BaseSettings):
     tts_connect_timeout_seconds: float = 5.0
     tts_ref_upload_timeout_seconds: float = 120.0
     synth_concurrency_max: int = 16
+    # 情绪控制通道：text（默认，用一句话描述情绪，需 TTS 服务加载 QwenEmotion）| vector（8 维向量）
+    emotion_mode: Literal["text", "vector"] = "text"
     tts_health_cache_seconds: float = 5.0
     tts_breaker_seconds: float = 60.0
     tts_max_line_chunk_chars: int = 0

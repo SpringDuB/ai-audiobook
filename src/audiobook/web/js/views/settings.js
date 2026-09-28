@@ -11,6 +11,16 @@ const LLM_FIELDS = [
 const LAUNCH_FIELDS = [
   { key: "tts_backend", label: "推理后端", type: "select", options: [["indextts", "indextts（IndexTTS-2.5）"]] },
   {
+    key: "emotion_mode",
+    label: "情绪控制",
+    type: "select",
+    options: [
+      ["text", "文本描述（默认，一句“怎么演”）"],
+      ["vector", "8 维向量（不加载 QwenEmotion）"],
+    ],
+    hint: "文本描述情绪更自然，但要服务端多加载 QwenEmotion（约 1.2GB 显存）；切换后需重新启动 TTS 服务",
+  },
+  {
     key: "tts_model_source",
     label: "模型来源",
     type: "select",

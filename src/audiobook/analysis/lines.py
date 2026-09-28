@@ -152,6 +152,7 @@ def build_lines(
                 "intensity": annotation.intensity,
                 "secondary": annotation.secondary,
                 "secondary_weight": annotation.secondary_weight,
+                "emotion_text": annotation.emotion_text,
                 "delivery": annotation.delivery,
             },
             chapter_index=chapter_index,

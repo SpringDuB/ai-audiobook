@@ -35,7 +35,7 @@ PASS_C_FORMAT = """输出格式（严格遵守，不要增删字段，每条句�
 {"lines":[{"index":1,"speaker":"角色名或旁白","addressee":"角色名或null",
 "emotion":"喜悦|愤怒|悲伤|恐惧|厌恶|忧郁|惊讶|平静",
 "intensity":0.5,"secondary":"以上枚举之一或null","secondary_weight":0.0,
-"delivery":"normal|shout|whisper|sneer"}]}"""
+"delivery":"normal|shout|whisper|sneer","emotion_text":"这句该怎么演（≤25字）"}]}"""
 
 PASS_C_RULES = """情绪与表演要求：
 1. 每句都必须给 emotion，不许全部写"平静"：旁白也有语气（紧张、沉重、轻快、冷峻、温柔……映射到最接近的枚举），
@@ -49,12 +49,15 @@ PASS_C_RULES = """情绪与表演要求：
    强撑镇定 → emotion 平静 intensity 0.5、secondary 恐惧 secondary_weight 0.4。没有第二层就写 null 和 0。
 5. delivery：喊叫/嘶吼/怒吼 shout；耳语/压低声音/虚弱 whisper；冷笑/讥讽/阴阳怪气 sneer；其余 normal。
 6. 心理活动、回忆、内心独白算"旁白"，但要按内容给情绪，不要一律平静。
+7. emotion_text 是给配音演员的一句话指令（≤25 字），写"怎么演"而不是重复情绪词，不要留空。
+   例：「压着火气，语速比平时快」「疲惫但温柔，尾音发虚」「平铺直叙，像在回忆旧事」「故作轻松，其实心虚」。
+   旁白同样要给：旁白决定整本书的听感，不能写成"平静地朗读"。
 
 说话人判定：
-7. speaker 只能从"本段角色"里选，或写"旁白"；不要发明新名字。引号内的直接引语必须有具体说话人；
+8. speaker 只能从"本段角色"里选，或写"旁白"；不要发明新名字。引号内的直接引语必须有具体说话人；
    对话里的称呼（"老苏""王大人"）可以提示 speaker 和 addressee。
-8. addressee 只能是本段在场角色；确实判断不出来写 null。
-9. 只依据原文判断，不要编造情节；实在判断不了情绪时才写"继承"（表示沿用上一句）。"""
+9. addressee 只能是本段在场角色；确实判断不出来写 null。
+10. 只依据原文判断，不要编造情节；实在判断不了情绪时才写"继承"（表示沿用上一句）。"""
 
 
 def pass_c_user(chapter_index: int, title: str, numbered: str, context_block: str) -> str:

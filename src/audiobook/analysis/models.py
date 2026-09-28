@@ -83,6 +83,8 @@ class LineAnnotation(BaseModel):
     secondary: str | None = None
     secondary_weight: float | None = None
     delivery: str = "normal"
+    # 给配音演员的一句话指令（文本描述情绪通道用它）："压着火气、语速比平时快"
+    emotion_text: str | None = None
 
     @field_validator("emotion", "delivery", "secondary", mode="before")
     @classmethod
@@ -97,6 +99,14 @@ class LineAnnotation(BaseModel):
     @classmethod
     def _clamp(cls, value):
         return None if value is None else clamp01(value)
+
+    @field_validator("emotion_text", mode="before")
+    @classmethod
+    def _short_text(cls, value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text[:60] or None
 
 
 class PassCOutput(BaseModel):

@@ -259,6 +259,10 @@ data/
 | `pronounce` | 仅对词典命中的专有名词/多音字注入（维护人名表），不让模型自由编造注音 |
 | `emo_vector` | 由 `emotion.mix`（主情绪 + 副情绪及其权重）拼成引擎的 8 维向量；未标注的句子继承上一句→关系→角色底色 |
 
+> **情绪通道（2026-09-28 追加）**：分析结果同时给两样东西 —— `emotion.mix`（8 维向量用）和 `emotion_text`（一句"怎么演"）。
+> 产品默认把 `emotion_text` 发给 TTS 服务（服务端用 QwenEmotion 翻成向量），设置页可切回纯 8 维向量；
+> 两条通道都必须能独立工作，缺 QwenEmotion 时自动退回向量。中文情绪名 → 引擎英文维度名的翻译在客户端做（`EMOTION_DIM_ALIASES`）。
+
 ### 5.4 自动选角（角色 → 音色）
 
 现有音色库每个音色都带结构化标签：`name / gender / ageGroup / personality[] / genres[] / mood[] / speechRate / voiceQuality[] / languageStyle[] / usageType[] / description`（96 个音色，实测结构一致）。自动选角即"角色属性 × 音色标签"的打分：

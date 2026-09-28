@@ -435,6 +435,7 @@ def create_app(settings, conn) -> FastAPI:
                 "model_dir": fresh.tts_model_dir,
                 "hf_endpoint": fresh.tts_hf_endpoint,
                 "port": fresh.tts_port,
+                "emotion_mode": fresh.emotion_mode,
             },
         }
 
@@ -459,6 +460,11 @@ def create_app(settings, conn) -> FastAPI:
         model_source = str(pick("model_source", "tts_model_source", default=fresh.tts_model_source))
         model_dir = str(pick("model_dir", "tts_model_dir", default=fresh.tts_model_dir))
         hf_endpoint = str(pick("hf_endpoint", "tts_hf_endpoint", default=fresh.tts_hf_endpoint))
+        emotion_mode = str(pick("emotion_mode", default=fresh.emotion_mode)).lower()
+        if emotion_mode not in ("text", "vector"):
+            emotion_mode = "text"
+        # 情绪通道决定服务端要不要加载 QwenEmotion（约 1.2GB 显存），所以先落盘再启动
+        save_overlay(settings, {"emotion_mode": emotion_mode})
         try:
             service = tts_service.start(
                 backend=backend,
@@ -466,6 +472,7 @@ def create_app(settings, conn) -> FastAPI:
                 model_source=model_source,
                 model_dir=model_dir,
                 hf_endpoint=hf_endpoint,
+                emotion_mode=emotion_mode,
             )
         except (RuntimeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

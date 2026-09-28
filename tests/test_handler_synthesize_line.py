@@ -21,13 +21,14 @@ def test_synthesize_line_touches_only_target_line(conn, settings, narrator_lines
     _seed(settings, narrator_lines)
     target = store.audio_dir(settings, "b1", 1) / "c0001-s01-l002.wav"
     other = store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.wav"
-    before = (target.stat().st_mtime_ns, other.stat().st_mtime_ns)
+    # 比对内容而不是 mtime：这台机器上重写文件有时不改 mtime（同秒内重写），断言会假失败
+    before = (target.read_bytes(), other.read_bytes())
     jobs.enqueue_line(conn, "b1", 1, "c0001-s01-l002")
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=FakeEngine(ms_per_char=20.0))
     while run_once(ctx):
         pass
-    assert target.stat().st_mtime_ns != before[0]          # 目标行重合成
-    assert other.stat().st_mtime_ns == before[1]           # 其它行不动
+    assert target.read_bytes() != before[0]                # 目标行用新引擎（20ms/字）重合成
+    assert other.read_bytes() == before[1]                 # 其它行不动
     kinds = [row["kind"] for row in conn.execute("SELECT kind FROM jobs ORDER BY id")]
     assert kinds == ["synthesize_line", "post"]
     statuses = {row["kind"]: row["status"] for row in conn.execute("SELECT kind, status FROM jobs")}

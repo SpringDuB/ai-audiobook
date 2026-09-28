@@ -166,6 +166,7 @@ class LocalTtsService:
         model_source: str | None = None,
         model_dir: str | None = None,
         hf_endpoint: str | None = None,
+        emotion_mode: str | None = None,
     ) -> dict:
         current = self.status()
         if current["running"]:
@@ -178,6 +179,7 @@ class LocalTtsService:
         model_source = model_source or self.settings.tts_model_source
         model_dir = model_dir or self.settings.tts_model_dir
         hf_endpoint = hf_endpoint if hf_endpoint is not None else self.settings.tts_hf_endpoint
+        emotion_mode = emotion_mode or self.settings.emotion_mode
         command = self.build_command(backend=backend, port=port)
         env = {
             **os.environ,
@@ -186,6 +188,8 @@ class LocalTtsService:
             "AIAB_TTS_PORT": str(port),
             "AIAB_TTS_MODEL_SOURCE": model_source,
             "AIAB_TTS_MODEL_DIR": str(model_dir),
+            # 情绪通道：文本描述模式要服务端加载 QwenEmotion（多占约 1.2GB 显存）
+            "AIAB_TTS_USE_QWEN_EMO": "1" if emotion_mode == "text" else "0",
             # 日志要按 UTF-8 落盘：子进程默认按 Windows 控制台代码页(GBK)写，界面上就是乱码
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",

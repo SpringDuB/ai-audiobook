@@ -33,7 +33,7 @@ def synth_line(ctx, job, row: dict) -> dict:
     """合成（或复用）一行音频，返回 {"id", "cached", "duration"}。"""
     caps = ctx.engine.capabilities()
     voice_id = resolve_voice_id(ctx.settings, job.book_id, row["speaker"])
-    params = params_from_line(row, caps)
+    params = params_from_line(row, caps, mode=ctx.settings.emotion_mode)
     key = cache_key(row["text"], voice_id, caps, params)
     clip = store.audio_dir(ctx.settings, job.book_id, job.chapter_index) / f"{row['id']}.wav"
     meta_path = clip.with_suffix(".meta.json")
@@ -51,6 +51,8 @@ def synth_line(ctx, job, row: dict) -> dict:
             "engine_version": caps.version,
             "params": {
                 "emo_vector": list(params.emo_vector) if params.emo_vector else None,
+                "emotion_text": params.emotion_text,
+                "emotion_mode": ctx.settings.emotion_mode,
                 "rate": params.rate,
                 "lang": params.lang,
                 "pronunciation": params.pronunciation,

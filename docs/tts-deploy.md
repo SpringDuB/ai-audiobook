@@ -107,6 +107,21 @@ uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 
 `check` 会打印：引擎与版本、加载状态、**自报并发**、情绪维度、语速范围、语言、采样率、单次文本上限。
 
+### 情绪的两条通道
+
+合成请求里可以带**二选一**的情绪参数（`POST /v1/synthesize`）：
+
+| 字段 | 含义 | 需要什么 |
+|---|---|---|
+| `emoText` | 一句自然语言描述："压着火气，语速比平时快" | 服务端要加载 QwenEmotion（`AIAB_TTS_USE_QWEN_EMO=1`，多占约 1.2GB 显存） |
+| `emoVector` | 8 维情感向量，顺序 happy/angry/sad/afraid/disgusted/melancholic/surprised/calm | 一直可用 |
+
+`/capabilities` 的 `emotionText` 表示服务端是否支持文本通道；不支持时客户端会自动退回 `emoVector`（不会合成失败）。
+产品默认走文本通道，设置页「情绪控制」里可切换；`aiab tts start` 会按当前设置自动带上 `AIAB_TTS_USE_QWEN_EMO`。
+
+分析侧产出的情绪名是中文（喜悦/愤怒/…），客户端会翻成引擎的英文维度名——少了这步翻译，
+`emoVector` 会静默变成 `null`（历史上就踩过这个坑，回归测试在 `tests/test_cache_key.py`）。
+
 服务端并发门 = `AIAB_TTS_MAX_CONCURRENCY`（0 时按显存估算：≥16 GB → 3，≥10 GB → 2，其余 1）。
 超过并发门的请求会排队，排队超过 `AIAB_TTS_QUEUE_TIMEOUT_SECONDS` 返回 `busy`；
 显存不足时返回 `oom`（后端会据此降档 + 熔断 60 秒）。

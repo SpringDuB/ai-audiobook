@@ -2,6 +2,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+# 分析侧产出中文情绪名（喜悦/愤怒/…），IndexTTS 的 8 维向量用英文名（happy/angry/…）：
+# 少了这次翻译，emo_vector 会一直是 None —— 情绪根本没送到模型。
+EMOTION_DIM_ALIASES = {
+    "喜悦": "happy",
+    "愤怒": "angry",
+    "悲伤": "sad",
+    "恐惧": "afraid",
+    "厌恶": "disgusted",
+    "忧郁": "melancholic",
+    "惊讶": "surprised",
+    "平静": "calm",
+}
+
+
+def dim_name_for(emotion_name: str | None, dims: tuple[str, ...]) -> str | None:
+    """中文情绪名 → 引擎维度名；引擎不认识就返回 None（不硬塞）。"""
+    if not emotion_name:
+        return None
+    if emotion_name in dims:
+        return emotion_name
+    mapped = EMOTION_DIM_ALIASES.get(emotion_name)
+    return mapped if mapped in dims else None
+
 
 @dataclass(frozen=True)
 class EngineCapabilities:
@@ -13,11 +36,14 @@ class EngineCapabilities:
     pronunciation: bool
     sample_rate: int
     max_text_chars: int = 300
+    # 服务端是否支持"用一句话描述情绪"（需要它加载了 QwenEmotion）
+    emotion_text: bool = False
 
 
 @dataclass(frozen=True)
 class SynthParams:
     emo_vector: tuple[float, ...] | None = None
+    emotion_text: str | None = None
     rate: float = 1.0
     lang: str | None = "ZH"
     pronunciation: dict[str, str] | None = None
@@ -43,6 +69,8 @@ def summarize_params(params: SynthParams | None, caps: EngineCapabilities) -> di
     summary: dict = {}
     if caps.emotions and params.emo_vector is not None:
         summary["emo_vector"] = [round(v, 4) for v in params.emo_vector]
+    if caps.emotion_text and params.emotion_text:
+        summary["emotion_text"] = params.emotion_text
     if caps.rate:
         summary["rate"] = round(params.rate, 4)
     if params.lang:

@@ -196,4 +196,35 @@ def test_start_accepts_the_settings_page_payload(settings, monkeypatch):
         "model_source": "modelscope",
         "model_dir": "checkpoints",
         "hf_endpoint": "https://hf-mirror.com",
+        "emotion_mode": "text",   # 默认走"文本描述情绪"（服务端会加载 QwenEmotion）
     }
+
+
+def test_start_persists_emotion_mode_and_passes_it_on(settings, monkeypatch):
+    """情绪通道在设置页切换：要落盘（worker 立刻生效）+ 传给 TTS 进程决定是否加载 QwenEmotion。"""
+    seen = {}
+
+    class FakeService:
+        def __init__(self, settings):  # noqa: ARG002
+            pass
+
+        def status(self):
+            return {"running": False, "healthy": False, "starting": False, "pid": None, "port": 8020,
+                    "url": "http://127.0.0.1:8020", "backend": "indextts", "log_path": "x.log"}
+
+        def start(self, **kwargs):
+            seen.update(kwargs)
+            return {**self.status(), "running": True}
+
+        def stop(self):
+            return self.status()
+
+        def logs(self, *, offset=0, limit=300):  # noqa: ARG002
+            return {"offset": 0, "lines": [], "reset": True}
+
+    monkeypatch.setattr(app_module, "LocalTtsService", FakeService)
+    client = _client(settings)
+    client.post("/api/tts/local/start", json={"emotion_mode": "vector"})
+    assert seen["emotion_mode"] == "vector"
+    assert client.get("/api/settings").json()["settings"]["emotion_mode"] == "vector"
+    assert client.get("/api/tts/local").json()["launch"]["emotion_mode"] == "vector"

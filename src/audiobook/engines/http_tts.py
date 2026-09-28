@@ -69,6 +69,7 @@ class HttpTtsEngine:
                 version=str(data.get("engineVersion") or "unknown"),
                 emotions=bool(data.get("emotions")),
                 emotion_dims=tuple(data.get("emotionDims") or ()),
+                emotion_text=bool(data.get("emotionText")),
                 rate=bool(data.get("rate")),
                 pronunciation=bool(data.get("pronunciation")),
                 sample_rate=int(data.get("sampleRate") or 22050),
@@ -108,7 +109,9 @@ class HttpTtsEngine:
             "rate": params.rate,
             "format": "wav",
         }
-        if params.emo_vector:
+        if params.emotion_text and self.capabilities().emotion_text:
+            payload["emoText"] = params.emotion_text
+        elif params.emo_vector:
             payload["emoVector"] = list(params.emo_vector)
         if params.pronunciation:
             payload["pronunciation"] = params.pronunciation

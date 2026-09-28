@@ -11,6 +11,8 @@ LATIN = re.compile(r"[A-Za-z]")
 HOSTILITY_THRESHOLD = 0.6
 INTIMACY_THRESHOLD = 0.6
 
+DELIVERY_ZH = {"shout": "喊叫", "whisper": "压低声音", "sneer": "带讥讽", "normal": "正常语气"}
+
 
 def line_id(chapter_index: int, scene_index: int, seq: int) -> str:
     return f"c{chapter_index:04d}-s{scene_index:02d}-l{seq:03d}"
@@ -40,6 +42,17 @@ def relationship_emotion(relationship: dict | None) -> tuple[str, float] | None:
     if intimacy >= INTIMACY_THRESHOLD:
         return "喜悦", round(intimacy, 3)
     return None
+
+
+def derive_emotion_text(explicit, emotion: dict, delivery: str) -> str:
+    """文本描述情绪通道用的一句话指令：模型给了就用模型的，没给就用情绪+幅度+语气兜底。"""
+    text = str(explicit or "").strip()
+    if text:
+        return text[:60]
+    return (
+        f"{emotion['dominant']}，幅度{emotion['intensity']:.2f}，"
+        f"{DELIVERY_ZH.get(delivery, DELIVERY_ZH['normal'])}"
+    )
 
 
 def resolve_emotion(
@@ -122,6 +135,7 @@ def derive_line(
         "addressee_name": addressee_name,
         "text": sentence,
         "emotion": emotion,
+        "emotion_text": derive_emotion_text(row.get("emotion_text"), emotion, delivery),
         "delivery": delivery,
         "lang": derive_lang(sentence),
         "pause_after_ms": derive_pause_ms(sentence, intensity=emotion["intensity"]),
