@@ -430,6 +430,25 @@
 .picker__desc { margin: 0; font-size: var(--text-xs); line-height: 1.5; }
 .picker__row-actions { display: flex; gap: var(--space-1); }
 
+/* ------------------------------------------------------------------ 确认弹窗 */
+
+.modal-host { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: var(--space-5); }
+.modal-host__backdrop { position: absolute; inset: 0; background: rgba(6, 5, 4, 0.6); }
+.modal {
+  position: relative;
+  inline-size: min(28rem, 100%);
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--ink-800);
+  border: var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+}
+.modal__title { margin: 0; font-size: var(--text-lg); }
+.modal__message { margin: 0; color: var(--paper-300); font-size: var(--text-sm); line-height: 1.7; }
+.modal__actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+
 /* ------------------------------------------------------------------ 设置页 */
 
 .tts-status { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }

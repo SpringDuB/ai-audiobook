@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { duration, stateLabel } from "../format.js";
-import { emptyState, h, renderWithState, toast } from "../ui.js";
+import { confirmDialog, emptyState, h, renderWithState, toast } from "../ui.js";
 
 const RUN_LABELS = {
   empty: "一键分析",
@@ -20,6 +20,34 @@ function statText(stats) {
 
 function bookCard(book, refresh) {
   const stats = book.stats || {};
+  const remove = h(
+    "button",
+    {
+      class: "btn btn-danger",
+      type: "button",
+      onClick: async (event) => {
+        const button = event.currentTarget;
+        const ok = await confirmDialog({
+          title: "删除这本书？",
+          message: `《${book.title || book.id}》的分析结果、已生成音频和字幕会一起删除，无法恢复。`,
+          confirmLabel: "删除",
+          danger: true,
+        });
+        if (!ok) return;
+        button.disabled = true;
+        try {
+          const result = await api.deleteBook(book.id);
+          const jobs = result?.removed_jobs || 0;
+          toast(jobs ? `已删除，同时清掉 ${jobs} 个任务` : "已删除");
+          refresh();
+        } catch (error) {
+          toast(error.message, "error");
+          button.disabled = false;
+        }
+      },
+    },
+    "删除",
+  );
   return h(
     "article",
     { class: "sheet book-card" },
@@ -57,6 +85,7 @@ function bookCard(book, refresh) {
       ),
       h("a", { class: "btn", href: `#/book/${book.id}` }, "打开"),
       h("a", { class: "btn btn-ghost", href: `#/book/${book.id}/issues` }, "异常"),
+      remove,
     ),
   );
 }

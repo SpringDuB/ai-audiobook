@@ -169,6 +169,40 @@ def test_workspace_voice_picker_lists_categories(served, settings, narrator_line
     assert "测试男声" in page["text"]
 
 
+def test_shelf_delete_book_asks_then_removes(served, settings, narrator_lines, tmp_path):
+    book_id = _seed_book(settings, narrator_lines)
+
+    opened = _probe(
+        f"{served}/#/shelf",
+        tmp_path / "delete-ask",
+        extra=(
+            "--click=.book-card .btn-danger",
+            "--eval=JSON.stringify({ modal: Boolean(document.querySelector('.modal')),"
+            " text: (document.querySelector('.modal') || {}).innerText || '' })",
+        ),
+    )
+    assert opened["consoleErrors"] == []
+    probe = json.loads(next(value for key, value in opened.items() if key.startswith("eval:")))
+    assert probe["modal"] is True and "删除这本书" in probe["text"]
+    assert store.book_dir(settings, book_id).exists()  # 只是弹窗，还没删
+
+    deleted = _probe(
+        f"{served}/#/shelf",
+        tmp_path / "delete-confirm",
+        extra=(
+            "--click=.book-card .btn-danger",
+            "--click=.modal__actions .btn-danger",
+            "--wait=1500",
+            "--eval=JSON.stringify({ cards: document.querySelectorAll('.book-card').length,"
+            " modal: Boolean(document.querySelector('.modal')) })",
+        ),
+    )
+    assert deleted["consoleErrors"] == []
+    probe = json.loads(next(value for key, value in deleted.items() if key.startswith("eval:")))
+    assert probe == {"cards": 0, "modal": False}
+    assert not store.book_dir(settings, book_id).exists()
+
+
 def test_settings_offers_one_click_tts_and_hides_low_level_knobs(served, settings, tmp_path):
     page = _probe(
         f"{served}/#/settings",

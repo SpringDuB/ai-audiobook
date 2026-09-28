@@ -1,10 +1,65 @@
 import json
 import os
+import re
+import shutil
+import time
 from pathlib import Path
+
+_BOOK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def book_dir(settings, book_id: str) -> Path:
     return settings.books_dir / book_id
+
+
+def valid_book_id(book_id: str) -> bool:
+    """book_id 会拼进文件路径，删除这类破坏性操作前必须挡住 ../ 之类的东西。"""
+    return bool(_BOOK_ID_RE.match(book_id or ""))
+
+
+def running_job_count(conn, book_id: str, now: int | None = None) -> int:
+    """真正在跑（租约未过期）的任务数。
+
+    租约过期的 running 行是崩溃 worker 留下的残骸，不该把删除永久卡住。
+    """
+    if conn is None:
+        return 0
+    ts = int(time.time() * 1000) if now is None else now
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM jobs"
+        " WHERE book_id=? AND status='running' AND (lease_expires_at IS NULL OR lease_expires_at > ?)",
+        (book_id, ts),
+    ).fetchone()
+    return int(row["n"])
+
+
+def delete_book(settings, conn, book_id: str) -> dict:
+    """删除一本书：任务行 + 书籍行 + 整个书籍目录。
+
+    调用方负责先确认没有运行中的任务（见 running_job_count），否则 worker
+    会在目录被删后继续写文件，留下无主残骸。
+    """
+    if not valid_book_id(book_id):
+        raise ValueError(f"非法书籍 id: {book_id!r}")
+    target = book_dir(settings, book_id)
+    books_root = settings.books_dir.resolve()
+    resolved = target.resolve()
+    if resolved == books_root or books_root not in resolved.parents:
+        raise ValueError(f"书籍目录越界: {resolved}")
+
+    row = conn.execute("SELECT title FROM books WHERE id=?", (book_id,)).fetchone()
+    title = row["title"] if row is not None else None
+    removed_jobs = conn.execute("DELETE FROM jobs WHERE book_id=?", (book_id,)).rowcount
+    conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+    dir_removed = target.exists()
+    if dir_removed:
+        shutil.rmtree(target)
+    return {
+        "book_id": book_id,
+        "title": title,
+        "removed_jobs": max(0, int(removed_jobs)),
+        "dir_removed": dir_removed,
+    }
 
 
 def chapter_tag(index: int) -> str:

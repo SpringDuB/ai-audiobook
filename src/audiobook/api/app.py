@@ -120,6 +120,26 @@ def create_app(settings, conn) -> FastAPI:
         rows = conn.execute("SELECT * FROM books ORDER BY created_at DESC").fetchall()
         return {"books": [{**dict(r), "stats": store.book_stats(settings, r["id"], conn)} for r in rows]}
 
+    @app.delete("/api/books/{book_id}")
+    def delete_book(book_id: str):
+        if not store.valid_book_id(book_id):
+            raise HTTPException(status_code=400, detail="非法的书籍 id")
+        row = conn.execute("SELECT title FROM books WHERE id=?", (book_id,)).fetchone()
+        if row is None and not store.book_dir(settings, book_id).exists():
+            raise HTTPException(status_code=404, detail="book not found")
+        title = (row["title"] if row is not None else None) or book_id
+        busy = store.running_job_count(conn, book_id)
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"《{title}》还有 {busy} 个任务正在运行：请到任务中心取消，或等它跑完再删除",
+            )
+        try:
+            result = store.delete_book(settings, conn, book_id)
+        except ValueError as exc:  # 目录越界等情况：宁可报错也别乱删
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": True, **result}
+
     @app.get("/api/books/{book_id}/chapters")
     def book_chapters(book_id: str):
         chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []

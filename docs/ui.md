@@ -10,7 +10,7 @@
 
 | 路由 | 页面 | 做什么 |
 |---|---|---|
-| `#/shelf` | 书架 | 导入 txt、看每本书进度（已分析/已生成/时长/异常）、一键分析或生成 |
+| `#/shelf` | 书架 | 导入 txt、看每本书进度（已分析/已生成/时长/异常）、一键分析或生成、删除整本 |
 | `#/book/{id}` | 书 · 工作台 | 三栏工作台：章节目录 + 正文/角色文本 + 角色音色 |
 | `#/book/{id}/chapter/{n}` | 书 · 工作台（定位到第 n 章） | 同一个工作台，只是把选中的章节换成 n |
 | `#/jobs` | 任务中心 | 运行中（进度条）/排队/失败，可取消与重试 |
@@ -92,6 +92,7 @@
 ```
 GET    /api/books                              书架（含 stats）
 POST   /api/books                              上传 txt（multipart）
+DELETE /api/books/{id}                          删除整本（任务行 + 数据目录）
 POST   /api/books/{id}/run                     按断点补跑（分析 + 合成都排）
 POST   /api/books/{id}/analyze                 只推分析链（分章→角色→逐句情感→选角）
 POST   /api/books/{id}/chapters/{n}/analyze    只重跑本章的逐句情感标注
@@ -119,6 +120,10 @@ GET    /api/events                              SSE：任务快照
 ```
 
 写入类操作都不会在请求里做重活：改句子只落盘 + 作废该章成品；`resynth` / `render` / `export` 只入队，由 `worker` 执行。
+
+删除是唯一一个直接动文件的写入接口：它删掉 `data/books/{id}/` 整目录、`books` 行与该书所有 `jobs` 行。
+**这本书还有任务在跑时会返回 409**（提示先去任务中心取消），避免 worker 在目录被删后继续写入留下无主残骸；
+租约已过期的 `running` 残骸不算"在跑"，不会把删除永久卡住。
 
 ## 5. 人工修改后发生了什么
 
@@ -177,6 +182,7 @@ node tools/ui_probe.mjs "http://127.0.0.1:8300/#/book/<bookId>" "$env:TEMP\ui\pi
 | 保存音色 | 写进 `voices/casting.json`，toast 提示受影响的章节，右栏与左栏状态点同步更新 |
 | 设置页点「一键启动 TTS 服务」 | 起来的是独立进程；`data/settings.json` 出现 `engine=http`、`tts_endpoints`、`tts_backend/model_*`；worker 无需重启 |
 | 设置页点「停止」 | 进程树被清掉，端口释放，状态回到「未运行」 |
+| 书架点「删除」 | 先弹二次确认（写明会一起删掉分析与音频）；确认后整本目录与任务行一起消失，服务端有任务在跑时则拦下并提示 |
 | 任务中心 / 异常清单 / 音色库 | 与 M4 一致，界面未改；证据：[jobs-desktop.png](ui-shots/jobs-desktop.png)、[issues-desktop.png](ui-shots/issues-desktop.png)、[voices-desktop.png](ui-shots/voices-desktop.png) |
 
 ## 8. 已知限制

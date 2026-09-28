@@ -91,6 +91,55 @@ export function toast(message, kind = "info") {
   toastTimer = setTimeout(() => node.classList.remove("is-open"), kind === "error" ? 5200 : 2600);
 }
 
+// 破坏性操作的二次确认：返回 Promise<boolean>，Esc / 点遮罩算取消
+export function confirmDialog({ title, message, confirmLabel = "确定", cancelLabel = "取消", danger = false }) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey, true);
+      host.remove();
+      resolve(value);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        finish(false);
+      } else if (event.key === "Enter") {
+        event.stopPropagation();
+        finish(true);
+      }
+    };
+    const confirm = h(
+      "button",
+      { class: `btn ${danger ? "btn-danger" : "btn-primary"}`, type: "button", onClick: () => finish(true) },
+      confirmLabel,
+    );
+    const panel = h(
+      "div",
+      { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": title },
+      h("h2", { class: "modal__title letterpress" }, title),
+      message ? h("p", { class: "modal__message" }, message) : null,
+      h(
+        "div",
+        { class: "modal__actions" },
+        h("button", { class: "btn btn-ghost", type: "button", onClick: () => finish(false) }, cancelLabel),
+        confirm,
+      ),
+    );
+    const host = h(
+      "div",
+      { class: "modal-host" },
+      h("div", { class: "modal-host__backdrop", onClick: () => finish(false) }),
+      panel,
+    );
+    document.body.append(host);
+    document.addEventListener("keydown", onKey, true);
+    confirm.focus();
+  });
+}
+
 export function progressBar(done, total) {
   const value = total ? Math.round((done / total) * 100) : 0;
   return h(

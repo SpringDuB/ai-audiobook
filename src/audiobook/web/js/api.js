@@ -50,6 +50,7 @@ export const api = {
   analyzeChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/analyze`),
   generateBook: (id) => send("POST", `/api/books/${id}/generate`),
   exportBook: (id, body) => send("POST", `/api/books/${id}/export`, body),
+  deleteBook: (id) => request("DELETE", `/api/books/${id}`),
   upload: (file, title) => {
     const form = new FormData();
     form.append("file", file);
