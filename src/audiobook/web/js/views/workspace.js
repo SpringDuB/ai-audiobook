@@ -5,7 +5,7 @@ import { api } from "../api.js";
 import { duration } from "../format.js";
 import { store } from "../store.js";
 import { closeVoicePicker, loadVoices, openVoicePicker } from "../voicepicker.js";
-import { emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
+import { confirmDialog, emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
 
 const EMOTIONS = ["喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
 const DELIVERIES = [
@@ -88,7 +88,7 @@ function metaChips(line) {
     h(
       "span",
       { class: "line__who" },
-      `${line.speaker_name || line.speaker}${line.addressee_name ? ` → ${line.addressee_name}` : ""}`,
+      line.speaker_name || line.speaker,
     ),
     emotion.dominant ? h("span", { class: "tone-tag" }, `${emotion.dominant} ${emotion.intensity ?? ""}`.trim()) : null,
     line.delivery && line.delivery !== "normal" ? h("span", { class: "tag" }, line.delivery) : null,
@@ -100,7 +100,6 @@ function metaChips(line) {
 function lineEditor(line, bookId, onSaved, onCancel) {
   const text = h("textarea", { rows: 3, value: line.text });
   const speaker = h("input", { type: "text", value: line.speaker_name || line.speaker, placeholder: "说话人" });
-  const addressee = h("input", { type: "text", value: line.addressee_name || line.addressee || "", placeholder: "受话人（可空）" });
   const emotion = h(
     "select",
     {},
@@ -126,7 +125,6 @@ function lineEditor(line, bookId, onSaved, onCancel) {
           const result = await api.patchLine(bookId, line.id, {
             text: text.value,
             speaker: speaker.value.trim(),
-            addressee: addressee.value.trim(),
             emotion: emotion.value,
             intensity: Number(intensity.value),
             delivery: delivery.value,
@@ -151,13 +149,12 @@ function lineEditor(line, bookId, onSaved, onCancel) {
       "div",
       { class: "grid-3" },
       h("div", { class: "field" }, h("label", {}, "说话人"), speaker),
-      h("div", { class: "field" }, h("label", {}, "受话人"), addressee),
       h("div", { class: "field" }, h("label", {}, "情绪"), emotion),
+      h("div", { class: "field" }, h("label", {}, "强度 0–1"), intensity),
     ),
     h(
       "div",
       { class: "grid-3" },
-      h("div", { class: "field" }, h("label", {}, "强度 0–1"), intensity),
       h("div", { class: "field" }, h("label", {}, "停顿 ms"), pause),
       h("div", { class: "field" }, h("label", {}, "语气"), delivery),
     ),
@@ -641,7 +638,19 @@ async function build(route, host) {
       { class: "workbench__actions" },
       progress,
       action("分析本章", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析")),
-      action("分析角色文本", async () => queued(await api.analyzeBook(bookId), "分析")),
+      action("分析角色文本", async () => {
+        // 已经分析过的书：整章分析会覆盖逐句标注（含人工修改），先问一句
+        const analyzed = state.chapters.filter((chapter) => Number(chapter.lines || 0) > 0).length;
+        if (analyzed > 0) {
+          const ok = await confirmDialog({
+            title: "重新分析全书？",
+            message: `会用「整章分析」重跑全书角色与逐句情感，覆盖已分析的 ${analyzed} 章标注（含人工修改），并让这些章节的成品音频失效。`,
+            confirmLabel: "重新分析",
+          });
+          if (!ok) return;
+        }
+        queued(await api.analyzeBook(bookId, analyzed > 0), "分析");
+      }),
       action("生成有声书", async () => queued(await api.generateBook(bookId), "合成"), { primary: true }),
       action(
         "导出成品",

@@ -3,7 +3,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs, store
-from ..analysis.characters import aggregate_characters, extract_chapter
+from ..analysis.attribution import names_from_payload
+from ..analysis.chapter import analyze_chapter, dump_chapter_analysis
+from ..analysis.characters import aggregate_characters
 from ..analysis.issues import record_issue
 from ..worker import register
 
@@ -24,41 +26,62 @@ def handle_characters(ctx, job) -> None:
     if not chapters:
         raise RuntimeError("没有分章结果，请先跑 chapter_split")
 
+    # 重新分析时拿旧角色表里的名字当参照，保证跨章叫法一致（不是让它照抄）
+    existing = store.read_json(store.characters_path(ctx.settings, book_id), default={}) or {}
+    known_names = names_from_payload(existing)
+
     results = []
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, ctx.settings.llm_concurrency)) as pool:
         futures = {
             pool.submit(
-                extract_chapter,
+                analyze_chapter,
                 runner,
                 settings=ctx.settings,
                 book_id=book_id,
                 chapter_index=chapter["index"],
                 title=chapter["title"],
                 content=chapter["content"],
+                known_names=known_names,
             ): chapter
             for chapter in chapters
         }
         for future in as_completed(futures):
             chapter = futures[future]
             try:
-                results.append((chapter["index"], future.result()))
+                result = future.result()
             except Exception as exc:  # 单章失败不拖垮全书，但必须可见
-                logger.warning("第 %s 章 Pass A 失败: %s", chapter["index"], exc)
+                logger.warning("第 %s 章整章分析失败: %s", chapter["index"], exc)
                 record_issue(
                     ctx.settings,
                     book_id,
-                    "pass_a_chapter_skipped",
+                    "chapter_analysis_failed",
                     reason=f"{type(exc).__name__}: {exc}",
                     chapter=chapter["index"],
-                    fallback="本章不参与角色聚合",
+                    fallback="本章不参与角色聚合，行数据留空（可稍后单独重跑本章）",
                     detail={"title": chapter["title"]},
                 )
+            else:
+                store.atomic_replace_json(
+                    store.chapter_analysis_path(ctx.settings, book_id, chapter["index"]),
+                    dump_chapter_analysis(result.analysis),
+                )
+                for issue in result.issues:
+                    record_issue(
+                        ctx.settings,
+                        book_id,
+                        issue["kind"],
+                        reason=issue["reason"],
+                        chapter=chapter["index"],
+                        fallback=issue.get("fallback"),
+                        detail=issue.get("detail"),
+                    )
+                results.append((chapter["index"], result.analysis))
             finally:
                 done += 1
                 ctx.progress(job, done, len(chapters), f"第 {chapter['index']} 章")
     if not results:
-        raise RuntimeError("Pass A 全部章节失败，请检查 LLM 端点")
+        raise RuntimeError("整章分析全部章节失败，请检查 LLM 端点")
 
     results.sort(key=lambda item: item[0])
     aggregate = aggregate_characters(results)

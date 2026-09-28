@@ -6,6 +6,8 @@ ISSUE_KINDS = (
     "pass_a_failed",
     "pass_a_chapter_skipped",
     "pass_c_failed",
+    "chapter_analysis_failed",
+    "chapter_window_failed",
     "line_index_missing",
     "unknown_speaker",
     "voice_library_empty",

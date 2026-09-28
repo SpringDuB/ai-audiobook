@@ -46,7 +46,7 @@ export const api = {
   resynth: (id, lineId) => send("POST", `/api/books/${id}/lines/${lineId}/resynth`),
   renderChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/render`),
   runBook: (id) => send("POST", `/api/books/${id}/run`),
-  analyzeBook: (id) => send("POST", `/api/books/${id}/analyze`),
+  analyzeBook: (id, force = false) => send("POST", `/api/books/${id}/analyze?force=${force ? "true" : "false"}`),
   analyzeChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/analyze`),
   generateBook: (id) => send("POST", `/api/books/${id}/generate`),
   exportBook: (id, body) => send("POST", `/api/books/${id}/export`, body),

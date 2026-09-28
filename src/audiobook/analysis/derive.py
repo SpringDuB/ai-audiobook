@@ -113,6 +113,7 @@ def derive_line(
     relationship: dict | None,
     pronounce_table: dict[str, str],
     previous_emotion: dict | None = None,
+    kind: str = "narration",
 ) -> dict:
     emotion = resolve_emotion(
         row.get("emotion"),
@@ -129,6 +130,7 @@ def derive_line(
         "scene": scene_id(chapter_index, scene_index),
         "scene_index": scene_index,
         "seq": seq,
+        "kind": kind if kind in ("narration", "dialogue") else "narration",
         "speaker": speaker_id,
         "speaker_name": speaker_name,
         "addressee": addressee_id,

@@ -38,27 +38,33 @@ STUB_SERVER = (
 ).replace("{tests}", str(TTS_TESTS))
 
 SAMPLE = "第一章 开场\n\n苏锐说：“走。”\n\n王胖子说：“好。”"
-PASS_A = {
-    "characters": [
-        {"name": "苏锐", "aliases": ["老苏"], "gender": "男", "age_group": "青年"},
-        {"name": "王胖子", "aliases": [], "gender": "男", "age_group": "青年"},
-        {"name": "旁白", "gender": "未知", "age_group": "未知"},
-    ],
-    "relationships": [],
-}
-def _route_c(user: str) -> dict:
-    tail = user.split("句子列表：", 1)[-1]
-    sentences = [line.split(". ", 1)[1] for line in tail.splitlines() if ". " in line and line[:1].isdigit()]
+CARDS = [
+    {"name": "苏锐", "aliases": ["老苏"], "gender": "男", "age_group": "青年"},
+    {"name": "王胖子", "aliases": [], "gender": "男", "age_group": "青年"},
+    {"name": "旁白", "gender": "未知", "age_group": "未知"},
+]
+
+
+def _route_chapter(user: str) -> dict:
+    """整章分析假模型：角色 + 每句标注一趟出。"""
+    tail = user.split("需要标注的句子：", 1)[-1]
     rows = []
-    for position, sentence in enumerate(sentences, start=1):
-        if "苏锐" in sentence:
+    for line in tail.splitlines():
+        if ". " not in line:
+            continue
+        number, body = line.split(". ", 1)
+        if not number.strip().isdigit():
+            continue
+        if "[对白" not in body:
+            speaker = "旁白"
+        elif "苏锐" in body:
             speaker = "苏锐"
-        elif "王胖子" in sentence:
+        elif "王胖子" in body:
             speaker = "王胖子"
         else:
             speaker = "旁白"
-        rows.append({"index": position, "speaker": speaker, "emotion": "平静", "intensity": 0.4})
-    return {"lines": rows}
+        rows.append({"index": int(number), "speaker": speaker, "emotion": "平静", "intensity": 0.4})
+    return {"characters": CARDS, "relationships": [], "lines": rows}
 
 
 def _free_port() -> int:
@@ -138,7 +144,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         txt.write_text(SAMPLE, encoding="utf-8")
         book_id = import_book(settings, conn, txt, title="TTS 契约测试")
 
-        llm = FakeLLM(routes={"PASS_A": PASS_A, "PASS_C": _route_c})
+        llm = FakeLLM(routes={"CHAPTER_ANALYSIS": _route_chapter})
         engine = build_engine(settings)
         ctx = WorkerContext(
             settings=settings,

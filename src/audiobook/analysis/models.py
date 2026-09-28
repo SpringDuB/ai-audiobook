@@ -109,7 +109,15 @@ class LineAnnotation(BaseModel):
         return text[:60] or None
 
 
-class PassCOutput(BaseModel):
+class ChapterAnalysis(BaseModel):
+    """一次 LLM 调用直出的整章结果：角色 + 关系 + 每句标注。
+
+    角色和逐句情感在同一趟里产出，模型是带着全章上下文判情绪和说话人的，
+    比"先抽角色、再单独给句子打情绪"准得多。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    lines: list[LineAnnotation]
+    characters: list[CharacterCard] = Field(default_factory=list)
+    relationships: list[Relationship] = Field(default_factory=list)
+    lines: list[LineAnnotation] = Field(default_factory=list)

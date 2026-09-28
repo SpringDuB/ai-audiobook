@@ -269,3 +269,46 @@ def role_name(payload: dict, role_id: str) -> str:
         if character["id"] == role_id:
             return character["name"]
     return role_id
+
+
+def ensure_characters(payload: dict, cards: list) -> tuple[dict, list[str]]:
+    """把本章新出现、但全书角色表里还没有的角色补进去（已有 id 保持不变）。
+
+    单独重跑某一章时用得上：这一章可能冒出前面章节没出现过的人物，
+    不补进表里这些台词就会被当成"未知说话人"退回旁白。
+    """
+    payload = dict(payload or {})
+    existing = list(payload.get("characters") or [])
+    known = {_norm(item.get("name")) for item in existing}
+    known |= {_norm(alias) for item in existing for alias in (item.get("aliases") or [])}
+    counter = max(
+        [int(str(item.get("id", "")).rsplit("_", 1)[-1]) for item in existing if str(item.get("id", "")).startswith("role_")]
+        or [0]
+    )
+    added: list[str] = []
+    for card in cards:
+        data = card.model_dump() if hasattr(card, "model_dump") else dict(card)
+        name = data.get("name") or ""
+        if not _norm(name) or _norm(name) in known:
+            continue
+        counter += 1
+        entry = {
+            "id": f"role_{counter:04d}",
+            "name": name,
+            "aliases": list(data.get("aliases") or []),
+            "gender": data.get("gender") or "未知",
+            "age_group": data.get("age_group") or "未知",
+            "personality": list(data.get("personality") or []),
+            "speaking_style": data.get("speaking_style") or "",
+            "base_emotion": data.get("base_emotion") or "平静",
+            "base_intensity": float(data.get("base_intensity") or 0.4),
+            "chapters": [],
+            "mentions": 0,
+            "is_narrator": name in NARRATOR_NAMES,
+        }
+        existing.append(entry)
+        added.append(name)
+        known.add(_norm(name))
+        known |= {_norm(alias) for alias in entry["aliases"]}
+    payload["characters"] = existing
+    return payload, added

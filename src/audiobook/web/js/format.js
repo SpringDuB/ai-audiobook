@@ -66,6 +66,8 @@ const ISSUE_KIND_LABELS = {
   pass_b_failed: "场景切分失败（旧数据）",
   scene_hint_not_found: "场景线索未命中（旧数据）",
   pass_c_failed: "逐句标注失败",
+  chapter_analysis_failed: "整章分析失败",
+  chapter_window_failed: "分段分析失败",
   line_index_missing: "句索引缺失",
   unknown_speaker: "未知说话人",
   voice_library_empty: "音色库为空",

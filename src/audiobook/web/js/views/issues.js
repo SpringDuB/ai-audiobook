@@ -2,7 +2,16 @@ import { api } from "../api.js";
 import { clock, issueKindLabel, shortId } from "../format.js";
 import { emptyState, h, renderWithState, toast } from "../ui.js";
 
-const FAIL_KINDS = new Set(["pass_a_failed", "pass_b_failed", "pass_c_failed", "tts_line_failed", "tts_endpoint_down", "render_duration_mismatch"]);
+const FAIL_KINDS = new Set([
+  "pass_a_failed",
+  "pass_b_failed",
+  "pass_c_failed",
+  "chapter_analysis_failed",
+  "chapter_window_failed",
+  "tts_line_failed",
+  "tts_endpoint_down",
+  "render_duration_mismatch",
+]);
 
 function issueRow(issue) {
   return h(

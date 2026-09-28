@@ -399,19 +399,24 @@ def create_app(settings, conn) -> FastAPI:
         return {"ok": True, "queued": len(plan), "plan": plan}
 
     @app.post("/api/books/{book_id}/analyze")
-    def analyze_book(book_id: str):
-        """只推分析链：分章 → 角色 → 逐句情感 → 选角。"""
-        plan = resume_book(settings, conn, book_id, phase="analysis")
+    def analyze_book(book_id: str, force: bool = False):
+        """只推分析链：分章 → 整章分析（角色 + 逐句情感）→ 选角。
+
+        force=true 时无视断点整本重跑，会覆盖已分析的逐句标注（含人工修改）。
+        """
+        plan = resume_book(settings, conn, book_id, phase="analysis", force=force)
         return {"ok": True, "queued": len(plan), "plan": plan}
 
     @app.post("/api/books/{book_id}/chapters/{index}/analyze")
     def analyze_chapter(book_id: str, index: int):
-        """只跑本章的逐句情感标注（全书角色表还没建就先补一轮角色分析）。"""
+        """只重跑本章的整章分析（角色表还没建就先补一轮全书分析）。"""
         if _chapter_meta(settings, book_id, index) is None:
             raise HTTPException(status_code=404, detail="chapter not found")
         plan: list[tuple[str, int | None]] = []
         if not store.characters_path(settings, book_id).exists():
             plan.append(("characters", None))
+        # 删掉本章的原始分析结果 → lines handler 会重新调 LLM（而不是只重算落盘）
+        store.chapter_analysis_path(settings, book_id, index).unlink(missing_ok=True)
         plan.append(("lines", index))
         job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
         return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}

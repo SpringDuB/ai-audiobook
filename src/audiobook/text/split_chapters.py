@@ -24,6 +24,28 @@ def match_chapter_title(line: str) -> bool:
     return bool(line) and any(p.match(line) for p in CHAPTER_PATTERNS)
 
 
+def split_span(text: str) -> list[str]:
+    """把一段连续文本按中文标点断句；只由标点/引号组成的碎片并回上一句。
+
+    引语分片（text/dialogue.py）也走这里，保证"引号里怎么断句"和正文完全一致。
+    """
+    merged: list[str] = []
+    for piece in (item.strip() for item in SENTENCE_SPLIT.split(text)):
+        if not piece:
+            continue
+        if merged:
+            stripped = piece.lstrip(CLOSING_MARKS)
+            moved = piece[: len(piece) - len(stripped)]
+            if moved and stripped:
+                merged[-1] += moved  # “好。”他说。 → 句尾引号归上一句
+                piece = stripped
+        if merged and not WORD_CHARS.search(piece):
+            merged[-1] += piece
+        else:
+            merged.append(piece)
+    return merged
+
+
 def split_sentences(content: str) -> list[str]:
     """按中文标点断句；只由标点/引号组成的小片段（如句尾的 `”`）并回上一句。"""
     parts: list[str] = []
@@ -31,21 +53,7 @@ def split_sentences(content: str) -> list[str]:
         line = line.strip()
         if not line:
             continue
-        merged: list[str] = []
-        for piece in (item.strip() for item in SENTENCE_SPLIT.split(line)):
-            if not piece:
-                continue
-            if merged:
-                stripped = piece.lstrip(CLOSING_MARKS)
-                moved = piece[: len(piece) - len(stripped)]
-                if moved and stripped:
-                    merged[-1] += moved  # “好。”他说。 → 句尾引号归上一句
-                    piece = stripped
-            if merged and not WORD_CHARS.search(piece):
-                merged[-1] += piece
-            else:
-                merged.append(piece)
-        parts.extend(merged)
+        parts.extend(split_span(line))
     return parts
 
 

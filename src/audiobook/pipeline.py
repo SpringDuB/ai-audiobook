@@ -6,19 +6,22 @@ AUDIO_KINDS = {"synthesize", "post", "book_export"}
 PHASE_KINDS = {"analysis": ANALYSIS_KINDS, "audio": AUDIO_KINDS}
 
 
-def plan_book(settings, conn, book_id: str, phase: str = "all") -> list[tuple[str, int | None]]:
-    """按"文件即断点"决定下一步该入队哪些任务。"""
-    plan = _plan_all(settings, book_id)
+def plan_book(settings, conn, book_id: str, phase: str = "all", force: bool = False) -> list[tuple[str, int | None]]:
+    """按"文件即断点"决定下一步该入队哪些任务。force=True 时不看断点，整本重跑分析链。"""
+    plan = _plan_all(settings, book_id, force=force)
     allowed = PHASE_KINDS.get(phase)
     if allowed is None:
         return plan
     return [item for item in plan if item[0] in allowed]
 
 
-def _plan_all(settings, book_id: str) -> list[tuple[str, int | None]]:
+def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, int | None]]:
     chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
     if not chapters:
         return [("chapter_split", None)]
+    if force:
+        # 整章分析一趟出角色 + 每句情感：character 任务负责全书，lines 任务只做落盘
+        return [("characters", None), *[("lines", chapter["index"]) for chapter in chapters]]
     if not store.characters_path(settings, book_id).exists():
         return [("characters", None)]
 
@@ -55,7 +58,7 @@ def enqueue_plan(conn, book_id: str, plan) -> list[int]:
     return [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
 
 
-def resume_book(settings, conn, book_id: str, phase: str = "all") -> list[tuple[str, int | None]]:
-    plan = plan_book(settings, conn, book_id, phase)
+def resume_book(settings, conn, book_id: str, phase: str = "all", force: bool = False) -> list[tuple[str, int | None]]:
+    plan = plan_book(settings, conn, book_id, phase, force=force)
     enqueue_plan(conn, book_id, plan)
     return plan

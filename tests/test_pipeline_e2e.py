@@ -20,8 +20,11 @@ SAMPLE = (
 )
 
 
-def _route_a(user: str) -> dict:
-    """按章返回不同角色：王胖子只出现在含"胖子"的章，让角色 id 排序有确定性。"""
+def _route_chapter(user: str) -> dict:
+    """整章分析假模型：角色 + 关系 + 每句标注一趟出。
+
+    王胖子只出现在含"胖子"的章，让角色 id 排序有确定性。
+    """
     people = [
         {"name": "苏锐", "aliases": ["老苏"], "gender": "男", "age_group": "青年", "personality": ["冷静"]},
         {"name": "旁白", "gender": "未知", "age_group": "未知"},
@@ -32,40 +35,34 @@ def _route_a(user: str) -> dict:
         relationships.append(
             {"from": "王胖子", "to": "苏锐", "closeness": 0.8, "hierarchy": 0.2, "hostility": 0.0, "intimacy": 0.6}
         )
-    return {"characters": people, "relationships": relationships}
-
-
-def _sentences_from_prompt(user: str) -> list[str]:
-    tail = user.split("句子列表：", 1)[-1]
-    return [line.split(". ", 1)[1] for line in tail.splitlines() if ". " in line and line[:1].isdigit()]
-
-
-def _route_c(user: str) -> dict:
     lines = []
-    for position, sentence in enumerate(_sentences_from_prompt(user), start=1):
-        quoted = "“" in sentence
-        if "老苏" in sentence:
-            speaker, addressee = "王胖子", "老苏"
-        elif quoted and "苏锐" in sentence:
-            speaker, addressee = "苏锐", None
-        elif quoted and "王胖子" in sentence:
-            speaker, addressee = "王胖子", None
+    tail = user.split("需要标注的句子：", 1)[-1]
+    for line in tail.splitlines():
+        if ". " not in line:
+            continue
+        number, body = line.split(". ", 1)
+        if not number.strip().isdigit():
+            continue
+        dialogue = "[对白" in body
+        if not dialogue:
+            speaker = "旁白"
+        elif "老苏" in body:
+            speaker = "王胖子"
         else:
-            speaker, addressee = "旁白", None
+            speaker = "苏锐"
         lines.append(
             {
-                "index": position,
+                "index": int(number),
                 "speaker": speaker,
-                "addressee": addressee,
                 "emotion": "平静",
                 "intensity": 0.4,
             }
         )
-    return {"lines": lines}
+    return {"characters": people, "relationships": relationships, "lines": lines}
 
 
 def _ctx(settings, conn, engine=None) -> WorkerContext:
-    llm = FakeLLM(routes={"PASS_A": _route_a, "PASS_C": _route_c})
+    llm = FakeLLM(routes={"CHAPTER_ANALYSIS": _route_chapter})
     return WorkerContext(
         settings=settings,
         conn=conn,
@@ -104,10 +101,13 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 1))
     assert [row["speaker"] for row in rows] == ["narrator", "role_0002", "narrator"]
-    assert rows[1]["addressee"] == "role_0001"  # “老苏”被解析成别名
+    assert [row["kind"] for row in rows] == ["narration", "dialogue", "narration"]
+    assert rows[1]["addressee"] is None  # 受话人标签已下线
     assert rows[1]["emotion"]["source"] == "line"
     rows_ch2 = store.read_jsonl(store.lines_path(settings, book_id, 2))
-    assert [row["speaker"] for row in rows_ch2] == ["role_0001"]
+    # “苏锐说：”是旁白行，“胖子，别废话。”是引语行（靠归属句提示落到苏锐）
+    assert [row["kind"] for row in rows_ch2] == ["narration", "dialogue"]
+    assert [row["speaker"] for row in rows_ch2] == ["narrator", "role_0001"]
 
     casting = store.read_json(store.casting_path(settings, book_id))
     assert casting["voice_library_size"] == 0
@@ -127,7 +127,7 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
     assert all(j.status == "done" for j in jobs.list_jobs(conn, book_id))
 
     log = store.read_jsonl(store.llm_log_path(settings, book_id))
-    assert {row["pass"] for row in log} == {"A", "C"}   # 没有场景切分了
+    assert {row["pass"] for row in log} == {"A"}   # 角色 + 逐句情感同一趟，只有一次调用
     assert all(row["ok"] is True for row in log)
 
 

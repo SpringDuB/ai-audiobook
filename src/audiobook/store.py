@@ -78,6 +78,11 @@ def lines_path(settings, book_id: str, index: int) -> Path:
     return book_dir(settings, book_id) / "analysis" / "lines" / f"chapter_{chapter_tag(index)}.jsonl"
 
 
+def chapter_analysis_path(settings, book_id: str, index: int) -> Path:
+    """整章分析原始结果（角色 + 关系 + 每句标注，说话人还是名字不是 role_id）。"""
+    return book_dir(settings, book_id) / "analysis" / "chapters" / f"chapter_{chapter_tag(index)}.json"
+
+
 def audio_dir(settings, book_id: str, index: int) -> Path:
     return book_dir(settings, book_id) / "audio" / f"chapter_{chapter_tag(index)}"
 
