@@ -1,4 +1,4 @@
-from audiobook import store
+from audiobook import jobs, store
 from fake_engine import FakeEngine
 
 
@@ -15,7 +15,8 @@ def test_book_stats_reports_progress_and_duration(settings, narrator_lines):
         store.chapters_path(settings, "b1"),
         {"chapters": [{"index": 0, "title": "卷一", "content": "第一句。", "chars": 4}]},
     )
-    assert store.book_stats(settings, "b1")["state"] == "analyzing"
+    # 分章好了、还没点「一键分析」：状态是待分析，不是分析中
+    assert store.book_stats(settings, "b1")["state"] == "split"
     rows = narrator_lines(0, "第一句。第二句。")
     store.write_jsonl_atomic(store.lines_path(settings, "b1", 0), rows)
     _synth_clips(settings, "b1", 0, rows)
@@ -41,6 +42,22 @@ def test_chapter_state_walks_through_phases(settings, narrator_lines):
     assert store.chapter_state(settings, "b2", 3)["state"] == "analyzed"
     _synth_clips(settings, "b2", 3, rows)
     assert store.chapter_state(settings, "b2", 3)["state"] == "synthesized"
+
+
+def test_book_stats_says_analyzing_only_while_analysis_jobs_are_active(settings, conn):
+    store.atomic_replace_json(
+        store.chapters_path(settings, "b3"),
+        {"chapters": [{"index": 0, "title": "卷一", "content": "第一句。", "chars": 4}]},
+    )
+    assert store.book_stats(settings, "b3", conn)["state"] == "split"
+
+    jobs.enqueue(conn, "characters", "b3")
+    assert store.book_stats(settings, "b3", conn)["state"] == "analyzing"
+
+    conn.execute("UPDATE jobs SET status='done' WHERE book_id='b3'")
+    assert store.book_stats(settings, "b3", conn)["state"] == "split"
+    jobs.enqueue(conn, "synthesize", "b3", 0)
+    assert store.book_stats(settings, "b3", conn)["state"] == "split"   # 合成任务不算"分析中"
 
 
 def test_settings_overlay_path_and_issue_count(settings):

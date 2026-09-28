@@ -5,6 +5,7 @@ from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
+from audiobook.pipeline import resume_book
 from audiobook.worker import WorkerContext, run_once
 
 SAMPLE = "第一章 开始\n\n苏锐看着他。\n\n第二章 继续\n\n王胖子笑了。"
@@ -34,6 +35,8 @@ def test_characters_handler_writes_file_and_enqueues_scenes(settings, conn, tmp_
     ctx = _ctx(settings, conn, FakeLLM(routes={"PASS_A": PASS_A_JSON}))
 
     assert run_once(ctx) is True  # chapter_split
+    assert run_once(ctx) is False  # 导入不会自己跑 LLM
+    resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
     assert run_once(ctx) is True  # characters
 
     payload = store.read_json(store.characters_path(settings, book_id))
@@ -54,6 +57,7 @@ def test_characters_handler_skips_failed_chapter_and_records_issue(settings, con
     ctx = _ctx(settings, conn, llm)
 
     run_once(ctx)  # split
+    resume_book(settings, conn, book_id, phase="analysis")
     run_once(ctx)  # characters
 
     issues = store.read_jsonl(store.issues_path(settings, book_id))
@@ -69,6 +73,7 @@ def test_analysis_handlers_require_llm(settings, conn, tmp_path):
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", llm=None)
 
     run_once(ctx)  # split
+    resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
     run_once(ctx)  # characters → 失败
 
     job = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "characters"][0]

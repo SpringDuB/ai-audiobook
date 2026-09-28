@@ -1,6 +1,6 @@
 import logging
 
-from .. import jobs, store
+from .. import store
 from ..analysis.casting import build_casting, load_voice_library
 from ..analysis.issues import record_issue
 from ..worker import register
@@ -32,12 +32,6 @@ def handle_casting(ctx, job) -> None:
             detail=issue.get("detail"),
         )
     store.atomic_replace_json(store.casting_path(ctx.settings, book_id), casting)
-
-    chapters = (store.read_json(store.chapters_path(ctx.settings, book_id), default={}) or {}).get("chapters") or []
-    queued = 0
-    for chapter in chapters:
-        if store.read_jsonl(store.lines_path(ctx.settings, book_id, chapter["index"])):
-            jobs.enqueue(ctx.conn, "synthesize", book_id, chapter["index"])
-            queued += 1
-    logger.info("选角完成：%d 个角色，入队合成 %d 章", len(casting["roles"]), queued)
-    ctx.progress(job, len(casting["roles"]), len(casting["roles"]), f"入队合成 {queued} 章")
+    # 选角是分析链的最后一步：到此为止，合成由用户点「生成有声书」触发
+    logger.info("选角完成：%d 个角色（合成链等「生成有声书」）", len(casting["roles"]))
+    ctx.progress(job, len(casting["roles"]), len(casting["roles"]), f"{len(casting['roles'])} 个角色")

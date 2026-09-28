@@ -62,6 +62,26 @@ def test_shelf_reports_stats(settings, narrator_lines):
     assert (row["stats"]["chapters"], row["stats"]["analyzed"], row["stats"]["state"]) == (1, 1, "analyzed")
 
 
+def test_chapters_endpoint_waits_instead_of_404_while_splitting(settings):
+    """刚导入的书章节还没落盘：返回 200 + 空列表，别让书页变成一个假 404。"""
+    client = _client(settings)
+    conn = _conn(settings)
+    conn.execute(
+        "INSERT OR REPLACE INTO books(id, title, source_path, chapter_count, status, created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        ("fresh", "新导入", "source/original.txt", 0, "imported", 1790000000000),
+    )
+    store.atomic_replace_json(store.book_dir(settings, "fresh") / "book.json", {"id": "fresh", "title": "新导入"})
+
+    response = client.get("/api/books/fresh/chapters")
+    assert response.status_code == 200
+    assert response.json() == {"chapters": [], "status": "imported", "pending": True}
+
+
+def test_chapters_endpoint_404s_only_for_unknown_books(settings):
+    assert _client(settings).get("/api/books/没这本书/chapters").status_code == 404
+
+
 def test_chapters_endpoint_lists_state(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)

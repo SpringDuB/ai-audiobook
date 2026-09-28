@@ -7,6 +7,7 @@ from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
+from audiobook.pipeline import resume_book
 from audiobook.worker import WorkerContext, run_once
 
 SAMPLE = (
@@ -82,6 +83,14 @@ def _ctx(settings, conn, engine=None) -> WorkerContext:
     )
 
 
+def _drain(ctx) -> None:
+    """跑到队列空；任务链不收敛就直接失败，免得测试挂死。"""
+    guard = 0
+    while run_once(ctx):
+        guard += 1
+        assert guard < 100, "任务链没有收敛"
+
+
 def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(settings, tmp_path):
     conn = connect(settings.db_path)
     init_db(conn)
@@ -90,10 +99,12 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
     book_id = import_book(settings, conn, txt, title="地球最后一个修仙者")
     ctx = _ctx(settings, conn)
 
-    guard = 0
-    while run_once(ctx):
-        guard += 1
-        assert guard < 100, "任务链没有收敛"
+    # 导入只自动分章：LLM 要等用户点「一键分析」
+    _drain(ctx)
+    assert store.read_json(store.characters_path(settings, book_id)) is None
+
+    resume_book(settings, conn, book_id, phase="analysis")
+    _drain(ctx)
 
     analysis = store.read_json(store.characters_path(settings, book_id))
     assert analysis["characters"][0]["id"] == "narrator"
@@ -109,6 +120,13 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
     casting = store.read_json(store.casting_path(settings, book_id))
     assert casting["voice_library_size"] == 0
     assert casting["names"]["老苏"] == "role_0001"
+
+    # 分析跑完不该自己开始合成：那是「生成有声书」的事
+    assert [j for j in jobs.list_jobs(conn, book_id) if j.status == "queued"] == []
+    assert not store.output_dir(settings, book_id).exists()
+
+    resume_book(settings, conn, book_id, phase="audio")
+    _drain(ctx)
 
     out = store.output_dir(settings, book_id)
     assert (out / "chapter_0001.wav").exists() and (out / "chapter_0001.srt").exists()
@@ -138,8 +156,11 @@ def test_rerun_after_line_change_only_regenerates_changed_line(settings, tmp_pat
 
     engine.synthesize = counting  # type: ignore[method-assign]
     ctx = _ctx(settings, conn, engine=engine)
-    while run_once(ctx):
-        pass
+    _drain(ctx)                                            # 分章
+    resume_book(settings, conn, book_id, phase="analysis")  # 「一键分析」
+    _drain(ctx)
+    resume_book(settings, conn, book_id, phase="audio")     # 「一键生成」
+    _drain(ctx)
     first = calls["n"]
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 1))

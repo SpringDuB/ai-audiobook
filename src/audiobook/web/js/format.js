@@ -20,6 +20,7 @@ export function shortId(id, size = 8) {
 
 const STATE_LABELS = {
   empty: "空",
+  split: "待分析",
   analyzing: "分析中",
   analyzed: "已分析",
   synthesizing: "合成中",

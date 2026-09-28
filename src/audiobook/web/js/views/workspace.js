@@ -269,6 +269,44 @@ function roleRow(role, scope, ctx) {
 
 /* ---------------------------------------------------------------- 主视图 */
 
+// 刚导入：分章还在 worker 队列里跑。这里先显示等待页并自己轮询，
+// 而不是让书页因为"章节还没落盘"直接报错。
+function pendingView(route, host, title, payload) {
+  const hint = h("p", { class: "muted" }, payload.pending ? "正在分章…（导入后自动进行，几秒到几十秒）" : "这本书还没有章节。");
+  const node = h(
+    "div",
+    { class: "workbench workbench--pending" },
+    h(
+      "header",
+      { class: "workbench__bar" },
+      h(
+        "div",
+        { class: "workbench__title" },
+        h("a", { class: "muted", href: "#/shelf" }, "书架"),
+        h("span", { class: "muted" }, " / "),
+        h("span", { class: "letterpress" }, title),
+      ),
+    ),
+    h("div", { class: "empty" }, h("p", {}, "正在分章…"), hint),
+  );
+  let tries = 0;
+  const timer = window.setInterval(async () => {
+    tries += 1;
+    const latest = await api.chapters(route.bookId).catch(() => null);
+    if (latest?.chapters?.length) {
+      window.clearInterval(timer);
+      render(host, route);
+      return;
+    }
+    if (tries >= 120) {   // 约 3 分钟：别再无声地转下去
+      window.clearInterval(timer);
+      hint.textContent = "分章还没完成，去「任务中心」看看是不是有失败的任务。";
+    }
+  }, 1500);
+  onTeardown(() => window.clearInterval(timer));
+  return node;
+}
+
 async function build(route, host) {
   const bookId = route.bookId;
   const [chaptersPayload, bookPayload, castingPayload] = await Promise.all([
@@ -278,7 +316,7 @@ async function build(route, host) {
   ]);
   const chapters = chaptersPayload.chapters || [];
   if (!chapters.length) {
-    return emptyState("这本书还没有章节", "回书架导入 txt，或点「分析角色文本」重跑分章。");
+    return pendingView(route, host, bookPayload.book?.title || short(bookId), chaptersPayload);
   }
   const voiceLibrary = await loadVoices().catch(() => []);
 

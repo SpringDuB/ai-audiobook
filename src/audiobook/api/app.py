@@ -123,13 +123,18 @@ def create_app(settings, conn) -> FastAPI:
     @app.get("/api/books")
     def list_books():
         rows = conn.execute("SELECT * FROM books ORDER BY created_at DESC").fetchall()
-        return {"books": [{**dict(r), "stats": store.book_stats(settings, r["id"])} for r in rows]}
+        return {"books": [{**dict(r), "stats": store.book_stats(settings, r["id"], conn)} for r in rows]}
 
     @app.get("/api/books/{book_id}/chapters")
     def book_chapters(book_id: str):
         chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
         if not chapters:
-            raise HTTPException(status_code=404, detail="book not found")
+            meta = store.read_json(store.book_dir(settings, book_id) / "book.json", default={}) or {}
+            if not meta:
+                raise HTTPException(status_code=404, detail="book not found")
+            # 刚导入：分章还在队列里。这里返回 200 + 空列表，前端显示"正在分章"并自动刷新；
+            # 返回 404 会让刚导入就跳进来的书页变成一个假错误。
+            return {"chapters": [], "status": meta.get("status") or "imported", "pending": True}
         payload = []
         for chapter in chapters:
             index = int(chapter["index"])
@@ -141,7 +146,7 @@ def create_app(settings, conn) -> FastAPI:
                     **store.chapter_state(settings, book_id, index),
                 }
             )
-        return {"chapters": payload}
+        return {"chapters": payload, "status": "split", "pending": False}
 
     @app.get("/api/books/{book_id}/chapters/{index}/scenes")
     def chapter_scenes(book_id: str, index: int):

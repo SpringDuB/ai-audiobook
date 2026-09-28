@@ -24,7 +24,7 @@ def _write_characters(settings, book_id: str) -> None:
     )
 
 
-def test_casting_handler_writes_casting_and_enqueues_synthesize(settings, conn):
+def test_casting_handler_writes_casting_without_starting_synthesis(settings, conn):
     book_id = "book1"
     _write_characters(settings, book_id)
     store.atomic_replace_json(
@@ -43,7 +43,7 @@ def test_casting_handler_writes_casting_and_enqueues_synthesize(settings, conn):
     casting = store.read_json(store.casting_path(settings, book_id))
     assert casting["roles"]["role_0001"]["voice_id"] == "default"
     assert casting["names"]["老苏"] == "role_0001"
-    synth = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "synthesize"]
-    assert [j.chapter_index for j in synth] == [1]
+    # 选角是分析链的最后一步：合成要等用户点「生成有声书」
+    assert [j for j in jobs.list_jobs(conn, book_id) if j.kind == "synthesize"] == []
     kinds = [issue["kind"] for issue in store.read_jsonl(store.issues_path(settings, book_id))]
     assert kinds == ["voice_library_empty"]

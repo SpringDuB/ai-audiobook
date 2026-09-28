@@ -50,6 +50,8 @@ def test_events_route_registered_and_snapshot_contains_jobs(settings):
 
 
 def test_tts_status_reports_configured_engine(settings):
+    # 起点显式给成"没配端点"：.env 里可能已经写了端点，别让用例依赖本机配置
+    settings = settings.model_copy(update={"engine": "http", "tts_endpoints": []})
     client, _ = make_client(settings)
     payload = client.get("/api/tts/status").json()
     # 没有端点时不是"假装健康"，而是给一条能照做的错误

@@ -147,7 +147,19 @@ def chapter_state(settings, book_id: str, index: int) -> dict:
     }
 
 
-def book_stats(settings, book_id: str) -> dict:
+def _analysis_in_flight(conn, book_id: str) -> bool:
+    """分析链里还有排队/运行中的任务吗？拿不到连接（纯文件视角）时按"没有"处理。"""
+    if conn is None:
+        return False
+    from .pipeline import ANALYSIS_KINDS  # 延迟导入：pipeline 依赖 store，模块级导入会成环
+
+    rows = conn.execute(
+        "SELECT kind FROM jobs WHERE book_id=? AND status IN ('queued','running')", (book_id,)
+    ).fetchall()
+    return any(row["kind"] in ANALYSIS_KINDS for row in rows)
+
+
+def book_stats(settings, book_id: str, conn=None) -> dict:
     chapters = (read_json(chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
     total = len(chapters)
     analyzed = generated = 0
@@ -165,8 +177,11 @@ def book_stats(settings, book_id: str) -> dict:
         state = "synthesizing"
     elif analyzed:
         state = "analyzed"
-    else:
+    elif _analysis_in_flight(conn, book_id):
         state = "analyzing"
+    else:
+        # 分章好了但还没点「一键分析」：别显示成"分析中"
+        state = "split"
     return {
         "chapters": total,
         "analyzed": analyzed,

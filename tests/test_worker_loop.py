@@ -68,6 +68,8 @@ def test_long_handler_keeps_lease_alive(conn, settings):
 def test_refresh_rebuilds_engine_when_endpoints_change(conn, settings):
     """改端点/并发不用重启 worker：下一轮任务前自动换引擎。"""
     built = []
+    # 起点显式给成"没配端点"：.env 里可能已经写了端点，别让用例依赖本机配置
+    settings = settings.model_copy(update={"engine": "http", "tts_endpoints": []})
 
     def factory(fresh):
         built.append(fresh.engine)

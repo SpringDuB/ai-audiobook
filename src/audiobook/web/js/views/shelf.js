@@ -4,6 +4,7 @@ import { emptyState, h, renderWithState, toast } from "../ui.js";
 
 const RUN_LABELS = {
   empty: "一键分析",
+  split: "一键分析",
   analyzing: "继续分析",
   analyzed: "一键生成",
   synthesizing: "继续生成",

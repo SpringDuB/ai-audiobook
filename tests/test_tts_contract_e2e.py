@@ -16,6 +16,7 @@ from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
+from audiobook.pipeline import resume_book
 from audiobook.worker import WorkerContext, run_once
 
 REPO = Path(__file__).resolve().parents[1]
@@ -151,6 +152,14 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         )
         try:
             guard = 0
+            while run_once(ctx):   # 导入 → 分章（本地，不碰 LLM）
+                guard += 1
+                assert guard < 100, "任务链没有收敛"
+            resume_book(settings, conn, book_id, phase="analysis")   # 用户点「一键分析」
+            while run_once(ctx):
+                guard += 1
+                assert guard < 100, "任务链没有收敛"
+            resume_book(settings, conn, book_id, phase="audio")      # 用户点「生成有声书」
             while run_once(ctx):
                 guard += 1
                 assert guard < 100, "任务链没有收敛"

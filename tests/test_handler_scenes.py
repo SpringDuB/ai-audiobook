@@ -6,6 +6,7 @@ from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
+from audiobook.pipeline import resume_book
 from audiobook.worker import WorkerContext, run_once
 
 SAMPLE = "第一章 开始\n\n第一句。第二句。"
@@ -40,6 +41,7 @@ def test_scenes_handler_writes_scene_file_and_enqueues_lines(settings, conn, tmp
         llm=LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=4), settings),
     )
     run_once(ctx)  # split
+    resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
     run_once(ctx)  # characters
     run_once(ctx)  # scenes
 

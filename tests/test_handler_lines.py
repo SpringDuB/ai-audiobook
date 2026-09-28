@@ -8,6 +8,7 @@ from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
+from audiobook.pipeline import resume_book
 from audiobook.worker import WorkerContext, run_once
 
 SAMPLE = "第一章 开始\n\n苏锐说：“走。”\n\n王胖子说：“好。”"
@@ -64,8 +65,10 @@ def test_lines_handler_writes_lines_and_triggers_casting_when_ready(settings, co
         }
     )
     ctx = _ctx(settings, conn, llm)
+    run_once(ctx)  # 导入 → 分章
+    resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
     for _ in range(4):
-        run_once(ctx)  # split → characters → scenes → lines
+        run_once(ctx)  # characters → scenes → lines → casting
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 0))
     assert [row["speaker"] for row in rows] == ["role_0001", "role_0002"]
@@ -101,8 +104,10 @@ def test_lines_handler_records_scene_failure_and_still_writes_lines(settings, co
         fail_on={"PASS_C"},
     )
     ctx = _ctx(settings, conn, llm)
-    for _ in range(4):
-        run_once(ctx)
+    run_once(ctx)  # 导入 → 分章
+    resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
+    for _ in range(3):
+        run_once(ctx)  # characters → scenes → lines（选角这一步不在本用例范围内）
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 0))
     assert all(row["speaker"] == "narrator" for row in rows)
