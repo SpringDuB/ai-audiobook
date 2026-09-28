@@ -40,14 +40,14 @@ export const api = {
   book: (id) => get(`/api/books/${id}`),
   chapters: (id) => get(`/api/books/${id}/chapters`),
   chapterText: (id, index) => get(`/api/books/${id}/chapters/${index}/text`),
-  scenes: (id, index) => get(`/api/books/${id}/chapters/${index}/scenes`),
   lines: (id, index, scene) =>
-    get(`/api/books/${id}/chapters/${index}/lines${scene ? `?scene=${encodeURIComponent(scene)}` : ""}`),
+    get(`/api/books/${id}/chapters/${index}/lines`),
   patchLine: (id, lineId, patch) => send("PATCH", `/api/books/${id}/lines/${lineId}`, patch),
   resynth: (id, lineId) => send("POST", `/api/books/${id}/lines/${lineId}/resynth`),
   renderChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/render`),
   runBook: (id) => send("POST", `/api/books/${id}/run`),
   analyzeBook: (id) => send("POST", `/api/books/${id}/analyze`),
+  analyzeChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/analyze`),
   generateBook: (id) => send("POST", `/api/books/${id}/generate`),
   exportBook: (id, body) => send("POST", `/api/books/${id}/export`, body),
   upload: (file, title) => {

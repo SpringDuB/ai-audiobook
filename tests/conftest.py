@@ -24,7 +24,6 @@ def make_narrator_lines(chapter_index: int, text: str, scene_index: int = 1) -> 
                 speaker_name="旁白",
                 addressee_id=None,
                 addressee_name=None,
-                scene_tone=None,
                 character=None,
                 relationship=None,
                 pronounce_table={},

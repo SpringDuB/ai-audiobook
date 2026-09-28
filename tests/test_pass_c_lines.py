@@ -1,158 +1,200 @@
-from audiobook.analysis.characters import aggregate_characters
-from audiobook.analysis.lines import annotate_scene, build_context_block, process_chapter
-from audiobook.analysis.models import PassAOutput, PassCOutput
+from audiobook.analysis.lines import (
+    DEFAULT_SEGMENT,
+    build_context_block,
+    participants_in_window,
+    process_chapter,
+    windowed,
+)
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
 
-SENTENCES = ["秦风看着他。", "“你为什么要杀我？”", "“我说过，会给黄老板一个交代。”"]
+SENTENCES = ["苏锐说：“走！”", "他停了下来。", "苏锐又说：“别废话。”"]
+
+CHARACTERS = {
+    "characters": [
+        {
+            "id": "narrator",
+            "name": "旁白",
+            "aliases": [],
+            "gender": "未知",
+            "age_group": "未知",
+            "personality": [],
+            "speaking_style": "平稳",
+            "base_emotion": "平静",
+            "base_intensity": 0.3,
+            "is_narrator": True,
+        },
+        {
+            "id": "role_0001",
+            "name": "苏锐",
+            "aliases": ["老苏"],
+            "gender": "男",
+            "age_group": "青年",
+            "personality": ["冷静"],
+            "speaking_style": "简短",
+            "base_emotion": "平静",
+            "base_intensity": 0.4,
+            "is_narrator": False,
+        },
+        {
+            "id": "role_0002",
+            "name": "王胖子",
+            "aliases": [],
+            "gender": "男",
+            "age_group": "青年",
+            "personality": ["话多"],
+            "speaking_style": "咋呼",
+            "base_emotion": "喜悦",
+            "base_intensity": 0.5,
+            "is_narrator": False,
+        },
+    ],
+    "relationships": [
+        {"from": "苏锐", "to": "王胖子", "closeness": 0.8, "hierarchy": 0.2, "hostility": 0.0, "intimacy": 0.7}
+    ],
+}
 
 
-def _runner(settings, llm) -> LlmJsonRunner:
-    return LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=4), settings)
+def _runner(settings, llm):
+    return LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=2), settings)
 
 
-def _characters() -> dict:
-    return aggregate_characters(
-        [
-            (
-                1,
-                PassAOutput.model_validate(
-                    {
-                        "characters": [
-                            {"name": "秦风", "aliases": ["秦少"], "gender": "男", "base_emotion": "平静"},
-                            {"name": "张卫东", "gender": "男", "base_emotion": "恐惧"},
-                            {"name": "旁白", "gender": "未知", "base_emotion": "平静"},
-                        ],
-                        "relationships": [
-                            {"from": "张卫东", "to": "秦风", "hostility": 0.7, "intimacy": 0.1}
-                        ],
-                    }
-                ),
-            )
-        ]
-    )
-
-
-def _scene(index=1, start=1, end=3) -> dict:
-    return {
-        "id": f"c0001-s{index:02d}",
-        "index": index,
-        "title": "对峙",
-        "summary": "",
-        "participants": ["narrator", "role_0001", "role_0002"],
-        "tone": {"dominant": "恐惧", "intensity": 0.7},
-        "start_line": start,
-        "end_line": end,
-    }
-
-
-def test_context_block_only_lists_participants_and_their_relationships():
-    payload = _characters()
-    relationships = {("role_0002", "role_0001"): payload["relationships"][0]}
-    block = build_context_block(payload, _scene()["participants"], relationships)
-    assert "秦风" in block and "张卫东" in block
-    assert "张卫东 → 秦风" in block
-    assert "敌意0.7" in block
-
-
-def test_annotate_scene_numbers_sentences_and_returns_annotations(settings):
-    llm = FakeLLM(routes={"PASS_C": {"lines": [{"index": 1, "speaker": "旁白"}]}})
-    out = annotate_scene(
-        _runner(settings, llm), settings=settings, book_id="b1", chapter_index=1,
-        scene=_scene(), sentences=SENTENCES, characters_payload=_characters(), relationships={},
-    )
-    assert isinstance(out, PassCOutput)
-    assert "1. 秦风看着他。" in llm.calls[0]["user"]
-    assert "3. “我说过，会给黄老板一个交代。”" in llm.calls[0]["user"]
-    assert llm.calls[0]["user"].startswith("【PASS_C】")
-
-
-def test_process_chapter_assigns_speakers_addressees_and_ids(settings):
-    llm = FakeLLM(
-        routes={
-            "PASS_C": {
-                "lines": [
-                    {"index": 1, "speaker": "旁白"},
-                    {"index": 2, "speaker": "张卫东", "addressee": "秦少", "emotion": "愤怒", "intensity": 0.9,
-                     "delivery": "shout"},
-                    {"index": 3, "speaker": "秦风", "addressee": "张卫东"},
-                ]
+def _route_c(user: str) -> dict:
+    tail = user.split("句子列表：", 1)[-1]
+    rows = []
+    for line in tail.splitlines():
+        if ". " not in line:
+            continue
+        number, sentence = line.split(". ", 1)
+        if not number.strip().isdigit():
+            continue
+        quoted = "“" in sentence
+        rows.append(
+            {
+                "index": int(number),
+                "speaker": "苏锐" if "苏锐" in sentence else "旁白",
+                "addressee": "王胖子" if "苏锐" in sentence else None,
+                "emotion": "愤怒" if quoted else "忧郁",
+                "intensity": 0.8 if quoted else 0.35,
+                "secondary": "悲伤" if quoted else None,
+                "secondary_weight": 0.3 if quoted else 0.0,
+                "delivery": "shout" if "！" in sentence else "normal",
             }
-        }
-    )
+        )
+    return {"lines": rows}
+
+
+def test_windowed_covers_every_sentence():
+    assert windowed(["一二三", "四五六", "七八九"], 100) == [(0, 3)]
+    assert windowed(["一二三", "四五六", "七八九"], 6) == [(0, 2), (2, 3)]
+    # 句数上限兜住"短句很多"的情况（否则一条记录几十 token，输出会被截断）
+    assert windowed(["短。"] * 5, 10_000, max_sentences=2) == [(0, 2), (2, 4), (4, 5)]
+
+
+def test_participants_in_window_are_mentioned_characters_plus_narrator():
+    assert participants_in_window(["苏锐看着他。"], CHARACTERS) == ["narrator", "role_0001"]
+    # 别名也算命中
+    assert participants_in_window(["老苏笑了。"], CHARACTERS) == ["narrator", "role_0001"]
+    assert participants_in_window(["天亮了。"], CHARACTERS) == ["narrator"]
+
+
+def test_context_block_lists_characters_and_their_relationship():
+    block = build_context_block(CHARACTERS, ["narrator", "role_0001", "role_0002"], {("role_0001", "role_0002"): {
+        "closeness": 0.8, "hierarchy": 0.2, "hostility": 0.0, "intimacy": 0.7
+    }})
+    assert "苏锐（男，青年，底色：平静，说话习惯：简短）" in block
+    assert "苏锐 → 王胖子：亲疏0.8、尊卑0.2、敌意0.0、亲密0.7" in block
+
+
+def test_process_chapter_keeps_absolute_numbers_and_mix(settings):
+    tiny = settings.model_copy(update={"llm_line_window_chars": 10})
+    llm = FakeLLM(routes={"PASS_C": _route_c})
     lines, issues = process_chapter(
-        _runner(settings, llm), settings=settings, book_id="b1", chapter_index=1,
-        sentences=SENTENCES, scenes_payload={"scenes": [_scene()]},
-        characters_payload=_characters(), pronounce_table={},
+        _runner(settings, llm),
+        settings=tiny,
+        book_id="b1",
+        chapter_index=1,
+        title="第一章 出发",
+        sentences=SENTENCES,
+        characters_payload=CHARACTERS,
+        pronounce_table={},
     )
     assert issues == []
+    # 行 id 用"本章第几句"，跨窗口连续
     assert [line["id"] for line in lines] == ["c0001-s01-l001", "c0001-s01-l002", "c0001-s01-l003"]
-    assert lines[0]["speaker"] == "narrator" and lines[0]["emotion"]["source"] == "scene"
-    assert lines[1]["speaker"] == "role_0002" and lines[1]["addressee"] == "role_0001"
-    assert lines[1]["emotion"] == {"dominant": "愤怒", "intensity": 0.9, "source": "line"}
-    assert lines[1]["addressee_name"] == "秦风"
-    assert lines[2]["speaker"] == "role_0001"
-    assert lines[2]["emotion"]["source"] == "scene"       # 未标注 → 场景基调
-    assert lines[1]["pause_after_ms"] == 500              # 引号后的问号 350 + 句级强度 0.9 ≥ 0.8 追加 150
-    assert lines[2]["pause_after_ms"] == 300              # 句号 300；场景强度 0.7 < 0.8 不追加
+    assert [line["seq"] for line in lines] == [1, 2, 3]
+    assert all(line["scene_index"] == DEFAULT_SEGMENT for line in lines)
+    assert [line["speaker"] for line in lines] == ["role_0001", "narrator", "role_0001"]
+    assert lines[0]["addressee"] == "role_0002"
+    assert lines[0]["emotion"] == {
+        "dominant": "愤怒",
+        "intensity": 0.8,
+        "source": "line",
+        "mix": [{"name": "愤怒", "weight": 0.8}, {"name": "悲伤", "weight": 0.3}],
+    }
+    assert lines[1]["emotion"]["dominant"] == "忧郁" and lines[1]["emotion"]["source"] == "line"
+    assert lines[0]["delivery"] == "shout"
+    # 第二个窗口的编号必须接着本章往下数
+    assert len(llm.calls) >= 2
+    assert "2. 他停了下来。" in llm.calls[1]["user"]
+    assert "第一章 出发" in llm.calls[0]["user"]
 
 
-def test_scene_boundary_pause_attaches_to_last_line_of_previous_scene(settings):
-    """场景切换的 500ms 必须落在场景之间，而不是新场景第一句之后。"""
-    llm = FakeLLM(
-        routes={"PASS_C": {"lines": [{"index": 1, "speaker": "旁白"}, {"index": 2, "speaker": "旁白"}]}}
-    )
-    scenes = [
-        _scene(index=1, start=1, end=1),
-        _scene(index=2, start=2, end=2),
-    ]
-    lines, _ = process_chapter(
+def test_missing_annotation_is_reported_and_inherits(settings):
+    llm = FakeLLM(routes={"PASS_C": {"lines": [
+        {"index": 1, "speaker": "苏锐", "emotion": "愤怒", "intensity": 0.9, "delivery": "shout"},
+        {"index": 3, "speaker": "苏锐", "emotion": "平静", "intensity": 0.3},
+    ]}})
+    lines, issues = process_chapter(
         _runner(settings, llm),
         settings=settings,
         book_id="b1",
         chapter_index=1,
-        sentences=["第一句。", "第二句。"],
-        scenes_payload={"scenes": scenes},
-        characters_payload=_characters(),
+        title="第一章",
+        sentences=SENTENCES,
+        characters_payload=CHARACTERS,
         pronounce_table={},
     )
-    assert lines[0]["pause_after_ms"] == 300 + 500   # 场景 1 最后一句：句号 300 + 切换 500
-    assert lines[1]["pause_after_ms"] == 300         # 场景 2 最后一句：句号 300，无切换加成
-
-
-def test_unknown_speaker_falls_back_to_narrator_and_reports_issue(settings):
-    llm = FakeLLM(routes={"PASS_C": {"lines": [{"index": 1, "speaker": "黑衣人"}]}})
-    lines, issues = process_chapter(
-        _runner(settings, llm), settings=settings, book_id="b1", chapter_index=1,
-        sentences=["第一句。"], scenes_payload={"scenes": [_scene(start=1, end=1)]},
-        characters_payload=_characters(), pronounce_table={},
-    )
-    assert lines[0]["speaker"] == "narrator"
-    assert [issue["kind"] for issue in issues] == ["unknown_speaker"]
-    assert issues[0]["line"] == "c0001-s01-l001"
-
-
-def test_missing_index_is_filled_and_reported(settings):
-    llm = FakeLLM(routes={"PASS_C": {"lines": [{"index": 1, "speaker": "秦风"}]}})
-    lines, issues = process_chapter(
-        _runner(settings, llm), settings=settings, book_id="b1", chapter_index=1,
-        sentences=SENTENCES[:2], scenes_payload={"scenes": [_scene(start=1, end=2)]},
-        characters_payload=_characters(), pronounce_table={},
-    )
-    assert [line["speaker"] for line in lines] == ["role_0001", "narrator"]
     assert [issue["kind"] for issue in issues] == ["line_index_missing"]
-    assert issues[0]["line"] == "c0001-s01-l002"
+    assert lines[1]["emotion"] == {
+        "dominant": "愤怒",
+        "intensity": 0.9,
+        "source": "inherit",
+        "mix": [{"name": "愤怒", "weight": 0.9}],
+    }
 
 
-def test_scene_failure_degrades_to_narrator_with_scene_tone(settings):
-    llm = FakeLLM(routes={"PASS_C": {"lines": []}}, fail_on={"PASS_C"})
+def test_window_failure_degrades_to_narrator_and_records_issue(settings, tmp_path):
+    llm = FakeLLM(routes={"PASS_C": _route_c}, fail_on={"PASS_C"})
     lines, issues = process_chapter(
-        _runner(settings, llm), settings=settings, book_id="b1", chapter_index=1,
-        sentences=SENTENCES, scenes_payload={"scenes": [_scene()]},
-        characters_payload=_characters(), pronounce_table={},
+        _runner(settings, llm),
+        settings=settings,
+        book_id="b1",
+        chapter_index=1,
+        title="第一章",
+        sentences=SENTENCES,
+        characters_payload=CHARACTERS,
+        pronounce_table={},
     )
-    assert all(line["speaker"] == "narrator" for line in lines)
-    assert all(line["emotion"]["source"] == "scene" for line in lines)
     assert [issue["kind"] for issue in issues] == ["pass_c_failed"]
-    assert issues[0]["detail"] == {"sentences": 3}
+    assert all(line["speaker"] == "narrator" for line in lines)
+    assert len(lines) == len(SENTENCES)
+
+
+def test_unknown_speaker_is_recorded_and_treated_as_narrator(settings):
+    llm = FakeLLM(routes={"PASS_C": {"lines": [
+        {"index": index, "speaker": "黑衣人", "emotion": "平静"} for index in range(1, len(SENTENCES) + 1)
+    ]}})
+    lines, issues = process_chapter(
+        _runner(settings, llm),
+        settings=settings,
+        book_id="b1",
+        chapter_index=1,
+        title="第一章",
+        sentences=SENTENCES,
+        characters_payload=CHARACTERS,
+        pronounce_table={},
+    )
+    assert [issue["kind"] for issue in issues] == ["unknown_speaker"] * len(SENTENCES)
+    assert all(line["speaker"] == "narrator" for line in lines)

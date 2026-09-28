@@ -25,7 +25,6 @@ OVERLAY_KEYS = (
     "pause_scale",
     "pause_min_ms",
     "pause_max_ms",
-    "pause_scene_extra_ms",
     "pause_tail_ms",
     "loudness_mode",
     "loudness_target_lufs",
@@ -49,7 +48,10 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = 4096
     llm_json_mode: bool = True
     llm_chunk_chars: int = 8000
-    llm_scene_window_chars: int = 8000
+    # 逐句情感标注的窗口上限：一章切成若干窗口分别请求 LLM。
+    # 一句一条记录，窗口太大输出会被 llm_max_output_tokens 截断，所以字符数与句数都要卡
+    llm_line_window_chars: int = 1600
+    llm_line_window_sentences: int = 80
     synth_concurrency: int = 4
     engine: str = "http"  # 只有 http：合成必须走独立 TTS 服务
     tts_timeout_seconds: float = 180.0
@@ -81,7 +83,6 @@ class Settings(BaseSettings):
     pause_scale: float = 1.0
     pause_min_ms: int = 80
     pause_max_ms: int = 1200
-    pause_scene_extra_ms: int = 500
     pause_tail_ms: int = 0  # 章节末尾额外静音
     # 响度：lufs | rms | off
     loudness_mode: str = "lufs"

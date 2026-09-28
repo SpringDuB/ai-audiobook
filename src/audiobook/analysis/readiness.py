@@ -10,7 +10,7 @@ def casting_ready(settings, conn, book_id: str, exclude_job_id: int | None = Non
         if not store.read_jsonl(store.lines_path(settings, book_id, chapter["index"])):
             return False
     row = conn.execute(
-        "SELECT COUNT(*) AS n FROM jobs WHERE book_id=? AND kind IN ('characters','scenes','lines')"
+        "SELECT COUNT(*) AS n FROM jobs WHERE book_id=? AND kind IN ('characters','lines')"
         " AND status IN ('queued','running') AND id IS NOT ?",
         (book_id, exclude_job_id),
     ).fetchone()

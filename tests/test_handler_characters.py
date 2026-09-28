@@ -28,7 +28,7 @@ def _ctx(settings, conn, llm) -> WorkerContext:
     )
 
 
-def test_characters_handler_writes_file_and_enqueues_scenes(settings, conn, tmp_path):
+def test_characters_handler_writes_file_and_enqueues_lines(settings, conn, tmp_path):
     txt = tmp_path / "b.txt"
     txt.write_text(SAMPLE, encoding="utf-8")
     book_id = import_book(settings, conn, txt, title="T")
@@ -43,8 +43,8 @@ def test_characters_handler_writes_file_and_enqueues_scenes(settings, conn, tmp_
     assert payload["book_id"] == book_id
     assert [c["name"] for c in payload["characters"]] == ["旁白", "苏锐"]
     assert payload["characters"][1]["id"] == "role_0001"
-    scenes = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "scenes"]
-    assert sorted(j.chapter_index for j in scenes) == [0, 1]
+    line_jobs = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "lines"]
+    assert sorted(j.chapter_index for j in line_jobs) == [0, 1]
     assert not store.lines_path(settings, book_id, 1).exists()  # 行由 lines handler 产出
     assert all(row["pass"] == "A" for row in store.read_jsonl(store.llm_log_path(settings, book_id)))
 

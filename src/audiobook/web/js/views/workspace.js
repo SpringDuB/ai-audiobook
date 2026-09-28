@@ -505,25 +505,10 @@ async function build(route, host) {
     const rows = [];
     registry = [];
     cursor.index = Math.min(cursor.index, Math.max(0, currentLines.length - 1));
-    let lastScene = null;
     let position = 0;
-    const sceneTitles = new Map((chapter.scenes || []).map((scene) => [scene.id, scene]));
     for (const line of currentLines) {
-      if (line.scene && line.scene !== lastScene) {
-        lastScene = line.scene;
-        const scene = sceneTitles.get(line.scene);
-        rows.push(
-          h(
-            "div",
-            { class: "scene-divider" },
-            h("span", { class: "mono" }, `场景 ${scene?.index ?? line.scene_index ?? "?"}`),
-            h("span", {}, scene?.title || "（无标题）"),
-            h("span", { class: "muted mono" }, `${(scene?.participants || []).map((person) => person.name).join(" / ") || "—"}`),
-          ),
-        );
-      }
       position += 1;
-      // 行号按"本章第几句"连续编号：analysis 里的 seq 是场景内序号，直接显示会一段一段重来
+      // 行号按"本章第几句"连续编号
       rows.push(
         lineRow(line, {
           bookId: state.bookId,
@@ -582,9 +567,8 @@ async function build(route, host) {
     remember(bookId, index);
     scriptBody.replaceChildren(h("p", { class: "muted" }, "读取中…"));
     paintChapterList();
-    const [textPayload, scenesPayload, linesPayload] = await Promise.all([
+    const [textPayload, linesPayload] = await Promise.all([
       api.chapterText(bookId, index),
-      api.scenes(bookId, index).catch(() => ({ scenes: [] })),
       api.lines(bookId, index),
     ]);
     if (mine !== chapterRequest) return;
@@ -592,7 +576,6 @@ async function build(route, host) {
       title: textPayload.title,
       content: textPayload.content,
       chars: textPayload.chars,
-      scenes: scenesPayload.scenes || [],
     };
     currentLines = linesPayload.lines || [];
     paintScript();
@@ -657,6 +640,7 @@ async function build(route, host) {
       "div",
       { class: "workbench__actions" },
       progress,
+      action("分析本章", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析")),
       action("分析角色文本", async () => queued(await api.analyzeBook(bookId), "分析")),
       action("生成有声书", async () => queued(await api.generateBook(bookId), "合成"), { primary: true }),
       action(
@@ -728,6 +712,7 @@ async function build(route, host) {
   // 右上角进度：跟着 SSE 里这本书的任务走；跑任务时顺手刷新章节状态
   let stopWatch = null;
   let lastRefresh = 0;
+  let wasBusy = false;
   const stopStore = store.subscribe((current) => {
     if (!document.body.contains(progress)) {
       if (stopWatch) stopWatch();
@@ -746,6 +731,13 @@ async function build(route, host) {
       lastRefresh = Date.now();
       refreshChapters();
     }
+    // 任务跑完的那一刻刷新一次：本章重分析/重渲染的结果要立刻出现在页面上
+    const busy = Boolean(running) || queued > 0;
+    if (wasBusy && !busy) {
+      refreshChapters();
+      reloadChapter(state.index);
+    }
+    wasBusy = busy;
   });
   stopWatch = stopStore;
   onTeardown(stopStore);

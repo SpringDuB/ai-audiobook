@@ -2,7 +2,6 @@ from audiobook import jobs, store
 from audiobook.analysis.readiness import casting_ready
 from audiobook.handlers import characters as characters_handler  # noqa: F401
 from audiobook.handlers import lines as lines_handler  # noqa: F401
-from audiobook.handlers import scenes as scenes_handler  # noqa: F401
 from audiobook.handlers import split  # noqa: F401
 from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
@@ -53,22 +52,12 @@ def test_lines_handler_writes_lines_and_triggers_casting_when_ready(settings, co
     txt = tmp_path / "b.txt"
     txt.write_text(SAMPLE, encoding="utf-8")
     book_id = import_book(settings, conn, txt, title="T")
-    llm = FakeLLM(
-        routes={
-            "PASS_A": PASS_A_JSON,
-            "PASS_B": {
-                "scenes": [
-                    {"index": 1, "title": "开场", "participants": ["苏锐", "王胖子"], "tone": "平静"}
-                ]
-            },
-            "PASS_C": _route_c,
-        }
-    )
+    llm = FakeLLM(routes={"PASS_A": PASS_A_JSON, "PASS_C": _route_c})
     ctx = _ctx(settings, conn, llm)
     run_once(ctx)  # 导入 → 分章
     resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
-    for _ in range(4):
-        run_once(ctx)  # characters → scenes → lines → casting
+    for _ in range(3):
+        run_once(ctx)  # characters → lines → casting
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 0))
     assert [row["speaker"] for row in rows] == ["role_0001", "role_0002"]
@@ -87,30 +76,18 @@ def test_casting_not_ready_while_analysis_jobs_are_active(settings, conn, tmp_pa
     assert casting_ready(settings, conn, book_id) is False
 
 
-def test_lines_handler_records_scene_failure_and_still_writes_lines(settings, conn, tmp_path):
+def test_lines_handler_degrades_window_failure_to_narrator(settings, conn, tmp_path):
     txt = tmp_path / "b.txt"
     txt.write_text(SAMPLE, encoding="utf-8")
     book_id = import_book(settings, conn, txt, title="T")
-    llm = FakeLLM(
-        routes={
-            "PASS_A": PASS_A_JSON,
-            "PASS_B": {
-                "scenes": [
-                    {"index": 1, "title": "开场", "participants": ["苏锐", "王胖子"], "tone": "恐惧"}
-                ]
-            },
-            "PASS_C": {"lines": []},
-        },
-        fail_on={"PASS_C"},
-    )
+    llm = FakeLLM(routes={"PASS_A": PASS_A_JSON, "PASS_C": {"lines": []}}, fail_on={"PASS_C"})
     ctx = _ctx(settings, conn, llm)
     run_once(ctx)  # 导入 → 分章
     resume_book(settings, conn, book_id, phase="analysis")  # 用户点「一键分析」
-    for _ in range(3):
-        run_once(ctx)  # characters → scenes → lines（选角这一步不在本用例范围内）
+    for _ in range(2):
+        run_once(ctx)  # characters → lines
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 0))
-    assert all(row["speaker"] == "narrator" for row in rows)
-    assert all(row["emotion"]["dominant"] == "恐惧" for row in rows)
+    assert rows and all(row["speaker"] == "narrator" for row in rows)
     kinds = [issue["kind"] for issue in store.read_jsonl(store.issues_path(settings, book_id))]
     assert kinds == ["pass_c_failed"]

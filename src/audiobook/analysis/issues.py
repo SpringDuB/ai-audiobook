@@ -5,8 +5,6 @@ from .. import store
 ISSUE_KINDS = (
     "pass_a_failed",
     "pass_a_chapter_skipped",
-    "pass_b_failed",
-    "scene_hint_not_found",
     "pass_c_failed",
     "line_index_missing",
     "unknown_speaker",

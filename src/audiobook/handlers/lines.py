@@ -16,23 +16,23 @@ def handle_lines(ctx, job) -> None:
     chapter = next((item for item in chapters if item["index"] == chapter_index), None)
     if chapter is None:
         raise RuntimeError(f"chapters.json 里没有第 {chapter_index} 章")
-    scenes_payload = store.read_json(store.scenes_path(ctx.settings, book_id, chapter_index))
-    if not scenes_payload:
-        raise RuntimeError(f"缺少第 {chapter_index} 章的场景文件")
     characters = store.read_json(store.characters_path(ctx.settings, book_id))
     if not characters:
         raise RuntimeError("缺少 characters.json，请先跑 characters 任务")
+    sentences = split_sentences(chapter["content"])
+    if not sentences:
+        raise RuntimeError(f"第 {chapter_index} 章没有可分析的句子")
 
     lines, issues = process_chapter(
         runner,
         settings=ctx.settings,
         book_id=book_id,
         chapter_index=chapter_index,
-        sentences=split_sentences(chapter["content"]),
-        scenes_payload=scenes_payload,
+        title=chapter.get("title") or f"第{chapter_index}章",
+        sentences=sentences,
         characters_payload=characters,
         pronounce_table=load_pronounce_table(ctx.settings),
-        on_scene=lambda done, total, scene_id: ctx.progress(job, done, total, scene_id),
+        on_window=lambda done, total, span: ctx.progress(job, done, total, span),
     )
     if not lines:
         raise RuntimeError(f"第 {chapter_index} 章没有产出任何行")

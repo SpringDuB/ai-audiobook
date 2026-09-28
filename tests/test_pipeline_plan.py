@@ -9,13 +9,6 @@ def _chapters(settings, book_id: str, indexes=(1, 2)) -> None:
     )
 
 
-def _scenes(settings, book_id: str, index: int) -> None:
-    store.atomic_replace_json(
-        store.scenes_path(settings, book_id, index),
-        {"book_id": book_id, "chapter_index": index, "scenes": []},
-    )
-
-
 def _lines(settings, book_id: str, index: int) -> None:
     store.write_jsonl_atomic(store.lines_path(settings, book_id, index), [{"id": "x", "text": "第一句。"}])
 
@@ -36,28 +29,19 @@ def test_plan_requests_characters_after_split(settings, conn):
     assert plan_book(settings, conn, "b1") == [("characters", None)]
 
 
-def test_plan_requests_scenes_per_chapter(settings, conn):
+def test_plan_requests_lines_per_chapter_after_characters(settings, conn):
+    """没有场景切分了：角色分析之后直接逐句情感标注。"""
     _chapters(settings, "b1")
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
-    assert plan_book(settings, conn, "b1") == [("scenes", 1), ("scenes", 2)]
-    _scenes(settings, "b1", 1)
-    # 已有场景的第 1 章转入 lines，缺场景的第 2 章继续排 scenes
-    assert plan_book(settings, conn, "b1") == [("lines", 1), ("scenes", 2)]
-
-
-def test_plan_requests_lines_for_chapters_with_scenes(settings, conn):
-    _chapters(settings, "b1")
-    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
-    _scenes(settings, "b1", 1)
-    _scenes(settings, "b1", 2)
     assert plan_book(settings, conn, "b1") == [("lines", 1), ("lines", 2)]
+    _lines(settings, "b1", 1)
+    assert plan_book(settings, conn, "b1") == [("lines", 2)]
 
 
 def test_plan_requests_casting_then_missing_audio(settings, conn):
     _chapters(settings, "b1")
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     for index in (1, 2):
-        _scenes(settings, "b1", index)
         _lines(settings, "b1", index)
     assert plan_book(settings, conn, "b1") == [("casting", None)]
 
@@ -73,7 +57,6 @@ def test_plan_is_empty_when_everything_exists(settings, conn):
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
     for index in (1, 2):
-        _scenes(settings, "b1", index)
         _lines(settings, "b1", index)
         store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
         store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
@@ -87,7 +70,6 @@ def test_plan_requests_book_export_after_all_chapters(settings, conn):
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
     for index in (1, 2):
-        _scenes(settings, "b1", index)
         _lines(settings, "b1", index)
         store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
         store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
@@ -103,7 +85,6 @@ def test_plan_rerenders_chapters_without_render_meta(settings, conn):
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
     for index in (1, 2):
-        _scenes(settings, "b1", index)
         _lines(settings, "b1", index)
         store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
         store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
@@ -121,15 +102,14 @@ def test_resume_book_enqueues_the_planned_jobs(settings, conn):
 
 
 def test_phase_analysis_only_queues_the_analysis_chain(settings, conn):
-    """「分析角色文本」按钮：只推分章→角色→场景→逐句→选角。"""
+    """「分析角色文本」按钮：只推分章 → 角色 → 逐句情感 → 选角。"""
     assert resume_book(settings, conn, "b1", phase="analysis") == [("chapter_split", None)]
     _chapters(settings, "b1")
     assert resume_book(settings, conn, "b1", phase="analysis") == [("characters", None)]
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     plan = resume_book(settings, conn, "b1", phase="analysis")
-    assert plan == [("scenes", 1), ("scenes", 2)]
+    assert plan == [("lines", 1), ("lines", 2)]
     for index in (1, 2):
-        _scenes(settings, "b1", index)
         _lines(settings, "b1", index)
     assert resume_book(settings, conn, "b1", phase="analysis") == [("casting", None)]
     store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
@@ -144,6 +124,5 @@ def test_phase_audio_only_queues_the_synthesis_chain(settings, conn):
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
     for index in (1, 2):
-        _scenes(settings, "b1", index)
         _lines(settings, "b1", index)
     assert resume_book(settings, conn, "b1", phase="audio") == [("synthesize", 1), ("synthesize", 2)]

@@ -67,6 +67,6 @@ def handle_characters(ctx, job) -> None:
         {"book_id": book_id, "generated_at": int(time.time() * 1000), **aggregate},
     )
     for chapter in chapters:
-        jobs.enqueue(ctx.conn, "scenes", book_id, chapter["index"])
+        jobs.enqueue(ctx.conn, "lines", book_id, chapter["index"])
     ctx.conn.execute("UPDATE books SET status='analyzed' WHERE id=?", (book_id,))
     ctx.progress(job, len(chapters), len(chapters), f"角色 {len(aggregate['characters'])} 个")

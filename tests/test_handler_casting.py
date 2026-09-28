@@ -31,7 +31,6 @@ def test_casting_handler_writes_casting_without_starting_synthesis(settings, con
         store.chapters_path(settings, book_id),
         {"chapters": [{"index": 1, "title": "第一章", "content": "第一句。", "chars": 4}]},
     )
-    store.atomic_replace_json(store.scenes_path(settings, book_id, 1), {"scenes": []})
     store.write_jsonl_atomic(
         store.lines_path(settings, book_id, 1), [{"id": "c0001-s01-l001", "text": "第一句。"}]
     )

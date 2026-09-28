@@ -2,14 +2,14 @@ from audiobook.config import get_settings
 from audiobook.render.pauses import build_pause_plan, effective_pause_ms
 
 
-def _row(text, scene="c0001-s01", intensity=0.3, **extra):
-    return {"text": text, "scene": scene, "emotion": {"intensity": intensity}, **extra}
+def _row(text, intensity=0.3, **extra):
+    return {"text": text, "emotion": {"intensity": intensity}, **extra}
 
 
-def test_scene_boundary_gets_extra_pause_on_previous_line(settings):
-    rows = [_row("第一句。"), _row("第二句。", scene="c0001-s02")]
-    assert effective_pause_ms(rows[0], rows[1], settings) == 800   # 300 + 500
-    assert effective_pause_ms(rows[1], None, settings) == 300      # 章节最后一句不加切换停顿
+def test_pause_follows_punctuation_only(settings):
+    rows = [_row("第一句。"), _row("第二句？")]
+    assert effective_pause_ms(rows[0], rows[1], settings) == 300
+    assert effective_pause_ms(rows[1], None, settings) == 350
 
 
 def test_pause_scale_and_clamp_are_applied(settings):
@@ -29,7 +29,7 @@ def test_high_intensity_adds_pause(settings):
 
 
 def test_build_pause_plan_matches_per_line_results(settings):
-    rows = [_row("一。"), _row("二！"), _row("三，", scene="c0001-s02")]
+    rows = [_row("一。"), _row("二！"), _row("三，")]
     assert build_pause_plan(rows, settings) == [
         effective_pause_ms(rows[0], rows[1], settings),
         effective_pause_ms(rows[1], rows[2], settings),

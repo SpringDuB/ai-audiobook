@@ -47,14 +47,6 @@ def characters_path(settings, book_id: str) -> Path:
     return book_dir(settings, book_id) / "analysis" / "characters.json"
 
 
-def scenes_dir(settings, book_id: str) -> Path:
-    return book_dir(settings, book_id) / "analysis" / "scenes"
-
-
-def scenes_path(settings, book_id: str, index: int) -> Path:
-    return scenes_dir(settings, book_id) / f"chapter_{chapter_tag(index)}.json"
-
-
 def casting_path(settings, book_id: str) -> Path:
     return book_dir(settings, book_id) / "voices" / "casting.json"
 
@@ -124,7 +116,6 @@ def count_issues(settings, book_id: str) -> int:
 def chapter_state(settings, book_id: str, index: int) -> dict:
     """章节在流水线上的位置：empty → analyzed → synthesized → rendered。"""
     rows = read_jsonl(lines_path(settings, book_id, index))
-    scenes = (read_json(scenes_path(settings, book_id, index), default={}) or {}).get("scenes") or []
     meta = read_json(chapter_render_meta_path(settings, book_id, index), default={}) or {}
     clips_dir = audio_dir(settings, book_id, index)
     segments = sum(1 for row in rows if (clips_dir / f"{row['id']}.wav").exists())
@@ -138,7 +129,6 @@ def chapter_state(settings, book_id: str, index: int) -> dict:
         state = "empty"
     return {
         "index": index,
-        "scenes": len(scenes),
         "lines": len(rows),
         "segments": segments,
         "duration_sec": float(meta.get("duration") or 0.0),

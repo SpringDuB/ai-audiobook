@@ -1,7 +1,7 @@
 from . import jobs, store
 
-# 分析链（书稿 → 角色 → 场景 → 逐句 → 选角）与合成链（合成 → 渲染 → 合本）
-ANALYSIS_KINDS = {"chapter_split", "characters", "scenes", "lines", "casting"}
+# 分析链（书稿 → 角色 → 逐句情感 → 选角）与合成链（合成 → 渲染 → 合本）
+ANALYSIS_KINDS = {"chapter_split", "characters", "lines", "casting"}
 AUDIO_KINDS = {"synthesize", "post", "book_export"}
 PHASE_KINDS = {"analysis": ANALYSIS_KINDS, "audio": AUDIO_KINDS}
 
@@ -25,9 +25,7 @@ def _plan_all(settings, book_id: str) -> list[tuple[str, int | None]]:
     plan: list[tuple[str, int | None]] = []
     for chapter in chapters:
         index = chapter["index"]
-        if not store.scenes_path(settings, book_id, index).exists():
-            plan.append(("scenes", index))
-        elif not store.lines_path(settings, book_id, index).exists():
+        if not store.lines_path(settings, book_id, index).exists():
             plan.append(("lines", index))
     if plan:
         return plan

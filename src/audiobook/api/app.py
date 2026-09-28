@@ -55,17 +55,12 @@ def _chapters_with_role(settings, book_id: str, role_id: str) -> list[int]:
     return _role_occurrences(settings, book_id).get(role_id, {}).get("chapters", [])
 
 
-def _lines_payload(settings, book_id: str, index: int, scene: str | None = None) -> list[dict]:
+def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
     rows = store.read_jsonl(store.lines_path(settings, book_id, index))
     clips_dir = store.audio_dir(settings, book_id, index)
     payload = []
-    scene_order: dict[str, int] = {}
     for position, row in enumerate(rows):
-        if scene and row.get("scene") != scene:
-            continue
-        # 老数据没有 seq / scene_index：按行序兜底，别让校对台显示 null
-        scene_id = row.get("scene") or ""
-        scene_order.setdefault(scene_id, len(scene_order) + 1)
+        # 老数据没有 seq：按行序兜底，别让校对台显示 null
         clip = clips_dir / f"{row['id']}.wav"
         duration = 0.0
         if clip.exists():
@@ -87,7 +82,7 @@ def _lines_payload(settings, book_id: str, index: int, scene: str | None = None)
                 "has_audio": clip.exists(),
                 "audio_url": f"/api/books/{book_id}/lines/{row['id']}/audio",
                 "seq": row.get("seq") or position + 1,
-                "scene_index": row.get("scene_index") or scene_order[scene_id],
+                "scene_index": row.get("scene_index") or 1,
             }
         )
     return payload
@@ -148,49 +143,11 @@ def create_app(settings, conn) -> FastAPI:
             )
         return {"chapters": payload, "status": "split", "pending": False}
 
-    @app.get("/api/books/{book_id}/chapters/{index}/scenes")
-    def chapter_scenes(book_id: str, index: int):
-        chapter = _chapter_meta(settings, book_id, index)
-        if chapter is None:
-            raise HTTPException(status_code=404, detail="chapter not found")
-        payload = store.read_json(store.scenes_path(settings, book_id, index), default={}) or {}
-        names = _character_names(settings, book_id)
-        lines = _lines_payload(settings, book_id, index)
-        grouped: dict[str, list[dict]] = {}
-        for line in lines:
-            grouped.setdefault(line["scene"], []).append(line)
-        scenes = []
-        for scene in payload.get("scenes") or []:
-            bucket = grouped.get(scene["id"], [])
-            scenes.append(
-                {
-                    "id": scene["id"],
-                    "index": scene["index"],
-                    "title": scene.get("title") or "",
-                    "summary": scene.get("summary") or "",
-                    "participants": [
-                        {"id": pid, "name": names.get(pid, pid)} for pid in scene.get("participants") or []
-                    ],
-                    "tone": scene.get("tone") or {},
-                    "start_line": scene.get("start_line"),
-                    "end_line": scene.get("end_line"),
-                    "lines": len(bucket),
-                    "duration_sec": round(sum(line["duration_sec"] for line in bucket), 2),
-                    "audio_ready": bool(bucket) and all(line["has_audio"] for line in bucket),
-                }
-            )
-        return {
-            "chapter_index": index,
-            "title": chapter.get("title") or "",
-            "sentence_count": payload.get("sentence_count") or len(lines),
-            "scenes": scenes,
-        }
-
     @app.get("/api/books/{book_id}/chapters/{index}/lines")
-    def chapter_lines(book_id: str, index: int, scene: str | None = None):
+    def chapter_lines(book_id: str, index: int):
         if _chapter_meta(settings, book_id, index) is None:
             raise HTTPException(status_code=404, detail="chapter not found")
-        return {"lines": _lines_payload(settings, book_id, index, scene)}
+        return {"lines": _lines_payload(settings, book_id, index)}
 
     @app.get("/api/books/{book_id}/chapters/{index}/text")
     def chapter_text(book_id: str, index: int):
@@ -417,9 +374,21 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.post("/api/books/{book_id}/analyze")
     def analyze_book(book_id: str):
-        """只推分析链：分章 → 角色 → 场景 → 逐句 → 选角。"""
+        """只推分析链：分章 → 角色 → 逐句情感 → 选角。"""
         plan = resume_book(settings, conn, book_id, phase="analysis")
         return {"ok": True, "queued": len(plan), "plan": plan}
+
+    @app.post("/api/books/{book_id}/chapters/{index}/analyze")
+    def analyze_chapter(book_id: str, index: int):
+        """只跑本章的逐句情感标注（全书角色表还没建就先补一轮角色分析）。"""
+        if _chapter_meta(settings, book_id, index) is None:
+            raise HTTPException(status_code=404, detail="chapter not found")
+        plan: list[tuple[str, int | None]] = []
+        if not store.characters_path(settings, book_id).exists():
+            plan.append(("characters", None))
+        plan.append(("lines", index))
+        job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
+        return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
 
     @app.post("/api/books/{book_id}/generate")
     def generate_book(book_id: str):

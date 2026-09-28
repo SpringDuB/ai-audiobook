@@ -36,7 +36,6 @@ export function stateLabel(state) {
 const KIND_LABELS = {
   chapter_split: "分章",
   characters: "角色分析",
-  scenes: "场景切分",
   lines: "逐句标注",
   casting: "自动选角",
   synthesize: "章节合成",
@@ -64,8 +63,8 @@ export function jobStateLabel(status) {
 const ISSUE_KIND_LABELS = {
   pass_a_failed: "角色分析失败",
   pass_a_chapter_skipped: "章节跳过",
-  pass_b_failed: "场景切分失败",
-  scene_hint_not_found: "场景线索未命中",
+  pass_b_failed: "场景切分失败（旧数据）",
+  scene_hint_not_found: "场景线索未命中（旧数据）",
   pass_c_failed: "逐句标注失败",
   line_index_missing: "句索引缺失",
   unknown_speaker: "未知说话人",

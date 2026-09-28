@@ -2,7 +2,7 @@ from audiobook import audio, jobs, store
 from audiobook.api.app import create_app  # noqa: F401  确保导入链路完整
 from audiobook.db import connect, init_db
 from fake_engine import FakeEngine
-from audiobook.handlers import casting, characters, lines, post, scenes, split, synthesize  # noqa: F401
+from audiobook.handlers import casting, characters, lines, post, split, synthesize  # noqa: F401
 from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
@@ -35,14 +35,6 @@ def _route_a(user: str) -> dict:
     return {"characters": people, "relationships": relationships}
 
 
-PASS_B = {
-    "scenes": [
-        {"index": 1, "title": "开场", "summary": "两人对话", "participants": ["苏锐", "王胖子"],
-         "tone": "平静", "tone_intensity": 0.4}
-    ]
-}
-
-
 def _sentences_from_prompt(user: str) -> list[str]:
     tail = user.split("句子列表：", 1)[-1]
     return [line.split(". ", 1)[1] for line in tail.splitlines() if ". " in line and line[:1].isdigit()]
@@ -73,7 +65,7 @@ def _route_c(user: str) -> dict:
 
 
 def _ctx(settings, conn, engine=None) -> WorkerContext:
-    llm = FakeLLM(routes={"PASS_A": _route_a, "PASS_B": PASS_B, "PASS_C": _route_c})
+    llm = FakeLLM(routes={"PASS_A": _route_a, "PASS_C": _route_c})
     return WorkerContext(
         settings=settings,
         conn=conn,
@@ -135,7 +127,7 @@ def test_full_analysis_pipeline_without_network_produces_chapter_artifacts(setti
     assert all(j.status == "done" for j in jobs.list_jobs(conn, book_id))
 
     log = store.read_jsonl(store.llm_log_path(settings, book_id))
-    assert {row["pass"] for row in log} == {"A", "B", "C"}
+    assert {row["pass"] for row in log} == {"A", "C"}   # 没有场景切分了
     assert all(row["ok"] is True for row in log)
 
 

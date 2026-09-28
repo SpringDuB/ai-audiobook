@@ -61,6 +61,42 @@ def test_tts_status_reports_configured_engine(settings):
     assert "一键启动" in payload["error"]
 
 
+def test_chapter_analyze_only_queues_that_chapter(settings):
+    """「分析本章」：只重跑这一章的逐句情感标注；角色表没建时先补一轮全书角色分析。"""
+    from audiobook import store
+
+    client, conn = make_client(settings)
+    conn.execute(
+        "INSERT OR REPLACE INTO books(id, title, source_path, chapter_count, status, created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        ("b1", "测试书", "source/original.txt", 2, "split", 1790000000000),
+    )
+    store.atomic_replace_json(
+        store.chapters_path(settings, "b1"),
+        {
+            "chapters": [
+                {"index": 1, "title": "第一章", "content": "第一句。", "chars": 4},
+                {"index": 2, "title": "第二章", "content": "第二句。", "chars": 4},
+            ]
+        },
+    )
+
+    payload = client.post("/api/books/b1/chapters/2/analyze").json()
+    assert payload["plan"] == [["characters", None], ["lines", 2]]
+    kinds = [
+        (job["kind"], job["chapter_index"])
+        for job in client.get("/api/jobs", params={"book_id": "b1"}).json()["jobs"]
+    ]
+    assert sorted(kinds, key=str) == [("characters", None), ("lines", 2)]
+
+    # 角色表有了以后只推本章
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    conn.execute("UPDATE jobs SET status='done'")
+    payload = client.post("/api/books/b1/chapters/1/analyze").json()
+    assert payload["plan"] == [["lines", 1]]
+    assert client.post("/api/books/b1/chapters/9/analyze").status_code == 404
+
+
 def test_run_endpoint_enqueues_next_pipeline_step(settings):
     client, conn = make_client(settings)
     book_id = _upload(client, "第一章 重生十年前\n\n正文一。\n\n第二章 死党\n\n正文二。")

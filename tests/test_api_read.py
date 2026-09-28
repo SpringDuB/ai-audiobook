@@ -28,27 +28,6 @@ def _seed_book(settings, narrator_lines, book_id="b1"):
         {"chapters": [{"index": 0, "title": "卷一", "content": "第一句。第二句。", "chars": 8}]},
     )
     store.write_jsonl_atomic(store.lines_path(settings, book_id, 0), narrator_lines(0, "第一句。第二句。"))
-    store.atomic_replace_json(
-        store.scenes_path(settings, book_id, 0),
-        {
-            "book_id": book_id,
-            "chapter_index": 0,
-            "title": "卷一",
-            "sentence_count": 2,
-            "scenes": [
-                {
-                    "id": "c0000-s01",
-                    "index": 1,
-                    "title": "开场",
-                    "summary": "两句旁白",
-                    "participants": ["narrator"],
-                    "tone": {"dominant": "平静", "intensity": 0.4},
-                    "start_line": 1,
-                    "end_line": 2,
-                }
-            ],
-        },
-    )
     store.atomic_replace_json(store.casting_path(settings, book_id), {"narrator_voice": "default", "roles": {}})
     return book_id
 
@@ -86,22 +65,14 @@ def test_chapters_endpoint_lists_state(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
     rows = client.get(f"/api/books/{book_id}/chapters").json()["chapters"]
-    assert [(r["index"], r["title"], r["lines"], r["scenes"], r["state"]) for r in rows] == [
-        (0, "卷一", 2, 1, "analyzed")
-    ]
+    assert [(r["index"], r["title"], r["lines"], r["state"]) for r in rows] == [(0, "卷一", 2, "analyzed")]
     assert client.get("/api/books/nope/chapters").status_code == 404
 
 
-def test_scenes_endpoint_resolves_participant_names(settings, narrator_lines):
+def test_lines_endpoint_404s_for_unknown_chapter(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
-    payload = client.get(f"/api/books/{book_id}/chapters/0/scenes").json()
-    assert payload["title"] == "卷一"
-    scene = payload["scenes"][0]
-    assert (scene["title"], scene["lines"], scene["audio_ready"]) == ("开场", 2, False)
-    assert scene["participants"] == [{"id": "narrator", "name": "旁白"}]
-    assert scene["tone"] == {"dominant": "平静", "intensity": 0.4}
-    assert client.get(f"/api/books/{book_id}/chapters/9/scenes").status_code == 404
+    assert client.get(f"/api/books/{book_id}/chapters/9/lines").status_code == 404
 
 
 def test_lines_endpoint_exposes_audio_url_and_emotion(settings, narrator_lines):
@@ -114,7 +85,6 @@ def test_lines_endpoint_exposes_audio_url_and_emotion(settings, narrator_lines):
     assert lines[0]["has_audio"] is False and lines[0]["duration_sec"] == 0.0
     assert lines[0]["audio_url"] == f"/api/books/{book_id}/lines/c0000-s01-l001/audio"
     assert client.get(lines[0]["audio_url"]).status_code == 404
-    assert client.get(f"/api/books/{book_id}/chapters/0/lines?scene=c0000-s02").json()["lines"] == []
 
 
 def test_line_audio_serves_wav_when_present(settings, narrator_lines):

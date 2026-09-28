@@ -331,7 +331,6 @@ def main(argv=None) -> int:
             characters,
             lines,
             post,
-            scenes,
             split,
             synthesize,
             synthesize_line,

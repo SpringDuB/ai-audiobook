@@ -71,44 +71,6 @@ class PassAOutput(BaseModel):
     relationships: list[Relationship]
 
 
-class SceneSpan(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    index: int
-    title: str = ""
-    summary: str = ""
-    participants: list[str] = Field(default_factory=list)
-    tone: str = "平静"
-    tone_intensity: float = 0.4
-    starts_with: str = ""
-    ends_with: str = ""
-
-    @field_validator("title", "summary", "starts_with", "ends_with", mode="before")
-    @classmethod
-    def _str_or_empty(cls, value):
-        return "" if value is None else value
-
-    @field_validator("participants", mode="before")
-    @classmethod
-    def _list_or_empty(cls, value):
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        return value
-
-    @field_validator("tone_intensity", mode="before")
-    @classmethod
-    def _clamp(cls, value):
-        return clamp01(value)
-
-
-class PassBOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    scenes: list[SceneSpan]
-
-
 class LineAnnotation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -117,16 +79,21 @@ class LineAnnotation(BaseModel):
     addressee: str | None = None
     emotion: str = "继承"
     intensity: float | None = None
+    # 副情绪：表面情绪底下藏着的那层（如"笑着威胁"＝喜悦 + 愤怒），让合成更像人而不是念稿
+    secondary: str | None = None
+    secondary_weight: float | None = None
     delivery: str = "normal"
 
-    @field_validator("emotion", "delivery", mode="before")
+    @field_validator("emotion", "delivery", "secondary", mode="before")
     @classmethod
     def _str_or_default(cls, value, info):
         if value is None:
+            if info.field_name == "secondary":
+                return None
             return "继承" if info.field_name == "emotion" else "normal"
         return value
 
-    @field_validator("intensity", mode="before")
+    @field_validator("intensity", "secondary_weight", mode="before")
     @classmethod
     def _clamp(cls, value):
         return None if value is None else clamp01(value)

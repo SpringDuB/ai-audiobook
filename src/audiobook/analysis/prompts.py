@@ -27,58 +27,42 @@ def pass_a_user(chapter_index: int, title: str, text: str) -> str:
     )
 
 
-PASS_B_SYSTEM = """你是中文小说的场景分析师。你只输出 JSON 对象，不输出解释、不输出 Markdown 代码块。
-你要把一个章节切分成若干"场景"：地点/时间/出场人物或情绪基调发生明显变化的地方就是边界。
-你只能使用给定的角色名单，不要创造新角色名。"""
-
-PASS_B_FORMAT = """输出格式（严格遵守，不要增删字段）：
-{"scenes":[{"index":1,"title":"简短场景名","summary":"一句话摘要","participants":["角色名"],
-"tone":"喜悦|愤怒|悲伤|恐惧|厌恶|忧郁|惊讶|平静","tone_intensity":0.5,
-"starts_with":"该场景第一句的前20字","ends_with":"该场景最后一句的前20字"}]}"""
-
-PASS_B_RULES = """要求：
-1. 场景数量控制在 1–8 个，宁可少切也不要碎切；
-2. starts_with / ends_with 必须逐字抄写给定句子（只抄前 20 字以内即可），不要改写、不要加省略号；
-3. participants 只能从"已知角色名单"里选，必须包含实际在场人物；
-4. tone 是该场景的整体基调，tone_intensity 取 0–1。"""
-
-
-def pass_b_user(chapter_index: int, title: str, character_names: list[str], numbered: str) -> str:
-    return (
-        "【PASS_B】\n"
-        f"章节序号：{chapter_index}\n"
-        f"章节标题：{title}\n"
-        f"已知角色名单：{'、'.join(character_names)}\n\n"
-        f"{PASS_B_RULES}\n\n"
-        f"{PASS_B_FORMAT}\n\n"
-        f"句子列表：\n{numbered}"
-    )
-
-
-PASS_C_SYSTEM = """你是中文小说的配音导演。你只输出 JSON 对象，不输出解释、不输出 Markdown 代码块。
-你要为给定场景的每一句标注：谁在说（speaker）、对谁说（addressee）、什么情绪（emotion）、
-怎么说话（delivery）。没有台词、是描写的句子一律算"旁白"。"""
+PASS_C_SYSTEM = """你是中文有声书的配音导演。你只输出 JSON 对象，不输出解释、不输出 Markdown 代码块。
+你的唯一目标：让每一句都带上"该怎么演"的信息 —— 谁在说、对谁说、什么情绪、多大幅度、怎么说。
+这段分析会直接驱动 TTS 合成，旁白太平、人物念稿都是失败。"""
 
 PASS_C_FORMAT = """输出格式（严格遵守，不要增删字段，每条句子都要有一条记录）：
 {"lines":[{"index":1,"speaker":"角色名或旁白","addressee":"角色名或null",
-"emotion":"喜悦|愤怒|悲伤|恐惧|厌恶|忧郁|惊讶|平静|继承","intensity":0.5,
+"emotion":"喜悦|愤怒|悲伤|恐惧|厌恶|忧郁|惊讶|平静",
+"intensity":0.5,"secondary":"以上枚举之一或null","secondary_weight":0.0,
 "delivery":"normal|shout|whisper|sneer"}]}"""
 
-PASS_C_RULES = """要求：
-1. speaker 只能从"本场景角色"里选，或写"旁白"；不要发明新名字；
-2. addressee 只能是本场景在场角色，无法判断就写 null；
-3. 引号内的直接引语必须有具体说话人；叙述、描写、心理活动默认"旁白"；
-4. emotion 不确定时写"继承"（表示沿用场景基调）；
-5. delivery：喊叫 shout、耳语 whisper、冷笑/讥讽 sneer、其余 normal。"""
+PASS_C_RULES = """情绪与表演要求：
+1. 每句都必须给 emotion，不许全部写"平静"：旁白也有语气（紧张、沉重、轻快、冷峻、温柔……映射到最接近的枚举），
+   旁白强度一般在 0.2–0.5；对白按人物此刻真实的心情给，冲突、爆发、生死关头可以给到 0.85–1.0。
+2. 判断对白情绪时，必须同时看三样东西：说话人的性格底色、他对**听话人**的态度（关系里的亲疏/尊卑/敌意/亲密）、
+   以及这句话当下的处境。同一句话对爱人、对仇人、对上司要给出不一样的情绪和幅度。
+3. intensity 是表演幅度，不是情绪好坏：日常寒暄 0.3–0.5；明显情绪外露 0.6–0.8；失控/嘶吼/崩溃 0.85–1.0。
+   同一章里不要所有句子都填同一个数值。
+4. 一句话里有两层情绪时用 secondary：写"藏在表面底下的那一层"，secondary_weight 取 0.1–0.5。
+   例：笑着威胁 → emotion 喜悦 intensity 0.6、secondary 愤怒 secondary_weight 0.35；
+   强撑镇定 → emotion 平静 intensity 0.5、secondary 恐惧 secondary_weight 0.4。没有第二层就写 null 和 0。
+5. delivery：喊叫/嘶吼/怒吼 shout；耳语/压低声音/虚弱 whisper；冷笑/讥讽/阴阳怪气 sneer；其余 normal。
+6. 心理活动、回忆、内心独白算"旁白"，但要按内容给情绪，不要一律平静。
+
+说话人判定：
+7. speaker 只能从"本段角色"里选，或写"旁白"；不要发明新名字。引号内的直接引语必须有具体说话人；
+   对话里的称呼（"老苏""王大人"）可以提示 speaker 和 addressee。
+8. addressee 只能是本段在场角色；确实判断不出来写 null。
+9. 只依据原文判断，不要编造情节；实在判断不了情绪时才写"继承"（表示沿用上一句）。"""
 
 
-def pass_c_user(chapter_index: int, scene: dict, numbered: str, context_block: str) -> str:
+def pass_c_user(chapter_index: int, title: str, numbered: str, context_block: str) -> str:
     return (
         "【PASS_C】\n"
         f"章节序号：{chapter_index}\n"
-        f"场景：{scene['id']} {scene.get('title', '')}\n"
-        f"场景摘要：{scene.get('summary', '')}\n"
-        f"场景基调：{scene['tone']['dominant']}（强度 {scene['tone']['intensity']}）\n\n"
+        f"章节标题：{title}\n"
+        "编号规则：下面每句前面的数字就是“本章第几句”，作答时必须使用同样的编号。\n\n"
         f"{context_block}\n\n"
         f"{PASS_C_RULES}\n\n"
         f"{PASS_C_FORMAT}\n\n"

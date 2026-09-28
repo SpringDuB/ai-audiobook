@@ -11,7 +11,7 @@ import pytest
 from audiobook import audio, jobs, store
 from audiobook.db import connect, init_db
 from audiobook.engines.factory import build_engine
-from audiobook.handlers import casting, characters, lines, post, scenes, split, synthesize  # noqa: F401
+from audiobook.handlers import casting, characters, lines, post, split, synthesize  # noqa: F401
 from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
@@ -46,9 +46,6 @@ PASS_A = {
     ],
     "relationships": [],
 }
-PASS_B = {"scenes": [{"index": 1, "title": "开场", "participants": ["苏锐", "王胖子"], "tone": "平静"}]}
-
-
 def _route_c(user: str) -> dict:
     tail = user.split("句子列表：", 1)[-1]
     sentences = [line.split(". ", 1)[1] for line in tail.splitlines() if ". " in line and line[:1].isdigit()]
@@ -141,7 +138,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         txt.write_text(SAMPLE, encoding="utf-8")
         book_id = import_book(settings, conn, txt, title="TTS 契约测试")
 
-        llm = FakeLLM(routes={"PASS_A": PASS_A, "PASS_B": PASS_B, "PASS_C": _route_c})
+        llm = FakeLLM(routes={"PASS_A": PASS_A, "PASS_C": _route_c})
         engine = build_engine(settings)
         ctx = WorkerContext(
             settings=settings,

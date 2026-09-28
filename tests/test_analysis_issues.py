@@ -33,8 +33,6 @@ def test_issue_kinds_are_frozen():
     assert ISSUE_KINDS == (
         "pass_a_failed",
         "pass_a_chapter_skipped",
-        "pass_b_failed",
-        "scene_hint_not_found",
         "pass_c_failed",
         "line_index_missing",
         "unknown_speaker",
@@ -52,7 +50,6 @@ def test_issue_kinds_are_frozen():
 
 def test_book_layout_paths(settings):
     assert store.characters_path(settings, "b1").as_posix().endswith("books/b1/analysis/characters.json")
-    assert store.scenes_path(settings, "b1", 7).as_posix().endswith("books/b1/analysis/scenes/chapter_0007.json")
     assert store.casting_path(settings, "b1").as_posix().endswith("books/b1/voices/casting.json")
     assert store.voice_path(settings, "v_x").as_posix().endswith("voices/v_x/voice.json")
     assert store.pronounce_path(settings).as_posix().endswith("data/pronounce.json")

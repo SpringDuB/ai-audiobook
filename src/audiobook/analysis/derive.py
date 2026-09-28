@@ -42,17 +42,37 @@ def relationship_emotion(relationship: dict | None) -> tuple[str, float] | None:
     return None
 
 
-def resolve_emotion(line_emotion, line_intensity, scene_tone, relationship, character) -> dict:
-    """四层优先级：句级 > 场景 > 关系 > 角色底色。"""
+def resolve_emotion(
+    line_emotion,
+    line_intensity,
+    secondary=None,
+    secondary_weight=None,
+    previous_emotion=None,
+    relationship=None,
+    character=None,
+) -> dict:
+    """优先级：句级 > 上一句（模型写"继承"时）> 人物关系 > 角色底色。
+
+    句级结果带 mix：主情绪 + 可选的副情绪（同一句话里的第二层情绪），
+    合成时按这两个权重拼出 IndexTTS 的 8 维情感向量。
+    """
     if line_emotion in EMOTIONS:
         intensity = 0.6 if line_intensity is None else clamp01(line_intensity)
-        return {"dominant": line_emotion, "intensity": round(intensity, 3), "source": "line"}
-    if scene_tone and scene_tone.get("dominant") in EMOTIONS:
-        return {
-            "dominant": scene_tone["dominant"],
-            "intensity": round(clamp01(scene_tone.get("intensity", 0.4)), 3),
-            "source": "scene",
+        mix = [{"name": line_emotion, "weight": round(intensity, 3)}]
+        if secondary in EMOTIONS and secondary != line_emotion:
+            weight = clamp01(0.3 if secondary_weight is None else secondary_weight)
+            if weight > 0:
+                mix.append({"name": secondary, "weight": round(min(weight, 0.5), 3)})
+        return {"dominant": line_emotion, "intensity": round(intensity, 3), "source": "line", "mix": mix}
+    if previous_emotion and previous_emotion.get("dominant") in EMOTIONS:
+        inherited = {
+            "dominant": previous_emotion["dominant"],
+            "intensity": round(clamp01(previous_emotion.get("intensity", 0.4)), 3),
+            "source": "inherit",
         }
+        if previous_emotion.get("mix"):
+            inherited["mix"] = previous_emotion["mix"]
+        return inherited
     from_relationship = relationship_emotion(relationship)
     if from_relationship:
         return {"dominant": from_relationship[0], "intensity": from_relationship[1], "source": "relationship"}
@@ -76,13 +96,20 @@ def derive_line(
     speaker_name: str,
     addressee_id: str | None,
     addressee_name: str | None,
-    scene_tone: dict | None,
     character: dict | None,
     relationship: dict | None,
     pronounce_table: dict[str, str],
-    scene_switch: bool = False,
+    previous_emotion: dict | None = None,
 ) -> dict:
-    emotion = resolve_emotion(row.get("emotion"), row.get("intensity"), scene_tone, relationship, character)
+    emotion = resolve_emotion(
+        row.get("emotion"),
+        row.get("intensity"),
+        row.get("secondary"),
+        row.get("secondary_weight"),
+        previous_emotion,
+        relationship,
+        character,
+    )
     delivery = row.get("delivery") if row.get("delivery") in DELIVERIES else "normal"
     return {
         "id": line_id(chapter_index, scene_index, seq),
@@ -97,7 +124,7 @@ def derive_line(
         "emotion": emotion,
         "delivery": delivery,
         "lang": derive_lang(sentence),
-        "pause_after_ms": derive_pause_ms(sentence, scene_switch=scene_switch, intensity=emotion["intensity"]),
-        "rate": derive_rate(delivery, emotion["intensity"]),
+        "pause_after_ms": derive_pause_ms(sentence, intensity=emotion["intensity"]),
+        "rate": derive_rate(delivery, emotion),
         "pronounce": match_pronunciations(sentence, pronounce_table),
     }

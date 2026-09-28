@@ -64,10 +64,10 @@ LUFS 走 ffmpeg `loudnorm` **两遍**（先测后归，`linear=true`），时长
 
 ### 停顿归一
 
-停顿在导出时按「文本标点 + 句级强度 + 场景边界」重算，再套用 `AB_PAUSE_SCALE` 缩放并夹到 `AB_PAUSE_MIN_MS ~ AB_PAUSE_MAX_MS`：
+停顿在导出时按「文本标点 + 句级情绪强度」重算，再套用 `AB_PAUSE_SCALE` 缩放并夹到 `AB_PAUSE_MIN_MS ~ AB_PAUSE_MAX_MS`
+（句号 300 / 逗号 120 / 省略号 800 / 强度 ≥0.8 追加 150ms）；章节末尾额外静音用 `AB_PAUSE_TAIL_MS`（默认 0，即沿用最后一句自身的停顿）。
 
-- 场景切换的额外停顿（`AB_PAUSE_SCENE_EXTRA_MS`，默认 500ms）挂在**场景最后一句之后**，也就是场景之间；
-- 章节末尾额外静音用 `AB_PAUSE_TAIL_MS`（默认 0，即沿用最后一句自身的停顿）。
+没有"场景切换停顿"这种概念：场景切分已经从流水线里去掉了，句子之间只按标点和情绪留白。
 
 ## 6. 手机播放建议
 

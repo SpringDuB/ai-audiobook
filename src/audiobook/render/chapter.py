@@ -67,7 +67,6 @@ def render_key(settings, clips: list[Clip]) -> str:
             settings.pause_scale,
             settings.pause_min_ms,
             settings.pause_max_ms,
-            settings.pause_scene_extra_ms,
             settings.pause_tail_ms,
         ],
         "loudness": [
