@@ -11,6 +11,48 @@ def _client(tmp_path, **overrides) -> TestClient:
     return TestClient(create_app(settings, ServiceState(StubBackend(), settings)))
 
 
+def _ref(client, text="第一句。", **extra) -> tuple[str, object]:
+    ref = client.post(
+        "/v1/refs",
+        files={"file": ("ref.wav", b"RIFFfake", "audio/wav")},
+        data={"refText": "参考文本"},
+    ).json()
+    payload = {"text": text, "refId": ref["refId"], "lang": "ZH", "rate": 1.0, **extra}
+    return ref["refId"], client.post("/v1/synthesize", json=payload)
+
+
+def test_capabilities_declare_emotion_text_support(tmp_path):
+    payload = _client(tmp_path).get("/capabilities").json()
+    assert payload["emotionText"] is True
+
+
+def test_synthesize_forwards_emotion_text_and_prefers_it(tmp_path):
+    """emoText 通道：服务端把这句话原样交给后端（文本描述优先于 8 维向量）。"""
+    settings = TtsSettings(data_dir=tmp_path / "data")
+    backend = StubBackend()
+    client = TestClient(create_app(settings, ServiceState(backend, settings)))
+    _ref_id, response = _ref(
+        client,
+        text="你给我住手！",
+        emoText="压着火气，语速比平时快",
+        emoVector=[0, 0.9, 0, 0, 0, 0, 0, 0],
+    )
+    assert response.status_code == 200
+    request = backend.requests[-1]
+    assert request.emotion_text == "压着火气，语速比平时快"
+    assert request.emo_vector == (0, 0.9, 0, 0, 0, 0, 0, 0)
+
+
+def test_synthesize_rejects_over_long_emotion_text(tmp_path):
+    client = _client(tmp_path)
+    ref = client.post("/v1/refs", files={"file": ("ref.wav", b"RIFFfake", "audio/wav")}).json()
+    response = client.post(
+        "/v1/synthesize",
+        json={"text": "第一句。", "refId": ref["refId"], "emoText": "很长" * 80},
+    )
+    assert response.status_code == 400
+
+
 def test_health_reports_self_declared_concurrency(tmp_path):
     payload = _client(tmp_path, max_concurrency=3).get("/health").json()
     assert payload["status"] == "unloaded"

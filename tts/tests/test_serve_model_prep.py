@@ -38,7 +38,7 @@ def test_load_prepares_model_after_the_dependency_import(tmp_path, monkeypatch):
     module = types.ModuleType("indextts.infer_v2_5")
 
     class FakeIndexTTS2:
-        def __init__(self, cfg_path=None, model_dir=None, use_bf16=True):
+        def __init__(self, cfg_path=None, model_dir=None, use_bf16=True, use_qwen_emo=False):
             order.append("construct")
 
     module.IndexTTS2 = FakeIndexTTS2

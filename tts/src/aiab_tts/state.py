@@ -164,6 +164,7 @@ class ServiceState:
                 ref_text=ref.get("refText") or "",
                 lang=request_payload.lang,
                 emo_vector=tuple(request_payload.emoVector) if request_payload.emoVector else None,
+                emotion_text=request_payload.emoText or "",
                 rate=request_payload.rate,
                 pronunciation=request_payload.pronunciation,
                 seed=request_payload.seed,

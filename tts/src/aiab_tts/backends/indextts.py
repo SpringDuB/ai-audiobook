@@ -109,8 +109,13 @@ class IndexTtsBackend:
             cfg_path=str(model_dir / "config.yaml"),
             model_dir=str(model_dir),
             use_bf16=self.settings.use_bf16,
+            use_qwen_emo=self.settings.use_qwen_emo,
         )
-        logger.info("IndexTTS-2.5 已加载：%s", model_dir)
+        logger.info(
+            "IndexTTS-2.5 已加载：%s（情绪通道：%s）",
+            model_dir,
+            "文本描述 emoText + 8 维向量 emoVector" if self.settings.use_qwen_emo else "8 维向量 emoVector",
+        )
 
     def unload(self) -> None:
         self._tts = None
@@ -134,6 +139,7 @@ class IndexTtsBackend:
             "engineVersion": self.version,
             "emotions": True,
             "emotionDims": list(EMOTION_DIMS),
+            "emotionText": bool(self.settings.use_qwen_emo),
             "rate": True,
             "rateRange": [0.5, 2.0],
             "pronunciation": True,
@@ -151,6 +157,8 @@ class IndexTtsBackend:
         started = time.monotonic()
         text = apply_pronunciation(request.text, request.pronunciation)
         duration_factor = 1.0 / (request.rate or 1.0)
+        # 文本描述优先（要服务端加载了 QwenEmotion），否则退回 8 维向量
+        use_text = bool(self.settings.use_qwen_emo and request.emotion_text)
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "out.wav"
             self._tts.infer(
@@ -158,7 +166,9 @@ class IndexTtsBackend:
                 text=text,
                 lang=request.lang,
                 output_path=str(out_path),
-                emo_vector=list(request.emo_vector) if request.emo_vector else None,
+                emo_vector=list(request.emo_vector) if (request.emo_vector and not use_text) else None,
+                use_emo_text=use_text,
+                emo_text=request.emotion_text if use_text else None,
                 duration_factor=duration_factor,
             )
             audio = out_path.read_bytes()

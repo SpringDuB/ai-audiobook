@@ -26,8 +26,13 @@ def fake_indextts(monkeypatch):
     calls: dict = {}
 
     class FakeIndexTTS2:
-        def __init__(self, cfg_path=None, model_dir=None, use_bf16=True):
-            calls["init"] = {"cfg_path": cfg_path, "model_dir": model_dir, "use_bf16": use_bf16}
+        def __init__(self, cfg_path=None, model_dir=None, use_bf16=True, use_qwen_emo=False):
+            calls["init"] = {
+                "cfg_path": cfg_path,
+                "model_dir": model_dir,
+                "use_bf16": use_bf16,
+                "use_qwen_emo": use_qwen_emo,
+            }
 
         def infer(self, **kwargs):
             calls["infer"] = kwargs
@@ -78,6 +83,47 @@ def test_load_passes_paths_and_bf16(fake_indextts, tmp_path):
     assert fake_indextts["init"]["cfg_path"].endswith("config.yaml")
     assert fake_indextts["init"]["use_bf16"] is False
     assert backend.is_loaded() is True
+
+
+def test_load_enables_qwen_emotion_when_configured(fake_indextts, tmp_path):
+    """文本描述情绪通道要加载 QwenEmotion；没开就只走 8 维向量。"""
+    off = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, use_qwen_emo=False))
+    off.load()
+    assert fake_indextts["init"]["use_qwen_emo"] is False
+    assert off.capabilities()["emotionText"] is False
+
+    on = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, use_qwen_emo=True))
+    on.load()
+    assert fake_indextts["init"]["use_qwen_emo"] is True
+    assert on.capabilities()["emotionText"] is True
+
+
+def test_synthesize_prefers_emotion_text_when_available(fake_indextts, tmp_path):
+    settings = TtsSettings(backend="indextts", model_dir=tmp_path, use_qwen_emo=True)
+    backend = IndexTtsBackend(settings)
+    backend.load()
+    request = SynthesisRequest(
+        text="你给我住手！", ref_path=tmp_path / "ref.wav", lang="ZH",
+        emo_vector=(0, 0.9, 0, 0, 0, 0, 0, 0), emotion_text="压着火气，语速比平时快", rate=1.0,
+    )
+    backend.synthesize(request)
+    assert fake_indextts["infer"]["use_emo_text"] is True
+    assert fake_indextts["infer"]["emo_text"] == "压着火气，语速比平时快"
+    assert fake_indextts["infer"]["emo_vector"] is None
+
+
+def test_synthesize_falls_back_to_vector_without_qwen(fake_indextts, tmp_path):
+    settings = TtsSettings(backend="indextts", model_dir=tmp_path, use_qwen_emo=False)
+    backend = IndexTtsBackend(settings)
+    backend.load()
+    request = SynthesisRequest(
+        text="你给我住手！", ref_path=tmp_path / "ref.wav", lang="ZH",
+        emo_vector=(0, 0.9, 0, 0, 0, 0, 0, 0), emotion_text="压着火气",
+    )
+    backend.synthesize(request)
+    assert fake_indextts["infer"]["use_emo_text"] is False
+    assert fake_indextts["infer"]["emo_text"] is None
+    assert fake_indextts["infer"]["emo_vector"] == [0, 0.9, 0, 0, 0, 0, 0, 0]
 
 
 def test_load_patches_modelscope_bigvgan_alias(fake_indextts, tmp_path):

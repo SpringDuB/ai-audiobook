@@ -10,6 +10,8 @@ class SynthPayload(BaseModel):
     refId: str  # noqa: N815 - 线上字段名固定为驼峰
     lang: str = "ZH"
     emoVector: list[float] | None = None  # noqa: N815
+    # 两条情绪通道二选一：emoText（文本描述，需服务端 use_qwen_emo）优先于 emoVector
+    emoText: str | None = None  # noqa: N815
     rate: float = 1.0
     pronunciation: dict[str, str] = Field(default_factory=dict)
     seed: int | None = None
@@ -21,6 +23,18 @@ class SynthPayload(BaseModel):
         if not value or not value.strip():
             raise ValueError("text 不能为空")
         return value
+
+    @field_validator("emoText")
+    @classmethod
+    def _emo_text_len(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) > 120:
+            raise ValueError("emoText 太长了（≤120 字），请写一句简短的情绪描述")
+        return text
 
     @field_validator("rate")
     @classmethod

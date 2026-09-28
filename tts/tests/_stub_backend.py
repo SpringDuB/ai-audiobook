@@ -22,6 +22,7 @@ class StubBackend:
         self.delay = delay
         self.oom_on = oom_on or set()
         self._loaded = False
+        self.requests: list[SynthesisRequest] = []
 
     def load(self) -> None:
         self._loaded = True
@@ -41,6 +42,7 @@ class StubBackend:
             "engineVersion": self.version,
             "emotions": True,
             "emotionDims": list(EMOTION_DIMS),
+            "emotionText": True,
             "rate": True,
             "rateRange": [0.5, 2.0],
             "pronunciation": True,
@@ -54,6 +56,7 @@ class StubBackend:
 
     def synthesize(self, request: SynthesisRequest) -> SynthesisResult:
         started = time.monotonic()
+        self.requests.append(request)
         if any(token in request.text for token in self.oom_on):
             raise RuntimeError("CUDA out of memory")
         if self.delay:
@@ -61,7 +64,9 @@ class StubBackend:
         rate = max(0.5, min(2.0, request.rate or 1.0))
         duration = max(0.12, len(request.text) * MS_PER_CHAR / 1000.0) / rate
         seed = request.seed if request.seed is not None else 0
-        digest = hashlib.sha256(f"{request.text}|{seed}|{request.emo_vector}|{request.lang}".encode("utf-8")).digest()
+        digest = hashlib.sha256(
+            f"{request.text}|{seed}|{request.emo_vector}|{request.emotion_text}|{request.lang}".encode("utf-8")
+        ).digest()
         base_freq = 180.0 + digest[0]
         frames = int(self.sample_rate * duration)
         period = max(1, int(round(self.sample_rate / base_freq)))

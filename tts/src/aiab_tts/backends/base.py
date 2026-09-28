@@ -10,6 +10,8 @@ class SynthesisRequest:
     ref_text: str = ""
     lang: str = "ZH"
     emo_vector: tuple[float, ...] | None = None
+    # 自然语言情绪描述（"压着火气、语速比平时快"）：需要服务端加载了 QwenEmotion
+    emotion_text: str = ""
     rate: float = 1.0
     pronunciation: dict[str, str] = field(default_factory=dict)
     seed: int | None = None
