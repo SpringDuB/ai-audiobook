@@ -55,6 +55,54 @@ def test_json_mode_can_be_disabled():
     assert "response_format" not in seen["body"]
 
 
+def test_reasoning_tokens_are_reported():
+    """推理型模型把思考 tokens 单独记账：日志里要能看到，方便判断预算够不够。"""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-flash",
+                "choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 2000,
+                    "completion_tokens_details": {"reasoning_tokens": 1800},
+                },
+            },
+        )
+
+    reply = _client(handler).complete("s", "u")
+    assert reply.reasoning_tokens == 1800
+    assert reply.output_tokens == 2000
+
+
+def test_empty_content_raises_a_readable_error_instead_of_a_json_error():
+    """回归：思考 tokens 吃光 max_tokens 时正文为空，不能伪装成"JSON 解析失败"。"""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-flash",
+                "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                "usage": {
+                    "prompt_tokens": 3000,
+                    "completion_tokens": 4096,
+                    "completion_tokens_details": {"reasoning_tokens": 4096},
+                },
+            },
+        )
+
+    with pytest.raises(LLMError) as excinfo:
+        _client(handler).complete("s", "u", max_output_tokens=4096)
+    message = str(excinfo.value)
+    assert "空内容" in message
+    assert "finish_reason=length" in message
+    assert "max_tokens=4096" in message
+    assert "reasoning_tokens=4096" in message
+
+
 def test_rate_limit_timeout_and_bad_status_raise_typed_errors():
     def rate_limited(request):
         return httpx.Response(429, text="too many requests")

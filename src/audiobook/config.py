@@ -49,9 +49,11 @@ class Settings(BaseSettings):
     llm_api_key: str = "sk-local"
     llm_model: str = "deepseek-flash"
     llm_temperature: float = 0.6
-    llm_timeout_seconds: float = 120.0
+    # 推理型模型（deepseek-flash 这类会先输出 reasoning_content）先"想"后写，
+    # 思考 tokens 也算在 max_tokens 里：给不够就会出现"满预算但正文为空"。
+    llm_timeout_seconds: float = 600.0
     llm_max_attempts: int = 2
-    llm_max_output_tokens: int = 4096
+    llm_max_output_tokens: int = 64000
     llm_json_mode: bool = True
     llm_chunk_chars: int = 8000
     # 逐句情感标注的窗口上限：一章切成若干窗口分别请求 LLM。

@@ -20,6 +20,8 @@ class LLMReply:
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # 推理型模型单独记账的思考 tokens（同一个 max_tokens 预算里的）
+    reasoning_tokens: int | None = None
     duration_ms: int = 0
 
 

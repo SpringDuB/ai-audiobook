@@ -95,6 +95,7 @@ class LlmJsonRunner:
                 "duration_ms": getattr(reply, "duration_ms", 0),
                 "input_tokens": getattr(reply, "input_tokens", None),
                 "output_tokens": getattr(reply, "output_tokens", None),
+                "reasoning_tokens": getattr(reply, "reasoning_tokens", None),
                 "error": error,
             },
         )
