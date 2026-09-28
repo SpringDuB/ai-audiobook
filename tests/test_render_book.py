@@ -11,7 +11,7 @@ from helpers import requires_ffmpeg
 
 
 def _produce(conn, settings, narrator_lines, chapters=(1, 2)):
-    """用假引擎把指定章节跑成 output/chapter_*.wav + .srt（每章 0.70s）。"""
+    """用假引擎把指定章节跑成 output/chapter_*.wav + .srt（每章 0.10s，句间无停顿）。"""
     store.atomic_replace_json(store.book_dir(settings, "b1") / "book.json", {"id": "b1", "title": "测试书"})
     store.atomic_replace_json(
         store.chapters_path(settings, "b1"),
@@ -53,11 +53,11 @@ def test_export_all_writes_book_wav_srt_mkv_and_reports(conn, settings, narrator
     _produce(conn, prod, narrator_lines)
     report = export_book(prod, "b1", mode="all", force=True)
     assert report.chapters == (1, 2) and report.missing == ()
-    assert probe_wav(store.book_wav_path(prod, "b1")).duration == pytest.approx(1.40, abs=0.05)
+    assert probe_wav(store.book_wav_path(prod, "b1")).duration == pytest.approx(0.20, abs=0.02)
     cues = parse_srt(store.book_srt_path(prod, "b1"))
-    assert [round(cue.start, 3) for cue in cues] == [0.0, 0.35, 0.7, 1.05]
+    assert [round(cue.start, 3) for cue in cues] == [0.0, 0.05, 0.10, 0.15]
     assert [cue.text for cue in cues] == ["第一句。", "第二句。", "第一句。", "第二句。"]
-    assert report.cues == 4 and report.total_seconds == pytest.approx(1.40, abs=0.05)
+    assert report.cues == 4 and report.total_seconds == pytest.approx(0.20, abs=0.02)
     data = probe_json(prod, store.book_media_path(prod, "b1", ".mkv"))
     assert [stream["codec_type"] for stream in data["streams"]] == ["audio", "subtitle"]
     assert [chapter["tags"]["title"] for chapter in data["chapters"]] == ["第1章 起风", "第2章 起风"]

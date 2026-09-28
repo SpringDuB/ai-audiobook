@@ -5,7 +5,7 @@ import { api } from "../api.js";
 import { duration } from "../format.js";
 import { store } from "../store.js";
 import { closeVoicePicker, loadVoices, openVoicePicker } from "../voicepicker.js";
-import { confirmDialog, emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
+import { chapterPickerDialog, emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
 
 const EMOTIONS = ["喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
 const DELIVERIES = [
@@ -92,7 +92,6 @@ function metaChips(line) {
     ),
     emotion.dominant ? h("span", { class: "tone-tag" }, `${emotion.dominant} ${emotion.intensity ?? ""}`.trim()) : null,
     line.delivery && line.delivery !== "normal" ? h("span", { class: "tag" }, line.delivery) : null,
-    line.pause_after_ms ? h("span", { class: "tag mono" }, `停 ${line.pause_after_ms}ms`) : null,
     line.duration_sec ? h("span", { class: "tag mono" }, duration(line.duration_sec)) : null,
   ].filter(Boolean);
 }
@@ -106,7 +105,6 @@ function lineEditor(line, bookId, onSaved, onCancel) {
     ...EMOTIONS.map((name) => h("option", { value: name, selected: (line.emotion || {}).dominant === name }, name)),
   );
   const intensity = h("input", { type: "number", min: "0", max: "1", step: "0.05", value: String((line.emotion || {}).intensity ?? 0.5) });
-  const pause = h("input", { type: "number", min: "0", max: "5000", step: "10", value: String(line.pause_after_ms ?? 300) });
   const delivery = h(
     "select",
     {},
@@ -128,7 +126,6 @@ function lineEditor(line, bookId, onSaved, onCancel) {
             emotion: emotion.value,
             intensity: Number(intensity.value),
             delivery: delivery.value,
-            pause_after_ms: Number(pause.value),
           });
           toast("已保存；本章成品已失效，重渲染后生效");
           onSaved(result.line);
@@ -155,7 +152,6 @@ function lineEditor(line, bookId, onSaved, onCancel) {
     h(
       "div",
       { class: "grid-3" },
-      h("div", { class: "field" }, h("label", {}, "停顿 ms"), pause),
       h("div", { class: "field" }, h("label", {}, "语气"), delivery),
     ),
     h("div", { class: "row" }, save, h("button", { class: "btn btn-sm", type: "button", onClick: onCancel }, "取消"), error),
@@ -684,19 +680,23 @@ async function build(route, host) {
       progress,
       action("分析本章", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析")),
       action("分析角色文本", async () => {
-        // 已经分析过的书：整章分析会覆盖逐句标注（含人工修改），先问一句
-        const analyzed = state.chapters.filter((chapter) => Number(chapter.lines || 0) > 0).length;
-        if (analyzed > 0) {
-          const ok = await confirmDialog({
-            title: "重新分析全书？",
-            message: `会用「整章分析」重跑全书角色与逐句情感，覆盖已分析的 ${analyzed} 章标注（含人工修改），并让这些章节的成品音频失效。`,
-            confirmLabel: "重新分析",
-          });
-          if (!ok) return;
-        }
-        queued(await api.analyzeBook(bookId, analyzed > 0), "分析");
+        // 弹窗多选章节：只分析勾选的章，没勾过的默认勾上"还没分析"的章节
+        const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
+        const picked = await chapterPickerDialog({
+          title: "分析哪些章节？",
+          message:
+            "只重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
+            "对应成品音频随之失效，需要重新生成。",
+          chapters: state.chapters,
+          confirmLabel: "开始分析",
+          selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
+        });
+        if (!picked || !picked.length) return;
+        queued(await api.analyzeChapters(bookId, picked), "章节分析");
+        await refreshChapters();
       }),
       action("生成有声书", async () => queued(await api.generateBook(bookId), "合成"), { primary: true }),
+      action("生成本章", async () => queued(await api.generateChapter(bookId, state.index), "本章合成")),
       action(
         "导出成品",
         async () => {

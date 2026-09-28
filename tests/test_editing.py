@@ -40,11 +40,9 @@ def test_patch_addressee_can_be_cleared():
     assert apply_line_patch(row, {"addressee": "张卫东"}, names)["addressee"] == "role_0001"
 
 
-def test_patch_emotion_and_pause_are_clamped():
-    patched = apply_line_patch(_row(), {"emotion": "愤怒", "intensity": 1.6, "pause_after_ms": 99999}, {})
+def test_patch_emotion_is_clamped():
+    patched = apply_line_patch(_row(), {"emotion": "愤怒", "intensity": 1.6}, {})
     assert patched["emotion"] == {"dominant": "愤怒", "intensity": 1.0, "source": "manual"}
-    assert patched["pause_after_ms"] == 99999
-    assert patched["pause_override_ms"] == 5000      # 导出侧上限，防止手滑写 10 分钟
 
 
 def test_patch_delivery_is_validated():
@@ -61,7 +59,7 @@ def test_patch_rejects_unknown_fields_and_values():
     with pytest.raises(ValueError):
         apply_line_patch(_row(), {"text": "   "}, {})
     with pytest.raises(ValueError):
-        apply_line_patch(_row(), {"pause_after_ms": -5}, {})
+        apply_line_patch(_row(), {"pause_after_ms": 300}, {})   # 停顿机制已删除，不再可改
     with pytest.raises(ValueError):
         apply_line_patch(_row(), {"speaker": "查无此人"}, {"narrator": "旁白"})
 

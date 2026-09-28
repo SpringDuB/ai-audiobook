@@ -1,5 +1,6 @@
 from audiobook import store
 from audiobook.pipeline import plan_book, resume_book
+from audiobook.render.chapter import RENDER_VERSION
 
 
 def _chapters(settings, book_id: str, indexes=(1, 2)) -> None:
@@ -13,10 +14,17 @@ def _lines(settings, book_id: str, index: int) -> None:
     store.write_jsonl_atomic(store.lines_path(settings, book_id, index), [{"id": "x", "text": "第一句。"}])
 
 
-def _render_meta(settings, index: int) -> None:
+def _render_meta(settings, index: int, version: int = RENDER_VERSION) -> None:
     store.atomic_replace_json(
         store.chapter_render_meta_path(settings, "b1", index),
-        {"render_key": f"sha256:{index}", "duration": 1.0, "cues": 1, "clips": 1, "sample_rate": 22050},
+        {
+            "render_key": f"sha256:{index}",
+            "render_version": version,
+            "duration": 1.0,
+            "cues": 1,
+            "clips": 1,
+            "sample_rate": 22050,
+        },
     )
 
 
@@ -80,7 +88,7 @@ def test_plan_requests_book_export_after_all_chapters(settings, conn):
 
 
 def test_plan_rerenders_chapters_without_render_meta(settings, conn):
-    """M2 时代产出的章节（有 wav 没 render.json）要按 M3 设置补渲染。"""
+    """有 wav 但没 render.json、或 render.json 是旧版本（还带句间停顿）都要补渲染。"""
     _chapters(settings, "b1")
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
@@ -91,6 +99,10 @@ def test_plan_rerenders_chapters_without_render_meta(settings, conn):
     assert plan_book(settings, conn, "b1") == [("post", 1), ("post", 2)]
     _render_meta(settings, 1)
     assert plan_book(settings, conn, "b1") == [("post", 2)]
+    _render_meta(settings, 2, version=RENDER_VERSION - 1)
+    assert plan_book(settings, conn, "b1") == [("post", 2)]
+    _render_meta(settings, 2)
+    assert plan_book(settings, conn, "b1") == [("book_export", None)]
 
 
 def test_plan_resynthesizes_chapters_after_a_voice_change(settings, conn):

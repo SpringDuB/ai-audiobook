@@ -40,7 +40,7 @@ def test_dialogue_emotion_comes_straight_from_the_model():
     assert line["delivery"] == "shout"
     assert line["lang"] == "ZH"
     assert line["rate"] == pytest.approx(1.113, abs=0.01)  # shout 1.05 × 愤怒 1.06
-    assert line["pause_after_ms"] == 500  # 感叹号 350 + 高强度 150
+    assert "pause_after_ms" not in line          # 句间停顿机制已删除
     assert line["addressee"] is None
 
 
@@ -76,21 +76,6 @@ def test_derive_lang_detects_chinese_japanese_english():
 def test_ids_are_stable_and_position_independent():
     assert line_id(7, 1, 14) == "c0007-s01-l014"
     assert scene_id(7, 1) == "c0007-s01"
-
-
-def test_pause_ignores_trailing_quotes_on_dialogue():
-    line = derive_line(
-        {"emotion": "平静", "intensity": 0.2},
-        sentence="“你为什么要杀我？”",
-        **_base(kind="dialogue"),
-    )
-    assert line["pause_after_ms"] == 350
-    assert (
-        derive_line({"emotion": "平静", "intensity": 0.2}, sentence="“我说过。”", **_base(kind="dialogue"))[
-            "pause_after_ms"
-        ]
-        == 300
-    )
 
 
 def test_pronounce_table_loading_and_matching(settings):

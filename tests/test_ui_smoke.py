@@ -183,6 +183,25 @@ def test_workspace_voice_picker_lists_categories(served, settings, narrator_line
     assert "测试男声" in page["text"]
 
 
+def test_analyze_button_opens_chapter_picker(served, settings, narrator_lines, tmp_path):
+    """「分析角色文本」要弹章节多选窗，而不是直接整书重跑。"""
+    book_id = _seed_book(settings, narrator_lines)
+    page = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "analyze-picker",
+        extra=(
+            "--click=.workbench__actions .btn:nth-of-type(2)",
+            "--eval=JSON.stringify({ modal: Boolean(document.querySelector('.modal--wide')),"
+            " rows: document.querySelectorAll('.pick-row').length,"
+            " text: (document.querySelector('.modal') || {}).innerText || '' })",
+        ),
+    )
+    assert page["consoleErrors"] == []
+    probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert probe["modal"] is True and probe["rows"] == 1
+    assert "卷一" in probe["text"]
+
+
 def test_shelf_delete_book_asks_then_removes(served, settings, narrator_lines, tmp_path):
     book_id = _seed_book(settings, narrator_lines)
 

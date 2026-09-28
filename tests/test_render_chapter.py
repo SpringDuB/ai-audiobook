@@ -26,12 +26,12 @@ def _seed_lines(settings, book_id="b1", chapter=1, text="第一句。第二句�
     return rows
 
 
-def test_build_clips_pairs_lines_with_audio_and_pauses(settings):
+def test_build_clips_pairs_lines_with_audio_without_gaps(settings):
     _seed_lines(settings)
     clips, skipped = build_clips(settings, "b1", 1)
     assert skipped == []
     assert [clip.line_id for clip in clips] == ["c0001-s01-l001", "c0001-s01-l002"]
-    assert [clip.pause_ms for clip in clips] == [300, 300]
+    assert [clip.pause_ms for clip in clips] == [0, 0]   # 句间不插静音
     assert all(clip.duration == pytest.approx(0.05, abs=1e-3) for clip in clips)
 
 
@@ -49,14 +49,15 @@ def test_render_chapter_off_mode_writes_wav_srt_and_meta(settings):
     assert result.cached is False
     assert (result.sample_rate, result.cues, result.clips) == (22050, 2, 2)
     assert result.container is None
-    assert probe_wav(result.wav).duration == pytest.approx(0.70, abs=1e-2)
+    assert probe_wav(result.wav).duration == pytest.approx(0.10, abs=1e-2)
     text = result.srt.read_text(encoding="utf-8")
     assert "00:00:00,000 --> 00:00:00,050" in text
-    assert "00:00:00,350 --> 00:00:00,400" in text
+    assert "00:00:00,050 --> 00:00:00,100" in text
     meta = json.loads(store.chapter_render_meta_path(settings, "b1", 1).read_text(encoding="utf-8"))
     assert meta["render_key"].startswith("sha256:")
     assert (meta["cues"], meta["sample_rate"], meta["loudness"]["mode"]) == (2, 22050, "off")
     assert meta["clips"] == 2 and meta["skipped"] == [] and meta["warnings"] == []
+    assert meta["render_version"] == 2
 
 
 def test_render_chapter_is_idempotent_until_key_changes(settings):
@@ -80,19 +81,11 @@ def test_render_chapter_force_rerenders(settings):
     assert again.cached is False and again.wav.stat().st_mtime_ns != stamp
 
 
-def test_render_chapter_pause_tail_extends_audio(settings):
-    _seed_lines(settings)
-    longer = settings.model_copy(update={"pause_tail_ms": 500})
-    result = render_chapter(longer, "b1", 1)
-    assert result.duration == pytest.approx(1.20, abs=0.02)   # 0.70 + 0.5
-
-
-def test_render_key_changes_with_pause_settings(settings):
+def test_render_key_is_stable_and_tracks_loudness(settings):
     _seed_lines(settings)
     clips, _ = build_clips(settings, "b1", 1)
     base = render_key(settings, clips)
     assert render_key(settings, clips) == base
-    assert render_key(settings.model_copy(update={"pause_scale": 1.5}), clips) != base
     assert render_key(settings.model_copy(update={"loudness_mode": "lufs"}), clips) != base
 
 
@@ -123,7 +116,7 @@ def test_render_chapter_with_loudness_and_container(settings):
     assert [stream["codec_type"] for stream in data["streams"]] == ["audio", "subtitle"]
     info = probe_wav(result.wav)
     assert (info.sample_rate, info.channels) == (22050, 1)
-    assert info.duration == pytest.approx(0.70, abs=0.05)
+    assert info.duration == pytest.approx(0.10, abs=0.02)
     assert result.loudness is not None and result.loudness.mode == "lufs"
 
 
@@ -136,4 +129,4 @@ def test_render_chapter_resamples_mixed_sources(settings):
     result = render_chapter(settings, "b1", 1)
     assert result.sample_rate == 24000
     assert result.warnings == ()
-    assert probe_wav(result.wav).duration == pytest.approx(0.70, abs=0.02)
+    assert probe_wav(result.wav).duration == pytest.approx(0.10, abs=0.02)

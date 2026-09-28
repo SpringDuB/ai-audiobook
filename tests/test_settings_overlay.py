@@ -34,6 +34,6 @@ def test_overlay_wins_over_env_but_not_explicit_init(tmp_path, monkeypatch):
 
 def test_overlay_partial_update_keeps_previous_keys(tmp_path):
     s = get_settings(data_dir=tmp_path / "data")
-    save_overlay(s, {"pause_max_ms": 900, "pause_min_ms": 100})
-    save_overlay(s, {"pause_max_ms": 1500})
-    assert load_overlay(s) == {"pause_min_ms": 100, "pause_max_ms": 1500}
+    save_overlay(s, {"export_container": "mp4", "loudness_target_lufs": -18.0})
+    save_overlay(s, {"loudness_target_lufs": -17.0})
+    assert load_overlay(s) == {"export_container": "mp4", "loudness_target_lufs": -17.0}

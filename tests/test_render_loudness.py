@@ -64,6 +64,16 @@ def test_off_mode_is_pure_copy(settings, tmp_path):
 
 
 @requires_ffmpeg
+def test_unmeasurable_short_audio_falls_back_to_copy(lufs, tmp_path):
+    """音频太短时 loudnorm 量出 -inf：不做归一、原样输出，不能让整章渲染失败。"""
+    src = write_tone(tmp_path / "tiny.wav", seconds=0.1, rate=24000, freq=220, amp=0.2)
+    dst = tmp_path / "tiny_norm.wav"
+    result = normalize_to_file(lufs, src, dst, sample_rate=24000)
+    assert (result.mode, result.skipped) == ("lufs", True)
+    assert dst.read_bytes() == src.read_bytes()
+
+
+@requires_ffmpeg
 def test_true_peak_caps_gain_in_rms_mode(settings, tmp_path):
     """目标 RMS 很高时，增益必须被真峰值上限压住，不能削顶。"""
     loud = get_settings(data_dir=settings.data_dir, loudness_mode="rms", loudness_rms_target_db=-3.0)

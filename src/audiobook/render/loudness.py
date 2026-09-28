@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ class LoudnessResult:
     measured_before: float | None = None
     true_peak_before: float | None = None
     applied_gain_db: float | None = None
+    # 音频太短（loudnorm 量不出有效响度）时原样输出，不做归一
+    skipped: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -25,6 +28,7 @@ class LoudnessResult:
             "measured_before": self.measured_before,
             "true_peak_before": self.true_peak_before,
             "applied_gain_db": self.applied_gain_db,
+            "skipped": self.skipped,
         }
 
 
@@ -37,6 +41,14 @@ def _first_json_block(text: str) -> dict:
         if "input_i" in payload:
             return payload
     raise ValueError(f"loudnorm 没有输出可解析的 JSON：{text[-300:]}")
+
+
+def _usable(value) -> bool:
+    """loudnorm 对太短的音频会给出 -inf / nan，这种测量结果不能拿来做两遍归一。"""
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def measure_loudness(settings, src: Path) -> dict:
@@ -92,6 +104,13 @@ def normalize_to_file(settings, src: Path, dst: Path, *, sample_rate: int, chann
     if mode != "lufs":
         raise ValueError(f"未知响度模式：{settings.loudness_mode}（可选 lufs | rms | off）")
     measured = measure_loudness(settings, src)
+    if not all(
+        _usable(measured.get(key))
+        for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+    ):
+        # 极短/极静的片段（例如只有一两句的章节）量不出响度：原样输出，别让整章渲染失败
+        Path(dst).write_bytes(Path(src).read_bytes())
+        return LoudnessResult(mode="lufs", target=settings.loudness_target_lufs, skipped=True)
     chain = (
         f"loudnorm=I={settings.loudness_target_lufs}:TP={settings.loudness_true_peak}:LRA=11"
         f":measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"

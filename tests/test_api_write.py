@@ -60,6 +60,75 @@ def test_export_endpoint_enqueues_book_export(settings, narrator_lines):
     assert jobs.get_job(_conn(settings), body["job_id"]).kind == "book_export"
 
 
+def _seed_three_chapters(settings, narrator_lines) -> str:
+    book_id = _seed_book(settings, narrator_lines)
+    store.atomic_replace_json(
+        store.chapters_path(settings, book_id),
+        {
+            "chapters": [
+                {"index": index, "title": f"第{index}章", "content": "第一句。", "chars": 4}
+                for index in (0, 1, 2)
+            ]
+        },
+    )
+    return book_id
+
+
+def test_analyze_chapters_only_queues_picked_chapters(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 1), {"windows": 1, "lines": []})
+    body = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1]}).json()
+    assert body["plan"] == [["lines", 1]]
+    # 勾选章节的旧提取结果被删掉 → lines handler 会重新调 LLM 提取
+    assert not store.extract_path(settings, book_id, 1).exists()
+    job = jobs.get_job(_conn(settings), body["job_ids"][0])
+    assert (job.kind, job.chapter_index) == ("lines", 1)
+
+
+def test_analyze_chapters_with_all_selected_runs_full_book_merge(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    body = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [0, 1, 2]}).json()
+    assert body["plan"] == [["characters", None]]
+
+
+def test_analyze_chapters_rejects_empty_or_unknown_selection(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    assert client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": []}).status_code == 400
+    assert client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [9]}).status_code == 400
+
+
+def test_generate_chapter_enqueues_casting_then_synthesis(settings, narrator_lines):
+    """角色还没选音色：先补一轮选角，再合成这一章。"""
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    body = client.post(f"/api/books/{book_id}/chapters/0/generate").json()
+    assert body["plan"] == [["casting", None], ["synthesize", 0]]
+    kinds = [jobs.get_job(_conn(settings), job_id).kind for job_id in body["job_ids"]]
+    assert kinds == ["casting", "synthesize"]
+
+
+def test_generate_chapter_skips_casting_when_voices_are_bound(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    store.atomic_replace_json(
+        store.casting_path(settings, book_id),
+        {"roles": {"narrator": {"role_id": "narrator", "voice_id": "v001"}}},
+    )
+    body = client.post(f"/api/books/{book_id}/chapters/0/generate").json()
+    assert body["plan"] == [["synthesize", 0]]
+
+
+def test_generate_chapter_needs_lines(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    store.lines_path(settings, book_id, 0).unlink()
+    response = client.post(f"/api/books/{book_id}/chapters/0/generate")
+    assert response.status_code == 409 and "还没有分析结果" in response.json()["detail"]
+
+
 def test_render_chapter_endpoint_invalidates_and_enqueues_post(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
@@ -119,9 +188,9 @@ def test_update_casting_writes_back_and_invalidates(settings, narrator_lines):
 
 def test_update_settings_writes_overlay(settings):
     client = _client(settings)
-    body = client.put("/api/settings", json={"loudness_mode": "rms", "pause_max_ms": 900}).json()
+    body = client.put("/api/settings", json={"loudness_mode": "rms", "export_container": "mp4"}).json()
     assert body["settings"]["loudness_mode"] == "rms"
-    assert body["overlay_keys"] == ["loudness_mode", "pause_max_ms"]
-    assert client.get("/api/settings").json()["settings"]["pause_max_ms"] == 900
+    assert body["overlay_keys"] == ["export_container", "loudness_mode"]
+    assert client.get("/api/settings").json()["settings"]["export_container"] == "mp4"
     rejected = client.put("/api/settings", json={"data_dir": "/etc"})
     assert rejected.status_code == 400 and "不可通过界面修改" in rejected.json()["detail"]

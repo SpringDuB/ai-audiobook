@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import audio, jobs, store
+from ..analysis.casting import voice_for_speaker
 from ..config import EMOTION_TEXT_ENABLED, OVERLAY_KEYS, get_settings, load_overlay, save_overlay
 from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
@@ -55,6 +56,18 @@ def _chapters_with_role(settings, book_id: str, role_id: str) -> list[int]:
     return _role_occurrences(settings, book_id).get(role_id, {}).get("chapters", [])
 
 
+def _casting_covers_chapter(settings, book_id: str, index: int) -> bool:
+    """这一章的每个说话人都已经绑定音色了吗？（没有就要先补一轮选角）"""
+    casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
+    if not (casting.get("roles") or {}):
+        return False
+    for row in store.read_jsonl(store.lines_path(settings, book_id, index)):
+        speaker = row.get("speaker")
+        if speaker and not voice_for_speaker(casting, speaker):
+            return False
+    return True
+
+
 def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
     rows = store.read_jsonl(store.lines_path(settings, book_id, index))
     clips_dir = store.audio_dir(settings, book_id, index)
@@ -75,7 +88,7 @@ def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
                     for key in (
                         "id", "scene", "speaker", "speaker_name",
                         "addressee", "addressee_name", "text", "emotion", "delivery",
-                        "pause_after_ms", "rate", "lang",
+                        "rate", "lang",
                     )
                 },
                 "duration_sec": duration,
@@ -421,11 +434,56 @@ def create_app(settings, conn) -> FastAPI:
         job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
         return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
 
+    @app.post("/api/books/{book_id}/analyze/chapters")
+    def analyze_chapters(book_id: str, payload: dict | None = None):
+        """只重跑勾选章节的分析：删掉这些章的提取结果，由 lines 任务重新调 LLM。
+
+        勾选全部章节时走整书 characters 任务（跨章合并同人异名更准，跑完会自动
+        为每章排队 lines）；只勾选一部分时按章重跑，新冒出来的称呼由 lines 任务
+        增量并进现有角色表。
+        """
+        try:
+            picked = sorted({int(item) for item in ((payload or {}).get("chapters") or [])})
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="chapters 必须是章节序号数组") from exc
+        if not picked:
+            raise HTTPException(status_code=400, detail="至少选择一章")
+        chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+        known = {int(chapter["index"]) for chapter in chapters}
+        if not known:
+            raise HTTPException(status_code=409, detail="还没有分章结果，请先分章")
+        unknown = [index for index in picked if index not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"不存在的章节：{unknown}")
+        for index in picked:
+            store.extract_path(settings, book_id, index).unlink(missing_ok=True)
+        if len(picked) == len(known):
+            plan: list[tuple[str, int | None]] = [("characters", None)]
+        else:
+            plan = [("lines", index) for index in picked]
+        job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
+        return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
+
     @app.post("/api/books/{book_id}/generate")
     def generate_book(book_id: str):
         """只推合成链：逐句合成 → 章节渲染 → 整本合本。"""
         plan = resume_book(settings, conn, book_id, phase="audio")
         return {"ok": True, "queued": len(plan), "plan": plan}
+
+    @app.post("/api/books/{book_id}/chapters/{index}/generate")
+    def generate_chapter(book_id: str, index: int):
+        """只生成这一章：逐句合成 → 本章渲染（post 由 synthesize 自动入队）。"""
+        if _chapter_meta(settings, book_id, index) is None:
+            raise HTTPException(status_code=404, detail="chapter not found")
+        if not store.read_jsonl(store.lines_path(settings, book_id, index)):
+            raise HTTPException(status_code=409, detail="本章还没有分析结果，先点「分析本章」")
+        plan: list[tuple[str, int | None]] = []
+        if not _casting_covers_chapter(settings, book_id, index):
+            # 角色还没选音色：先补一轮选角，再合成这一章
+            plan.append(("casting", None))
+        plan.append(("synthesize", index))
+        job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
+        return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
 
     @app.get("/api/jobs")
     def list_jobs(book_id: str | None = None):

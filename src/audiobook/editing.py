@@ -4,8 +4,7 @@ from pathlib import Path
 from . import store
 from .analysis.models import DELIVERIES, EMOTIONS, clamp01
 
-EDITABLE_FIELDS = ("text", "speaker", "addressee", "emotion", "intensity", "delivery", "pause_after_ms")
-MAX_PAUSE_MS = 5000
+EDITABLE_FIELDS = ("text", "speaker", "addressee", "emotion", "intensity", "delivery")
 
 
 def _role_name(names: dict[str, str], role_id: str) -> str:
@@ -68,12 +67,6 @@ def apply_line_patch(row: dict, patch: dict, names: dict[str, str]) -> dict:
         if delivery not in DELIVERIES:
             raise ValueError(f"未知语气：{delivery}")
         updated["delivery"] = delivery
-    if "pause_after_ms" in patch:
-        pause = int(patch["pause_after_ms"])
-        if pause < 0:
-            raise ValueError("停顿不能为负")
-        updated["pause_after_ms"] = pause
-        updated["pause_override_ms"] = min(pause, MAX_PAUSE_MS)
     updated["edited_at"] = int(time.time() * 1000)
     return updated
 

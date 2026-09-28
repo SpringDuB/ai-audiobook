@@ -215,7 +215,7 @@ async function build() {
       h(
         "p",
         { class: "muted" },
-        "ffmpeg 由项目自带（uv sync 时就装好）；响度、停顿这些按有声书的稳妥默认值固定，不用你调。",
+        "ffmpeg 由项目自带（uv sync 时就装好）；响度按有声书的稳妥默认值固定，不用你调。",
       ),
       h("p", { class: "muted" }, "合成引擎固定为 http（连独立 TTS 服务），由「一键启动」自动配置端点。"),
     ),

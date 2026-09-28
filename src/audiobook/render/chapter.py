@@ -1,7 +1,7 @@
 import hashlib
 import json
 import shutil
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,9 +12,9 @@ from .ffmpeg import probe_wav
 from .loudness import LoudnessResult, normalize_to_file
 from .mix import Clip, clip_from_wav, concat_clips, ensure_uniform
 from .naming import chapter_label
-from .pauses import build_pause_plan
 
-RENDER_VERSION = 1
+# 2：句间停顿机制删除（不再插静音），旧产物按版本号自动重渲染
+RENDER_VERSION = 2
 
 # 章节重渲染后必须作废的整本级产物（下一次 book_export 会重建它们）
 BOOK_LEVEL_ARTIFACTS = ("playlist.m3u", "book_章节.txt", "merge-report.txt")
@@ -39,16 +39,16 @@ def build_clips(settings, book_id: str, chapter_index: int) -> tuple[list[Clip],
     rows = store.read_jsonl(store.lines_path(settings, book_id, chapter_index))
     if not rows:
         raise RuntimeError(f"第 {chapter_index} 章没有行数据，请先跑 lines 任务")
-    pauses = build_pause_plan(rows, settings)
     clips_dir = store.audio_dir(settings, book_id, chapter_index)
     clips: list[Clip] = []
     skipped: list[str] = []
-    for row, pause_ms in zip(rows, pauses):
+    for row in rows:
         path = clips_dir / f"{row['id']}.wav"
         if not path.exists():
             skipped.append(row["id"])
             continue
-        clips.append(clip_from_wav(row["id"], path, pause_ms=pause_ms, text=row.get("text") or ""))
+        # 句间不插静音：模型自带的语气停顿就是全部，拼接只按顺序接上去
+        clips.append(clip_from_wav(row["id"], path, text=row.get("text") or ""))
     return clips, skipped
 
 
@@ -63,12 +63,6 @@ def _stamp(path: Path):
 def render_key(settings, clips: list[Clip]) -> str:
     payload = {
         "version": RENDER_VERSION,
-        "pause": [
-            settings.pause_scale,
-            settings.pause_min_ms,
-            settings.pause_max_ms,
-            settings.pause_tail_ms,
-        ],
         "loudness": [
             settings.loudness_mode,
             settings.loudness_target_lufs,
@@ -108,6 +102,26 @@ def invalidate_book_products(settings, book_id: str) -> list[Path]:
         if Path(path).exists():
             Path(path).unlink()
             removed.append(Path(path))
+    return removed
+
+
+def invalidate_chapter_products(settings, book_id: str, index: int) -> list[Path]:
+    """逐句标注变了：本章成品与整本成品都不再可信，删掉让音频链重建。
+
+    逐句 wav 不删：合成缓存按「文本 + 音色 + 情绪参数」命中，没变的行直接复用。
+    """
+    removed: list[Path] = []
+    for path in (
+        store.chapter_wav_path(settings, book_id, index),
+        store.chapter_srt_path(settings, book_id, index),
+        store.chapter_media_path(settings, book_id, index, "mkv"),
+        store.chapter_media_path(settings, book_id, index, "mp4"),
+        store.chapter_render_meta_path(settings, book_id, index),
+    ):
+        if Path(path).exists():
+            Path(path).unlink()
+            removed.append(Path(path))
+    removed.extend(invalidate_book_products(settings, book_id))
     return removed
 
 
@@ -162,9 +176,6 @@ def render_chapter(
     work_dir = store.render_work_dir(settings, book_id, chapter_index)
     report(1, 4, "统一采样率")
     uniform, target_rate = ensure_uniform(settings, clips, work_dir)
-    if settings.pause_tail_ms and uniform:
-        # 章节尾部静音 = 最后一句自身停顿 + pause_tail_ms
-        uniform = [*uniform[:-1], replace(uniform[-1], pause_ms=uniform[-1].pause_ms + settings.pause_tail_ms)]
     wav_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = wav_path.with_name(f".{wav_path.name}.tmp")
     report(2, 4, "拼接片段")
@@ -192,6 +203,7 @@ def render_chapter(
         meta_path,
         {
             "render_key": key,
+            "render_version": RENDER_VERSION,
             "sample_rate": target_rate,
             "duration": round(info.duration, 3),
             "cues": len(cues),

@@ -147,4 +147,4 @@ def test_settings_endpoint_hides_api_key(settings):
     assert "llm_api_key" not in payload["settings"]
     assert payload["overlay_keys"] == []
     assert payload["settings"]["loudness_mode"] == "off"      # 测试夹具
-    assert payload["settings"]["pause_max_ms"] == 1200
+    assert payload["settings"]["export_container"] == "mkv"

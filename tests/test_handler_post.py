@@ -17,16 +17,16 @@ def _run_pipeline(conn, settings, narrator_lines, text="第一句。第二句。
     return ctx
 
 
-def test_post_writes_chapter_wav_and_srt_with_pauses(conn, settings, narrator_lines):
+def test_post_writes_chapter_wav_and_srt_without_gaps(conn, settings, narrator_lines):
     _run_pipeline(conn, settings, narrator_lines)
     wav = store.output_dir(settings, "b1") / "chapter_0001.wav"
     srt = store.output_dir(settings, "b1") / "chapter_0001.srt"
     assert wav.exists() and srt.exists()
-    # 每句 1102 帧（0.05s），每段后 6615 帧静音（300ms）=> 15434/22050 ≈ 0.69995s
-    assert audio.wav_duration(wav) == pytest.approx(0.70, abs=1e-3)
+    # 每句 1102 帧（0.05s），句间不插静音 => 2204/22050 ≈ 0.09995s
+    assert audio.wav_duration(wav) == pytest.approx(0.10, abs=1e-3)
     text = srt.read_text(encoding="utf-8")
     assert "00:00:00,000 --> 00:00:00,050" in text
-    assert "00:00:00,350 --> 00:00:00,400" in text
+    assert "00:00:00,050 --> 00:00:00,100" in text
 
 
 def test_post_skips_missing_clip_and_records_issue(conn, settings, narrator_lines):
@@ -45,7 +45,7 @@ def test_post_records_render_metadata(conn, settings, narrator_lines):
     _run_pipeline(conn, settings, narrator_lines)
     meta = store.read_json(store.chapter_render_meta_path(settings, "b1", 1))
     assert (meta["cues"], meta["clips"]) == (2, 2)
-    assert meta["duration"] == pytest.approx(0.70, abs=1e-2)
+    assert meta["duration"] == pytest.approx(0.10, abs=1e-2)
 
 
 def test_post_is_idempotent_when_nothing_changed(conn, settings, narrator_lines):

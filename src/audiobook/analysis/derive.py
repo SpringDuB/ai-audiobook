@@ -1,12 +1,13 @@
-"""把一行标注推导成落盘记录：id / 停顿 / 语速 / 语言 / 注音。
+"""把一行标注推导成落盘记录：id / 语速 / 语言 / 注音。
 
 情绪完全来自提取阶段的大模型结果（主情绪 + 可选副情绪），这里不再有
 规则推断的情绪层；唯一的约定是：**旁白不带情绪向量**，只有人物话术带。
+句与句之间不再插入额外静音：停顿由 TTS 模型自己按文本处理。
 """
 
 import re
 
-from ..text.prosody import derive_pause_ms, derive_rate
+from ..text.prosody import derive_rate
 from .models import DELIVERIES, EMOTIONS, clamp01
 from .pronounce import match_pronunciations
 
@@ -91,7 +92,6 @@ def derive_line(
         "emotion_text": None if kind == "narration" else derive_emotion_text(emotion, delivery),
         "delivery": delivery,
         "lang": derive_lang(sentence),
-        "pause_after_ms": derive_pause_ms(sentence, intensity=emotion["intensity"]),
         "rate": derive_rate(delivery, emotion if kind == "dialogue" else None),
         "pronounce": match_pronunciations(sentence, pronounce_table or {}),
     }

@@ -1,11 +1,4 @@
-from audiobook.text.prosody import derive_pause_ms, derive_rate
-
-
-def test_derive_pause_by_punctuation():
-    assert derive_pause_ms("他说完了。") == 300
-    assert derive_pause_ms("他停顿了一下，") == 120
-    assert derive_pause_ms("什么……") == 800
-    assert derive_pause_ms("滚！", intensity=0.9) == 500
+from audiobook.text.prosody import derive_rate
 
 
 def test_derive_rate_by_delivery():

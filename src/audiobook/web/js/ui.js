@@ -140,6 +140,103 @@ export function confirmDialog({ title, message, confirmLabel = "确定", cancelL
   });
 }
 
+// 章节多选：给「分析角色文本」这类按章跑的任务用；返回勾选的章节序号数组（取消为 null）
+export function chapterPickerDialog({
+  title,
+  message,
+  chapters,
+  confirmLabel = "开始",
+  selected = null,
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey, true);
+      host.remove();
+      resolve(value);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        finish(null);
+      }
+    };
+    const wanted = new Set(selected ?? chapters.map((chapter) => chapter.index));
+    const boxes = new Map();
+    const hint = h("span", { class: "mono muted" });
+    const rows = chapters.map((chapter) => {
+      const box = h("input", { class: "pick-row__box", type: "checkbox", checked: wanted.has(chapter.index) });
+      boxes.set(chapter.index, box);
+      return h(
+        "label",
+        { class: "pick-row" },
+        box,
+        h("span", { class: "pick-row__no mono" }, String(chapter.index)),
+        h("span", { class: "pick-row__title" }, chapter.title || `第${chapter.index}章`),
+        h(
+          "span",
+          { class: "pick-row__meta mono" },
+          `${chapter.lines || 0} 句${chapter.duration_sec ? " · 已出音频" : ""}`,
+        ),
+      );
+    });
+    const pick = (value) => {
+      boxes.forEach((box) => {
+        box.checked = value;
+      });
+      hint.textContent = value ? `已选 ${boxes.size} 章` : "未选章节";
+    };
+    const confirm = h(
+      "button",
+      {
+        class: "btn btn-primary",
+        type: "button",
+        onClick: () => {
+          const picked = [...boxes.entries()].filter(([, box]) => box.checked).map(([index]) => index);
+          if (!picked.length) {
+            hint.textContent = "至少勾选一章";
+            return;
+          }
+          finish(picked);
+        },
+      },
+      confirmLabel,
+    );
+    const panel = h(
+      "div",
+      { class: "modal modal--wide", role: "dialog", "aria-modal": "true", "aria-label": title },
+      h("h2", { class: "modal__title letterpress" }, title),
+      message ? h("p", { class: "modal__message" }, message) : null,
+      h(
+        "div",
+        { class: "modal__tools" },
+        h("button", { class: "btn btn-sm", type: "button", onClick: () => pick(true) }, "全选"),
+        h("button", { class: "btn btn-sm", type: "button", onClick: () => pick(false) }, "全不选"),
+        hint,
+      ),
+      h("div", { class: "modal__list" }, ...rows),
+      h(
+        "div",
+        { class: "modal__actions" },
+        h("button", { class: "btn btn-ghost", type: "button", onClick: () => finish(null) }, "取消"),
+        confirm,
+      ),
+    );
+    const host = h(
+      "div",
+      { class: "modal-host" },
+      h("div", { class: "modal-host__backdrop", onClick: () => finish(null) }),
+      panel,
+    );
+    hint.textContent = `已选 ${[...boxes.values()].filter((box) => box.checked).length} 章`;
+    document.body.append(host);
+    document.addEventListener("keydown", onKey, true);
+    confirm.focus();
+  });
+}
+
 export function progressBar(done, total) {
   const value = total ? Math.round((done / total) * 100) : 0;
   return h(

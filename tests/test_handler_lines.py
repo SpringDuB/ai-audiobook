@@ -108,3 +108,39 @@ def test_casting_not_ready_while_analysis_jobs_are_active(settings, conn):
     _seed_chapter(settings, book_id)
     jobs.enqueue(conn, "lines", book_id, 1)
     assert casting_ready(settings, conn, book_id) is False
+
+
+def test_lines_handler_invalidates_chapter_audio_when_annotation_changes(settings, conn):
+    """重分析改了标注 → 本章与整本成品作废，等「生成有声书」按新标注重建。"""
+    book_id = "b1"
+    _seed_chapter(settings, book_id)
+    store.atomic_replace_json(store.characters_path(settings, book_id), CHARACTERS)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 1), EXTRACTION)
+    store.atomic_write_bytes(store.chapter_wav_path(settings, book_id, 1), b"RIFF")
+    store.atomic_write_bytes(store.chapter_srt_path(settings, book_id, 1), b"1\n")
+    store.atomic_replace_json(store.chapter_render_meta_path(settings, book_id, 1), {"render_version": 2})
+    store.atomic_write_bytes(store.book_wav_path(settings, book_id), b"RIFF")
+    jobs.enqueue(conn, "lines", book_id, 1)
+
+    assert run_once(_ctx(settings, conn, None)) is True
+
+    assert not store.chapter_wav_path(settings, book_id, 1).exists()
+    assert not store.chapter_srt_path(settings, book_id, 1).exists()
+    assert not store.chapter_render_meta_path(settings, book_id, 1).exists()
+    assert not store.book_wav_path(settings, book_id).exists()
+
+
+def test_lines_handler_keeps_audio_when_annotation_is_unchanged(settings, conn):
+    """标注重跑但内容没变（例如重试落盘任务）→ 不动已合成的成品。"""
+    book_id = "b1"
+    _seed_chapter(settings, book_id)
+    store.atomic_replace_json(store.characters_path(settings, book_id), CHARACTERS)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 1), EXTRACTION)
+    jobs.enqueue(conn, "lines", book_id, 1)
+    assert run_once(_ctx(settings, conn, None)) is True
+    store.atomic_write_bytes(store.chapter_wav_path(settings, book_id, 1), b"RIFF")
+
+    jobs.enqueue(conn, "lines", book_id, 1)
+    assert run_once(_ctx(settings, conn, None)) is True
+
+    assert store.chapter_wav_path(settings, book_id, 1).exists()

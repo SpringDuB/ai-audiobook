@@ -1,7 +1,8 @@
-"""分析链第二步：把提取结果物化成行记录（role_id / 停顿 / 语速 / 注音）。
+"""分析链第二步：把提取结果物化成行记录（role_id / 语速 / 语言 / 注音）。
 
 提取结果已经在（或由本 handler 现跑）analysis/extract/chapter_XXXX.json；
 这里不再做任何切句判断，只做名字→role_id 的映射与可见的降级处理。
+标注与旧结果不一致时，顺带作废本章成品音频，让「生成有声书」按新标注重建。
 """
 
 import logging
@@ -15,10 +16,21 @@ from ..analysis.models import is_narrator
 from ..analysis.pronounce import load_pronounce_table
 from ..analysis.readiness import casting_ready
 from ..analysis.roles import names_from_payload, resolve_speaker
+from ..render.chapter import invalidate_chapter_products
 from ..worker import register
 from .characters import require_llm
 
 logger = logging.getLogger(__name__)
+
+# 只有这些字段影响音频；标注重跑但内容没变时不该作废已合成的成品
+SYNTHESIS_KEYS = (
+    "id", "kind", "speaker", "speaker_name", "text",
+    "emotion", "delivery", "rate", "lang", "pronounce",
+)
+
+
+def _synthesis_signature(rows: list[dict]) -> list[dict]:
+    return [{key: row.get(key) for key in SYNTHESIS_KEYS} for row in rows]
 
 
 def _spoken_of(ctx, job, chapter) -> list:
@@ -97,7 +109,13 @@ def handle_lines(ctx, job) -> None:
     )
     if not lines:
         raise RuntimeError(f"第 {chapter_index} 章没有产出任何行")
-    store.write_jsonl_atomic(store.lines_path(ctx.settings, book_id, chapter_index), lines)
+    lines_path = store.lines_path(ctx.settings, book_id, chapter_index)
+    previous = store.read_jsonl(lines_path)
+    store.write_jsonl_atomic(lines_path, lines)
+    if _synthesis_signature(previous) != _synthesis_signature(lines):
+        # 标注变了：本章与整本成品都不再可信，删掉让「生成有声书」重建
+        removed = invalidate_chapter_products(ctx.settings, book_id, chapter_index)
+        logger.info("第 %s 章标注变化：作废 %d 个成品文件", chapter_index, len(removed))
     for issue in issues:
         record_issue(
             ctx.settings,

@@ -30,7 +30,7 @@ def test_book_export_job_writes_book_artifacts(conn, settings, narrator_lines):
     assert store.book_wav_path(settings, "b1").exists()
     cues = parse_srt(store.book_srt_path(settings, "b1"))
     assert [cue.text for cue in cues] == ["第一句。", "第二句。", "第一句。", "第二句。"]
-    assert [round(cue.start, 3) for cue in cues] == [0.0, 0.35, 0.7, 1.05]
+    assert [round(cue.start, 3) for cue in cues] == [0.0, 0.05, 0.10, 0.15]
     assert (store.output_dir(settings, "b1") / "book_章节.txt").exists()
     assert (store.output_dir(settings, "b1") / "merge-report.txt").exists()
 

@@ -452,6 +452,34 @@
 .modal__title { margin: 0; font-size: var(--text-lg); }
 .modal__message { margin: 0; color: var(--paper-300); font-size: var(--text-sm); line-height: 1.7; }
 .modal__actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+/* 章节多选弹窗：标题 + 工具条 + 可滚动的章节清单 */
+.modal--wide { inline-size: min(34rem, 100%); }
+.modal__tools { display: flex; align-items: center; gap: var(--space-2); }
+.modal__tools .mono { margin-inline-start: auto; font-size: var(--text-xs); }
+.modal__list {
+  display: grid;
+  gap: var(--space-1);
+  max-block-size: min(24rem, 52vh);
+  overflow-y: auto;
+  padding: var(--space-2);
+  border: var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ink-900);
+}
+.pick-row {
+  display: grid;
+  grid-template-columns: auto 2.5rem 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.pick-row:hover { background: var(--ink-800); }
+.pick-row__box { inline-size: 1rem; block-size: 1rem; accent-color: var(--cinnabar-500); }
+.pick-row__no { color: var(--paper-500); font-size: var(--text-xs); }
+.pick-row__title { font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-row__meta { color: var(--paper-500); font-size: var(--text-xs); }
 
 /* ------------------------------------------------------------------ 设置页 */
 

@@ -24,10 +24,6 @@ OVERLAY_KEYS = (
     "export_target_sample_rate",
     "export_container",
     "export_mkv",
-    "pause_scale",
-    "pause_min_ms",
-    "pause_max_ms",
-    "pause_tail_ms",
     "loudness_mode",
     "loudness_target_lufs",
     "loudness_true_peak",
@@ -89,11 +85,6 @@ class Settings(BaseSettings):
     export_target_sample_rate: int = 0  # 0 = 自动取各片段最高采样率
     export_container: str = "mkv"  # mkv | mp4
     export_mkv: bool = True  # 章节是否封装容器
-    # 停顿（毫秒）
-    pause_scale: float = 1.0
-    pause_min_ms: int = 80
-    pause_max_ms: int = 1200
-    pause_tail_ms: int = 0  # 章节末尾额外静音
     # 响度：lufs | rms | off
     loudness_mode: str = "lufs"
     loudness_target_lufs: float = -16.0

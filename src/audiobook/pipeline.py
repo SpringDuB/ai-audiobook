@@ -1,5 +1,6 @@
 from . import jobs, store
 from .analysis.casting import voice_for_speaker
+from .render.chapter import RENDER_VERSION
 
 # 分析链（书稿 → 角色 → 逐句情感 → 选角）与合成链（合成 → 渲染 → 合本）
 ANALYSIS_KINDS = {"chapter_split", "characters", "lines", "casting"}
@@ -46,8 +47,8 @@ def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, in
         elif _voice_stale(settings, book_id, index, casting):
             # 换过音色：这一章要按新音色重合成（缓存键会只让受影响的行重跑）
             missing.append(("synthesize", index))
-        elif not store.chapter_render_meta_path(settings, book_id, index).exists():
-            # 音频在但没按当前设置渲染过（例如 M2 时代产出的章节）→ 用 post 补渲染
+        elif not _render_current(settings, book_id, index):
+            # 音频在但没有按当前渲染版本出过成品（例如删停顿前的旧产物）→ 用 post 补渲染
             stale.append(("post", index))
     if missing:
         return missing
@@ -77,6 +78,12 @@ def _voice_stale(settings, book_id: str, index: int, casting: dict) -> bool:
         if recorded and recorded != expected:
             return True
     return False
+
+
+def _render_current(settings, book_id: str, index: int) -> bool:
+    """章节成品是不是当前渲染版本？旧版本（带句间停顿）要重新渲染。"""
+    meta = store.read_json(store.chapter_render_meta_path(settings, book_id, index), default={}) or {}
+    return int(meta.get("render_version") or 0) >= RENDER_VERSION
 
 
 def enqueue_plan(conn, book_id: str, plan) -> list[int]:

@@ -7,18 +7,16 @@ from audiobook.config import get_settings
 def test_export_settings_defaults(tmp_path):
     s = get_settings(data_dir=tmp_path / "data")
     assert (s.loudness_mode, s.loudness_target_lufs, s.loudness_true_peak) == ("lufs", -16.0, -1.5)
-    assert (s.pause_scale, s.pause_min_ms, s.pause_max_ms) == (1.0, 80, 1200)
     assert (s.export_target_sample_rate, s.export_container, s.export_mkv) == (0, "mkv", True)
-    assert (s.loudness_rms_target_db, s.pause_tail_ms, s.ffmpeg_path) == (-20.0, 0, "")
+    assert (s.loudness_rms_target_db, s.ffmpeg_path) == (-20.0, "")
     assert s.ffmpeg_timeout_seconds == 1800.0
 
 
 def test_export_settings_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("AB_LOUDNESS_MODE", "rms")
     monkeypatch.setenv("AB_EXPORT_TARGET_SAMPLE_RATE", "48000")
-    monkeypatch.setenv("AB_PAUSE_MAX_MS", "900")
     s = get_settings(data_dir=tmp_path / "data")
-    assert (s.loudness_mode, s.export_target_sample_rate, s.pause_max_ms) == ("rms", 48000, 900)
+    assert (s.loudness_mode, s.export_target_sample_rate) == ("rms", 48000)
 
 
 def test_artifact_paths_are_stable(tmp_path):
