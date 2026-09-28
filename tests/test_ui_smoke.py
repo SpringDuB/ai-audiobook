@@ -178,6 +178,7 @@ def test_settings_offers_one_click_tts_and_hides_low_level_knobs(served, setting
             'loudness: Boolean(document.querySelector("[data-key=loudness_mode]")),'
             'ffmpeg: Boolean(document.querySelector("[data-key=ffmpeg_path]")),'
             'launch: Boolean(document.querySelector("#f-tts_backend")),'
+            'emotion: Boolean(document.querySelector("#f-emotion_mode")),'
             "})",
         ),
     )
@@ -185,7 +186,8 @@ def test_settings_offers_one_click_tts_and_hides_low_level_knobs(served, setting
     assert page["counts"]["fields"] >= 10
     assert "一键启动 TTS 服务" in page["text"]
     probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
-    assert probe == {"loudness": False, "ffmpeg": False, "launch": True}
+    # emotion=False：文本描述情绪通道暂时关闭，设置页不出现这个下拉
+    assert probe == {"loudness": False, "ffmpeg": False, "launch": True, "emotion": False}
 
 
 def test_mobile_viewport_has_bottom_rail(served, settings, tmp_path):

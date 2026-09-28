@@ -35,6 +35,10 @@ OVERLAY_KEYS = (
 )
 SECRET_KEYS = ("llm_api_key",)
 
+# 文本描述情绪通道（QwenEmotion）：实现完整保留，但**暂时不开放**。
+# 重新开放只改这一处：默认值回 "text"，设置页的下拉会自动出现，tts start 会按设置加载 QwenEmotion。
+EMOTION_TEXT_ENABLED = False
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AB_", env_file=".env", extra="ignore")
@@ -60,8 +64,8 @@ class Settings(BaseSettings):
     tts_connect_timeout_seconds: float = 5.0
     tts_ref_upload_timeout_seconds: float = 120.0
     synth_concurrency_max: int = 16
-    # 情绪控制通道：text（默认，用一句话描述情绪，需 TTS 服务加载 QwenEmotion）| vector（8 维向量）
-    emotion_mode: Literal["text", "vector"] = "text"
+    # 情绪控制通道：vector（8 维向量，当前唯一开放的通道）| text（文本描述，暂时关闭）
+    emotion_mode: Literal["text", "vector"] = "vector"
     tts_health_cache_seconds: float = 5.0
     tts_breaker_seconds: float = 60.0
     tts_max_line_chunk_chars: int = 0
@@ -112,7 +116,11 @@ def get_settings(**overrides) -> Settings:
     # overlay 必须从"最终生效的 data_dir"里读：显式传参优先，其次 .env/环境变量
     data_dir = Path(overrides.get("data_dir") or base.data_dir)
     overlay = load_overlay(base.model_copy(update={"data_dir": data_dir}))
-    return Settings(**{**overlay, **overrides})
+    settings = Settings(**{**overlay, **overrides})
+    if not EMOTION_TEXT_ENABLED and settings.emotion_mode != "vector":
+        # 通道关闭期间，不管是谁写进来的 text（.env / settings.json / 旧前端）一律回落向量
+        settings = settings.model_copy(update={"emotion_mode": "vector"})
+    return settings
 
 
 def load_overlay(settings) -> dict:

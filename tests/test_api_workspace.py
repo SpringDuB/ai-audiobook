@@ -196,12 +196,12 @@ def test_start_accepts_the_settings_page_payload(settings, monkeypatch):
         "model_source": "modelscope",
         "model_dir": "checkpoints",
         "hf_endpoint": "https://hf-mirror.com",
-        "emotion_mode": "text",   # 默认走"文本描述情绪"（服务端会加载 QwenEmotion）
+        "emotion_mode": "vector",   # 文本描述通道暂时关闭，起服务只走 8 维向量（不加载 QwenEmotion）
     }
 
 
-def test_start_persists_emotion_mode_and_passes_it_on(settings, monkeypatch):
-    """情绪通道在设置页切换：要落盘（worker 立刻生效）+ 传给 TTS 进程决定是否加载 QwenEmotion。"""
+def test_start_always_uses_vector_while_emotion_text_is_closed(settings, monkeypatch):
+    """文本描述通道暂时关闭：请求里写 text 也要按 vector 起服务，不加载 QwenEmotion。"""
     seen = {}
 
     class FakeService:
@@ -224,7 +224,17 @@ def test_start_persists_emotion_mode_and_passes_it_on(settings, monkeypatch):
 
     monkeypatch.setattr(app_module, "LocalTtsService", FakeService)
     client = _client(settings)
-    client.post("/api/tts/local/start", json={"emotion_mode": "vector"})
+    client.post("/api/tts/local/start", json={"emotion_mode": "text"})
     assert seen["emotion_mode"] == "vector"
     assert client.get("/api/settings").json()["settings"]["emotion_mode"] == "vector"
     assert client.get("/api/tts/local").json()["launch"]["emotion_mode"] == "vector"
+
+
+def test_emotion_text_channel_is_closed_until_we_open_it(settings):
+    """通道关闭期间，旧配置（settings.json 里的 text）也不能把它打开。"""
+    from audiobook.config import EMOTION_TEXT_ENABLED, get_settings, save_overlay
+
+    assert EMOTION_TEXT_ENABLED is False
+    save_overlay(settings, {"emotion_mode": "text"})
+    assert get_settings(data_dir=settings.data_dir).emotion_mode == "vector"
+    assert _client(settings).get("/api/settings").json()["emotion_text_enabled"] is False

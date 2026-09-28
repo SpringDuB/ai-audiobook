@@ -8,18 +8,20 @@ const LLM_FIELDS = [
   { key: "llm_concurrency", label: "并发", type: "number", min: "1", hint: "分析角色文本用；按你的额度给，8–16 稳" },
 ];
 
+// 文本描述情绪通道（QwenEmotion）暂时关闭：后端 EMOTION_TEXT_ENABLED 打开时这里才会渲染
+const EMOTION_FIELD = {
+  key: "emotion_mode",
+  label: "情绪控制",
+  type: "select",
+  options: [
+    ["text", "文本描述（一句“怎么演”）"],
+    ["vector", "8 维向量"],
+  ],
+  hint: "文本描述要服务端多加载 QwenEmotion（约 1.2GB 显存、每句多约 1.8 秒）；切换后需重新启动 TTS 服务",
+};
+
 const LAUNCH_FIELDS = [
   { key: "tts_backend", label: "推理后端", type: "select", options: [["indextts", "indextts（IndexTTS-2.5）"]] },
-  {
-    key: "emotion_mode",
-    label: "情绪控制",
-    type: "select",
-    options: [
-      ["text", "文本描述（默认，一句“怎么演”）"],
-      ["vector", "8 维向量（不加载 QwenEmotion）"],
-    ],
-    hint: "文本描述情绪更自然，但要服务端多加载 QwenEmotion（约 1.2GB 显存）；切换后需重新启动 TTS 服务",
-  },
   {
     key: "tts_model_source",
     label: "模型来源",
@@ -112,7 +114,9 @@ async function build() {
 
   const statusLine = h("div", { class: "tts-status" });
   const logBox = h("pre", { class: "tts-log mono" }, "（日志会在这里滚动）");
-  const launchGrid = h("div", { class: "grid-2" }, ...LAUNCH_FIELDS.map((field) => fieldNode(field, settings[field.key])));
+  const launchFields = [...LAUNCH_FIELDS];
+  if (payload.emotion_text_enabled) launchFields.splice(1, 0, EMOTION_FIELD);
+  const launchGrid = h("div", { class: "grid-2" }, ...launchFields.map((field) => fieldNode(field, settings[field.key])));
 
   // 只剩 indextts；这里要说清楚"点下去会发生什么"，免得用户以为它不干活
   const backendHint = h("p", { class: "field__hint muted" });

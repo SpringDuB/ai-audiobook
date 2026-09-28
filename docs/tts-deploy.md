@@ -117,7 +117,8 @@ uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 | `emoVector` | 8 维情感向量，顺序 happy/angry/sad/afraid/disgusted/melancholic/surprised/calm | 一直可用 |
 
 `/capabilities` 的 `emotionText` 表示服务端是否支持文本通道；不支持时客户端会自动退回 `emoVector`（不会合成失败）。
-产品默认走文本通道，设置页「情绪控制」里可切换；`aiab tts start` 会按当前设置自动带上 `AIAB_TTS_USE_QWEN_EMO`。
+**当前产品只开放 `emoVector`**：`EMOTION_TEXT_ENABLED = False` 时，`emoText` 通道整条链路（设置页下拉、`AIAB_TTS_USE_QWEN_EMO`、Qwen 加载）都不会启用。
+重新开放：把 `src/audiobook/config.py` 的 `EMOTION_TEXT_ENABLED` 改成 `True`，设置页会出现「情绪控制」下拉，`aiab tts start` 会按设置加载 QwenEmotion。
 
 分析侧产出的情绪名是中文（喜悦/愤怒/…），客户端会翻成引擎的英文维度名——少了这步翻译，
 `emoVector` 会静默变成 `null`（历史上就踩过这个坑，回归测试在 `tests/test_cache_key.py`）。

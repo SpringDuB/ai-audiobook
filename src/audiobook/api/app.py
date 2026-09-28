@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import audio, jobs, store
-from ..config import OVERLAY_KEYS, get_settings, load_overlay, save_overlay
+from ..config import EMOTION_TEXT_ENABLED, OVERLAY_KEYS, get_settings, load_overlay, save_overlay
 from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
 from ..pipeline import resume_book
@@ -249,7 +249,12 @@ def create_app(settings, conn) -> FastAPI:
         payload = {key: getattr(settings, key) for key in OVERLAY_KEYS}
         payload.update({key: getattr(fresh, key) for key in OVERLAY_KEYS})
         payload["llm_api_key_set"] = bool(fresh.llm_api_key)
-        return {"settings": payload, "overlay_keys": sorted(load_overlay(fresh))}
+        return {
+            "settings": payload,
+            "overlay_keys": sorted(load_overlay(fresh)),
+            # 文本描述情绪通道是否开放（暂时关闭，实现保留）
+            "emotion_text_enabled": EMOTION_TEXT_ENABLED,
+        }
 
     def _fresh_settings():
         """运行中服务实际生效的设置 = 启动时的设置 + data/settings.json 覆盖层。"""
@@ -357,6 +362,7 @@ def create_app(settings, conn) -> FastAPI:
                 "llm_api_key_set": bool(fresh.llm_api_key),
             },
             "overlay_keys": sorted(overlay),
+            "emotion_text_enabled": EMOTION_TEXT_ENABLED,
         }
 
     @app.get("/api/books/{book_id}")
@@ -461,8 +467,9 @@ def create_app(settings, conn) -> FastAPI:
         model_dir = str(pick("model_dir", "tts_model_dir", default=fresh.tts_model_dir))
         hf_endpoint = str(pick("hf_endpoint", "tts_hf_endpoint", default=fresh.tts_hf_endpoint))
         emotion_mode = str(pick("emotion_mode", default=fresh.emotion_mode)).lower()
-        if emotion_mode not in ("text", "vector"):
-            emotion_mode = "text"
+        # 文本描述通道暂时关闭：前端/旧配置就算发了 text，也按 vector 起服务（不加载 QwenEmotion）
+        if emotion_mode not in ("text", "vector") or not EMOTION_TEXT_ENABLED:
+            emotion_mode = "vector"
         # 情绪通道决定服务端要不要加载 QwenEmotion（约 1.2GB 显存），所以先落盘再启动
         save_overlay(settings, {"emotion_mode": emotion_mode})
         try:
