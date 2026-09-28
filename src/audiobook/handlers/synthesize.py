@@ -13,9 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 def effective_concurrency(ctx) -> int:
-    """TTS 并发上限来自服务端自报；客户端只保留安全上限。"""
-    hint = getattr(ctx.engine, "concurrency_hint", None)
-    if callable(hint):
+    """TTS 并发上限来自服务端自报；客户端只保留安全上限。
+
+    优先用"总容量"而不是"此刻剩余空位"：工作线程数在任务开始时定死，
+    拿剩余空位会把整章锁在低并发（真正的节流由 TTS 池逐个请求把关）。
+    """
+    for name in ("capacity_hint", "concurrency_hint"):
+        hint = getattr(ctx.engine, name, None)
+        if not callable(hint):
+            continue
         reported = hint()
         if reported and reported > 0:
             return max(1, min(ctx.settings.synth_concurrency_max, int(reported)))

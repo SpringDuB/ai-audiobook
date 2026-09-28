@@ -122,6 +122,28 @@ def test_successes_restore_limit_gradually(settings):
     assert pool.states[0].limit == 3
 
 
+def test_capacity_change_reopens_the_gate(settings):
+    """服务端重启并把并发从 1 调到 3：闸门要跟着开，不能一直卡在 1。"""
+    endpoint = FakeEndpoint(1)
+    pool, _ = _pool(settings, [endpoint])
+    pool.refresh()
+    assert pool.states[0].limit == 1
+
+    endpoint.capacity = 3
+    pool.refresh(force=True)
+    assert pool.states[0].limit == 3
+    assert pool.capacity_hint() == 3
+
+
+def test_capacity_hint_ignores_current_inflight(settings):
+    """定工作线程数要用总容量：此刻只剩 1 个空位不代表整章只能跑 1 路。"""
+    pool, _ = _pool(settings, [FakeEndpoint(3)])
+    pool.refresh()
+    pool.states[0].inflight = 2
+    assert pool.concurrency_hint() == 1     # 当前只剩 1 个空位
+    assert pool.capacity_hint() == 3        # 总容量仍是 3
+
+
 def test_all_endpoints_down_raises_unavailable(settings):
     pool, _ = _pool(settings, [FakeEndpoint(0, status="error")])
     pool.refresh()

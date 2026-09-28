@@ -66,6 +66,7 @@ class TtsPool:
             state.last_health_at = now
             # unloaded 也算可用：首次合成会触发服务端 warmup
             state.ok = str(health.get("status") or "").lower() in ("ok", "loading", "unloaded")
+            previous_capacity = state.capacity
             state.capacity = int(health.get("recommendedConcurrency") or 0)
             state.extra = dict(health)
             state.last_error = None
@@ -74,6 +75,10 @@ class TtsPool:
                 state.last_error = "recommendedConcurrency=0"
             if state.limit == 0 and state.ok:
                 state.limit = state.capacity
+            elif state.ok and state.capacity != previous_capacity:
+                # 服务端重启/改过并发配置：闸门按新容量重开（针对旧进程的降档记忆不再适用）
+                state.limit = state.capacity
+                state.success_streak = 0
 
     def capabilities(self):
         self.refresh()
@@ -89,6 +94,19 @@ class TtsPool:
             return 0
         free = sum(max(0, state.limit - state.inflight) for state in healthy)
         return max(1, free)
+
+    def capacity_hint(self) -> int:
+        """服务端自报的总并发（不是"此刻剩余几个空位"）。
+
+        每章任务用它在开头定工作线程数：线程数要的是稳定上限，实际放行由
+        _acquire 按 limit/inflight 逐次把关。若拿"剩余空位"定线程数，
+        任务开始那一刻恰好在忙就会把整章锁在低并发。
+        """
+        self.refresh()
+        healthy = [state for state in self.states if state.ok]
+        if not healthy:
+            return 0
+        return max(1, sum(max(1, state.capacity) for state in healthy))
 
     def status(self) -> dict:
         return {

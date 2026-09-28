@@ -25,6 +25,20 @@ class HintedEngine(FakeEngine):
         return self._hint
 
 
+class CapacityEngine(FakeEngine):
+    """总容量 3，但此刻只剩 1 个空位（模拟服务端在忙）。"""
+
+    def __init__(self, capacity: int):
+        super().__init__(ms_per_char=10.0)
+        self._capacity = capacity
+
+    def capacity_hint(self) -> int:
+        return self._capacity
+
+    def concurrency_hint(self) -> int:
+        return 1
+
+
 class MissingRefEngine(FakeEngine):
     def __init__(self):
         super().__init__(ms_per_char=10.0)
@@ -117,6 +131,12 @@ def test_effective_concurrency_prefers_engine_hint(settings):
     assert effective_concurrency(
         WorkerContext(settings=settings, conn=None, worker_id="w1", engine=FakeEngine())
     ) == settings.synth_concurrency
+
+
+def test_effective_concurrency_uses_total_capacity_not_free_slots(settings):
+    """服务端总容量 3、此刻只剩 1 个空位时，整章仍要按 3 路起线程池。"""
+    ctx = WorkerContext(settings=settings, conn=None, worker_id="w1", engine=CapacityEngine(3))
+    assert effective_concurrency(ctx) == 3
 
 
 def test_line_failure_is_recorded_with_tts_issue_kind(conn, settings, narrator_lines):
