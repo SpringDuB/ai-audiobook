@@ -13,7 +13,7 @@ def test_root_serves_app_shell(settings):
     assert "/static/theme.css" in body and "/static/js/app.js" in body
     assert 'id="main"' in body and 'id="masthead"' in body and 'id="rail"' in body
     assert "#/shelf" in body and "#/jobs" in body and "#/settings" in body
-    assert "/static/favicon.png" in body and "/static/logo-mark.png" in body
+    assert "/static/logo-mark.png" in body
     # 双主题：防闪烁脚本要在样式表之前落主题，顶栏要有切换按钮
     assert 'id="theme-toggle"' in body
     assert 'localStorage.getItem("aiab-theme")' in body

@@ -123,9 +123,44 @@ uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 分析侧产出的情绪名是中文（喜悦/愤怒/…），客户端会翻成引擎的英文维度名——少了这步翻译，
 `emoVector` 会静默变成 `null`（历史上就踩过这个坑，回归测试在 `tests/test_cache_key.py`）。
 
-服务端并发门 = `AIAB_TTS_MAX_CONCURRENCY`（0 时按显存估算：≥16 GB → 3，≥10 GB → 2，其余 1）。
+服务端并发门 = `min(AIAB_TTS_MAX_CONCURRENCY, 后端安全上限)`：配置只能往下调，顶不过后端自报值。
+IndexTTS-2.5 默认 **3 路真并发**。上游的 GPT 推理模型原本把"当前请求的条件嵌入"存在实例属性
+`cached_mel_emb` 上，两个请求并发时互相覆盖，会 500
+`engine_error: The size of tensor a (N) must match the size of tensor b (M)`；
+`tts/src/aiab_tts/indextts_compat.py` 已把它补成线程本地（每个推理线程各存各的），
+实测 3 路混合音色、3 条长旁白共 4 轮 12 个请求全部 200，峰值 `inflight=3`。
+8G 卡上 3 路会把显存吃满（实测峰值 8187/8187MB），OOM 时池会自动降档并熔断 60 秒。
 超过并发门的请求会排队，排队超过 `AIAB_TTS_QUEUE_TIMEOUT_SECONDS` 返回 `busy`；
 显存不足时返回 `oom`（后端会据此降档 + 熔断 60 秒）。
+
+### 加载路径（别让权重在主机内存里多住一份）
+
+上游的加载是"CPU 随机初始化 → `torch.load` 整份读进主机内存 → `load_state_dict` → `.to(cuda)`"，
+主机里最多同时存在两份权重（`gpt.pth` 单文件 3.1GB），加载完还常常不还给系统。
+`tts/src/aiab_tts/indextts_compat.py` 的 `fast_model_loading()` 做了两件事：
+
+1. 大 checkpoint 用 `torch.load(..., mmap=True)` 按页读，不再整份拷进主机内存；
+2. GPT / codec / s2mel / campplus 直接在 `cuda:0` 设备上下文里构造，w2v-bert 用
+   `device_map` 直进显存，省掉"CPU 一份 + 显存一份"。
+
+同机同模型、全新进程实测：加载期峰值主机内存 **7.04GB → 3.94GB**，加载后提交内存
+**12.53GB → 8.34GB**，加载耗时 **24.1s → 18.7s**，显存与产出不变。
+出问题可以设 `AIAB_TTS_FAST_LOAD=0` 关掉这条快路。
+
+### 显存：大模块 bf16（默认只降 w2v-bert）
+
+上游只把 GPT 降成了 bf16，w2v-bert（2.2GB fp32）/codec/s2mel/BigVGAN 都还是 fp32。
+`apply_bf16_modules()` 默认只降 **w2v-bert**（说话人/语义编码器，对音质最不敏感）：
+权重转 bf16，forward 的浮点输入自动跟着转 dtype。
+
+实测（8G 卡）：空闲显存 **5411 → 4837MiB**，3 条最长旁白并发峰值 **8144 → 7030MiB**，
+并发耗时 59.4s → 54.4s，请求全部成功。
+
+想再省显存可以显式开启别的模块（**需要自己听一遍**，声码器/flow-matching 更敏感）：
+
+```
+AIAB_TTS_BF16_MODULES=w2v,codec,s2mel,campplus     # bigvgan 风险最高，默认不建议
+```
 
 ## 4. 后端接线
 

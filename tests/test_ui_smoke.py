@@ -164,7 +164,7 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert "冒烟书" in shelf["text"]
     brand = json.loads(next(value for key, value in shelf.items() if key.startswith("eval:")))
     assert brand["logo"] > 0                       # 品牌图真的加载出来了
-    assert brand["favicon"] == "/static/favicon.png"
+    assert brand["favicon"] == "/static/logo-mark.png"
 
     workspace = _probe(f"{served}/#/book/{book_id}", tmp_path / "workspace")
     assert workspace["consoleErrors"] == []
