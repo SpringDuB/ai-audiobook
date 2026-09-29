@@ -98,25 +98,30 @@ async function build() {
   body.append(
     h(
       "section",
-      { class: "sheet" },
-      h("h2", { class: "letterpress" }, "大模型（LLM）"),
-      h("div", { class: "grid-2" }, ...LLM_FIELDS.map((field) => fieldNode(field, settings[field.key]))),
+      { class: "setting-section" },
+      h("h2", {}, "大模型（LLM）"),
+      h("p", { class: "setting-section__note" }, "密钥只从项目根目录 .env 读，不回显、也不写进 settings.json。"),
+      h("div", { class: "field-grid" }, ...LLM_FIELDS.map((field) => fieldNode(field, settings[field.key]))),
       h(
-        "p",
-        {},
+        "div",
+        { class: "row" },
         settings.llm_api_key_set
-          ? h("span", { class: "tag" }, "密钥已配置")
-          : h("span", { class: "tag tag--alert" }, "密钥未配置"),
-        h("span", { class: "muted" }, " 密钥只从项目根目录 .env 读，不回显、也不写进 settings.json。"),
+          ? h("span", { class: "tag tag--ok" }, "密钥已配置")
+          : h("span", { class: "tag tag--danger" }, "密钥未配置"),
+        h("span", { class: "field__hint" }, "密钥只从 .env 读，界面上改不了"),
       ),
     ),
   );
 
   const statusLine = h("div", { class: "tts-status" });
-  const logBox = h("pre", { class: "tts-log mono" }, "（日志会在这里滚动）");
+  const logBox = h("pre", { class: "log" }, "（日志会在这里滚动）");
   const launchFields = [...LAUNCH_FIELDS];
   if (payload.emotion_text_enabled) launchFields.splice(1, 0, EMOTION_FIELD);
-  const launchGrid = h("div", { class: "grid-2" }, ...launchFields.map((field) => fieldNode(field, settings[field.key])));
+  const launchGrid = h(
+    "div",
+    { class: "field-grid field-grid--3" },
+    ...launchFields.map((field) => fieldNode(field, settings[field.key])),
+  );
 
   // 只剩 indextts；这里要说清楚"点下去会发生什么"，免得用户以为它不干活
   const backendHint = h("p", { class: "field__hint muted" });
@@ -192,38 +197,45 @@ async function build() {
   body.append(
     h(
       "section",
-      { class: "sheet" },
-      h("h2", { class: "letterpress" }, "TTS 服务"),
+      { class: "setting-section" },
+      h("h2", {}, "TTS 服务"),
       h(
         "p",
-        { class: "muted" },
+        { class: "setting-section__note" },
         "点一下，IndexTTS-2.5 就在本机独立进程里起来（和后端不共进程），合成引擎自动切过去。首次启动可能要等权重下载。",
       ),
-      h("div", { class: "row row--between" }, statusLine, h("div", { class: "row" }, startButton, stopButton)),
+      h("div", { class: "status-panel" }, statusLine),
+      h("div", { class: "row", style: { marginBlock: "var(--space-3)" } }, startButton, stopButton),
       launchGrid,
       h("details", { class: "log-details" }, h("summary", {}, "运行日志"), logBox),
     ),
   );
 
+  const advancedGrid = h(
+    "div",
+    { class: "field-grid field-grid--3" },
+    ...ADVANCED_FIELDS.map((field) => fieldNode(field, settings[field.key])),
+  );
+  advancedGrid.querySelector("#f-tts_endpoints")?.closest(".field")?.classList.add("field--wide");
   body.append(
     h(
       "details",
-      { class: "sheet advanced" },
-      h("summary", { class: "letterpress" }, "高级（一般不用动）"),
-      h("p", { class: "muted" }, "改完保存即可：worker 每轮任务前会重读设置，不用重启 worker。"),
-      h("div", { class: "grid-2" }, ...ADVANCED_FIELDS.map((field) => fieldNode(field, settings[field.key]))),
+      { class: "panel advanced" },
+      h("summary", {}, "高级（一般不用动）"),
       h(
-        "p",
-        { class: "muted" },
-        "ffmpeg 由项目自带（uv sync 时就装好）；响度按有声书的稳妥默认值固定，不用你调。",
+        "div",
+        { class: "panel__body" },
+        h("p", { class: "field__hint" }, "改完保存即可：worker 每轮任务前会重读设置，不用重启 worker。"),
+        advancedGrid,
+        h("p", { class: "field__hint" }, "ffmpeg 由项目自带（uv sync 时就装好）；响度按有声书的稳妥默认值固定，不用你调。"),
+        h("p", { class: "field__hint" }, "合成引擎固定为 http（连独立 TTS 服务），由「一键启动」自动配置端点。"),
       ),
-      h("p", { class: "muted" }, "合成引擎固定为 http（连独立 TTS 服务），由「一键启动」自动配置端点。"),
     ),
   );
 
   const status = h(
     "p",
-    { class: "muted" },
+    { class: "field__hint" },
     saved.size ? `已在界面上改过：${[...saved].join("、")}` : "目前全部来自 .env / 环境变量",
   );
   const save = h(
@@ -303,7 +315,7 @@ async function build() {
       h("div", { class: "page-head__actions" }, save),
     ),
     status,
-    body,
+    h("div", { class: "settings-grid" }, body),
   );
 }
 

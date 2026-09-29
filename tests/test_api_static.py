@@ -1,3 +1,5 @@
+import re
+
 from test_api_read import _client
 
 
@@ -7,11 +9,15 @@ def test_root_serves_app_shell(settings):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     body = response.text
-    assert '<meta name="color-scheme" content="dark">' in body
+    assert '<meta name="color-scheme" content="light dark">' in body
     assert "/static/theme.css" in body and "/static/js/app.js" in body
     assert 'id="main"' in body and 'id="masthead"' in body and 'id="rail"' in body
     assert "#/shelf" in body and "#/jobs" in body and "#/settings" in body
     assert "/static/favicon.svg" in body
+    # 双主题：防闪烁脚本要在样式表之前落主题，顶栏要有切换按钮
+    assert 'id="theme-toggle"' in body
+    assert 'localStorage.getItem("aiab-theme")' in body
+    assert body.index("aiab-theme") < body.index("/static/theme.css")
 
 
 def test_static_assets_are_offline_only(settings):
@@ -32,6 +38,12 @@ def test_static_assets_are_offline_only(settings):
     assert "http://" not in css and "https://" not in css      # 不依赖任何 CDN
     assert "Inter" not in css and "Roboto" not in css and "Arial" not in css
     assert "Noto Serif SC" in css and "Noto Sans SC" in css and "Cascadia Mono" in css
+
+    theme = client.get("/static/theme.css").text
+    assert ":root[data-theme=\"dark\"]" in theme           # 纸 / 墨两套 token 都在
+    assert "--accent:" in theme and "--danger:" in theme
+    # 颜色只在 theme.css 的 token 层出现，页面样式里不许写裸色值
+    assert re.search(r"#[0-9a-fA-F]{3,8}\b", client.get("/static/app.css").text) is None
 
 
 def test_view_modules_are_served(settings):

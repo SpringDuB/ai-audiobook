@@ -1,6 +1,19 @@
+// 任务中心：运行中 / 排队中 / 失败 / 最近完成。
+// 列表带列头，进度与错误信息各占一列，长错误不会把别的字段挤变形。
+
 import { api } from "../api.js";
-import { clock, jobStateLabel, kindLabel, percent, shortId } from "../format.js";
-import { emptyState, h, progressBar, renderWithState, toast } from "../ui.js";
+import { clock, jobStateLabel, kindLabel, shortId } from "../format.js";
+import { h, progressBar, renderWithState, toast } from "../ui.js";
+
+const COLUMNS = ["任务", "对象", "进度", "状态", ""];
+
+function statusTag(job) {
+  if (job.status === "running") return h("span", { class: "tag tag--accent" }, `运行中 ${job.attempts}/${job.max_attempts}`);
+  if (job.status === "failed") return h("span", { class: "tag tag--danger" }, `失败 ${job.attempts}/${job.max_attempts}`);
+  if (job.status === "canceled") return h("span", { class: "tag" }, `已取消 ${job.attempts}/${job.max_attempts}`);
+  if (job.status === "queued") return h("span", { class: "tag" }, `排队 ${job.attempts}/${job.max_attempts}`);
+  return h("span", { class: "tag" }, `完成 ${job.attempts}/${job.max_attempts}`);
+}
 
 function jobRow(job, refresh) {
   const progress = job.progress || null;
@@ -11,6 +24,7 @@ function jobRow(job, refresh) {
         "button",
         {
           class: "btn btn-sm btn-danger",
+          type: "button",
           onClick: async () => {
             try {
               await api.cancelJob(job.id);
@@ -32,6 +46,7 @@ function jobRow(job, refresh) {
         "button",
         {
           class: "btn btn-sm",
+          type: "button",
           onClick: async () => {
             try {
               await api.retryJob(job.id);
@@ -47,44 +62,69 @@ function jobRow(job, refresh) {
       ),
     );
   }
+
+  const state = h("span", { class: "job-row__state" });
+  if (job.status === "running" && progress) {
+    state.append(progressBar(progress.done || 0, progress.total || 0));
+    if (progress.message) state.append(h("span", { class: "job-row__meta" }, progress.message));
+  } else {
+    state.append(
+      h(
+        "span",
+        { class: job.status === "failed" ? "job-row__msg" : "job-row__meta" },
+        progress?.message || job.error || "—",
+      ),
+    );
+  }
+
   return h(
     "div",
-    { class: "job-row" },
-    h("span", { class: "mono" }, `#${job.id}`),
+    { class: "job-row", dataset: { status: job.status } },
+    h("span", { class: "job-row__id" }, `#${job.id}`),
     h(
       "span",
-      {},
-      h("div", { class: "job-row__kind" }, kindLabel(job.kind)),
-      h("div", { class: "job-row__meta mono" }, shortId(job.book_id), job.chapter_index === null ? "" : ` · 第${job.chapter_index}章`),
+      { class: "job-row__what" },
+      h("span", { class: "job-row__kind" }, kindLabel(job.kind)),
+      h(
+        "span",
+        { class: "job-row__meta" },
+        shortId(job.book_id),
+        job.chapter_index === null || job.chapter_index === undefined ? " · 全书" : ` · 第${job.chapter_index}章`,
+      ),
     ),
+    state,
     h(
       "span",
-      {},
-      job.status === "running" && progress
-        ? progressBar(progress.done || 0, progress.total || 0)
-        : h("span", { class: "job-row__meta" }, progress?.message || job.error || "—"),
-      job.status === "running" && progress?.message
-        ? h("div", { class: "job-row__meta" }, progress.message)
-        : null,
+      { class: "job-row__status" },
+      statusTag(job),
+      h("span", { class: "job-row__meta" }, clock(job.updated_at)),
     ),
-    h(
-      "span",
-      { class: "row" },
-      h("span", { class: "job-row__meta mono" }, `${jobStateLabel(job.status)} ${job.attempts}/${job.max_attempts}`),
-      h("span", { class: "job-row__meta mono" }, clock(job.updated_at)),
-      ...actions,
-    ),
+    h("span", { class: "job-row__act" }, ...actions),
+  );
+}
+
+function head() {
+  return h(
+    "div",
+    { class: "list-head", "aria-hidden": "true" },
+    ...COLUMNS.map((label) => h("span", {}, label)),
   );
 }
 
 function block(title, jobs, hint, refresh) {
+  const rows = jobs.length
+    ? [head(), ...jobs.map((job) => jobRow(job, refresh))]
+    : h("p", { class: "panel__body muted" }, hint);
   return h(
     "section",
-    { class: "job-block" },
-    h("div", { class: "row row--between" }, h("h2", { class: "letterpress" }, title), h("span", { class: "muted mono" }, `${jobs.length}`)),
-    jobs.length
-      ? h("div", { class: "sheet" }, ...jobs.map((job) => jobRow(job, refresh)))
-      : h("p", { class: "muted" }, hint),
+    { class: "panel" },
+    h(
+      "div",
+      { class: "panel__bar" },
+      h("h2", {}, title),
+      h("span", { class: "count" }, String(jobs.length)),
+    ),
+    rows,
   );
 }
 
@@ -102,13 +142,31 @@ async function build(host) {
     h(
       "div",
       { class: "page-head" },
-      h("div", { class: "page-head__title" }, h("h1", { class: "letterpress" }, "任务中心"), h("p", { class: "muted" }, "长任务都在 worker 里跑；关掉浏览器不会中断。")),
-      h("div", { class: "page-head__actions" }, h("button", { class: "btn", onClick: refresh }, "刷新")),
+      h(
+        "div",
+        { class: "page-head__title" },
+        h("h1", { class: "letterpress" }, "任务中心"),
+        h("p", { class: "muted" }, "长任务都在 worker 里跑；关掉浏览器不会中断。"),
+      ),
+      h("div", { class: "page-head__actions" }, h("button", { class: "btn", type: "button", onClick: refresh }, "刷新")),
+    ),
+    h(
+      "div",
+      { class: "stat-row" },
+      h("div", { class: "stat", dataset: { tone: "accent" } }, h("div", { class: "stat__num" }, String(running.length)), h("div", { class: "stat__label" }, "运行中")),
+      h("div", { class: "stat" }, h("div", { class: "stat__num" }, String(queued.length)), h("div", { class: "stat__label" }, "排队中")),
+      h(
+        "div",
+        { class: "stat", dataset: failed.length ? { tone: "danger" } : {} },
+        h("div", { class: "stat__num" }, String(failed.length)),
+        h("div", { class: "stat__label" }, "失败"),
+      ),
+      h("div", { class: "stat" }, h("div", { class: "stat__num" }, String(done.length)), h("div", { class: "stat__label" }, "最近完成")),
     ),
     block("运行中", running, "当前没有运行中的任务。", refresh),
     block("排队中", queued, "队列是空的。", refresh),
     block("失败", failed, "没有失败任务。", refresh),
-    h("section", { class: "job-block" }, h("h2", { class: "letterpress" }, "最近完成"), doneToday.length ? h("div", { class: "sheet" }, ...doneToday.map((job) => jobRow(job, refresh))) : h("p", { class: "muted" }, "还没有完成的任务。")),
+    block("最近完成", doneToday, "还没有完成的任务。", refresh),
   );
 }
 

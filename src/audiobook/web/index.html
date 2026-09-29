@@ -3,9 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f4ef">
   <title>AI 有声书 · 编辑台</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script>
+    // 首访跟随系统，之后跟随用户选择。必须在样式表之前跑，避免刷新时闪一帧。
+    (function () {
+      try {
+        var saved = localStorage.getItem("aiab-theme");
+        var system = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : system;
+      } catch (error) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -14,12 +27,16 @@
 
   <header id="masthead" class="masthead">
     <div class="masthead__brand">
-      <span class="letterpress letterpress--block">AI 有声书</span>
+      <span class="masthead__mark" aria-hidden="true" translate="no">声</span>
+      <span class="masthead__name" translate="no">AI 有声书</span>
       <span id="crumb" class="masthead__crumb">书架</span>
     </div>
-    <div class="masthead__status" id="runstatus" aria-live="polite">
-      <span class="dot" data-state="idle" aria-hidden="true"></span>
-      <span class="mono" id="runlabel">空闲</span>
+    <div class="masthead__tail">
+      <div class="masthead__status" id="runstatus" aria-live="polite">
+        <span class="dot" data-state="idle" aria-hidden="true"></span>
+        <span class="mono" id="runlabel">空闲</span>
+      </div>
+      <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换到深色主题" title="切换深色主题">☾</button>
     </div>
   </header>
 

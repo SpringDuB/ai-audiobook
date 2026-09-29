@@ -11,6 +11,42 @@ import * as settings from "./views/settings.js";
 // 书页与章节页都是同一个工作台，只是选中的章节不同
 const VIEWS = { shelf, book: workspace, chapter: workspace, jobs, issues, voices, settings };
 
+/* ------------------------------------------------------------------ 主题
+   首访跟随系统（index.html 里的内联脚本负责在样式表之前落主题），
+   用户点过之后存在 localStorage，之后都听用户的。 */
+
+const THEME_BG = { light: "#f7f4ef", dark: "#12100e" };
+const themeButton = document.getElementById("theme-toggle");
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function paintTheme() {
+  const theme = currentTheme();
+  if (themeButton) {
+    const next = theme === "dark" ? "浅色" : "深色";
+    themeButton.textContent = theme === "dark" ? "☾" : "☀";
+    themeButton.setAttribute("aria-label", `切换到${next}主题`);
+    themeButton.title = `切换到${next}主题`;
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", THEME_BG[theme]);
+}
+
+themeButton?.addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try {
+    localStorage.setItem("aiab-theme", next);
+  } catch (error) {
+    /* 隐身模式下写不了，刷新回落系统偏好即可 */
+  }
+  paintTheme();
+});
+
+paintTheme();
+
 function crumbFor(route) {
   switch (route.name) {
     case "shelf":

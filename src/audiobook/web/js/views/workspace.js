@@ -329,10 +329,13 @@ function pendingView(route, host, title, payload) {
       { class: "workbench__bar" },
       h(
         "div",
-        { class: "workbench__title" },
-        h("a", { class: "muted", href: "#/shelf" }, "书架"),
-        h("span", { class: "muted" }, " / "),
-        h("span", { class: "letterpress" }, title),
+        { class: "workbench__id" },
+        h(
+          "div",
+          { class: "workbench__title" },
+          h("a", { class: "workbench__slash", href: "#/shelf" }, "书架 /"),
+          h("span", { class: "workbench__book", title }, title),
+        ),
       ),
     ),
     h("div", { class: "empty" }, h("p", {}, "正在分章…"), hint),
@@ -702,11 +705,11 @@ async function build(route, host) {
 
   /* --- 顶部工具条 --- */
 
-  const action = (label, fn, { primary = false, title = "" } = {}) =>
+  const action = (label, fn, { primary = false, title = "", menu = false } = {}) =>
     h(
       "button",
       {
-        class: primary ? "btn btn-primary" : "btn",
+        class: menu ? "menu__item" : primary ? "btn btn-primary" : "btn",
         type: "button",
         title,
         onClick: async (event) => {
@@ -718,6 +721,7 @@ async function build(route, host) {
             toast(error.message, "error");
           } finally {
             button.disabled = false;
+            closeMore();
           }
         },
       },
@@ -727,49 +731,88 @@ async function build(route, host) {
   const queued = (result, what) =>
     toast(result.queued ? `已入队${what} ${result.queued} 个任务，进度看右上角` : `${what}没有需要补的任务`);
 
+  // 低频动作收进「更多」，顶栏常驻按钮不超过三个
+  const closeMore = () => {
+    if (more) more.open = false;
+  };
+  const more = h(
+    "details",
+    { class: "workbench__more" },
+    h("summary", { title: "整本合成、批量分析、重新拼接、异常清单" }, "更多 ▾"),
+    h(
+      "div",
+      { class: "menu", role: "menu" },
+      action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
+        menu: true,
+        title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
+      }),
+      action(
+        "分析多个章节…",
+        async () => {
+          // 弹窗多选章节：只分析勾选的章，没勾过的默认勾上"还没分析"的章节
+          const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
+          const picked = await chapterPickerDialog({
+            title: "分析哪些章节的台词？",
+            message:
+              "只重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
+              "对应成品音频随之失效，需要重新生成。",
+            chapters: state.chapters,
+            confirmLabel: "开始分析",
+            selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
+          });
+          if (!picked || !picked.length) return;
+          queued(await api.analyzeChapters(bookId, picked), "章节分析");
+          await refreshChapters();
+        },
+        {
+          menu: true,
+          title: "弹窗勾选章节：重跑逐句标注，并重推角色音色（新称呼会并进角色表）；适合整本重来或返工几章",
+        },
+      ),
+      action(
+        "重新拼接本章",
+        async () => {
+          await api.renderChapter(bookId, state.index);
+          toast("已入队本章重渲染");
+          await refreshChapters();
+        },
+        { menu: true, title: "不重新跑 TTS：只把本章已有的逐句音频重新拼接、对齐字幕、做响度归一" },
+      ),
+      h(
+        "a",
+        { class: "menu__item", href: `#/book/${bookId}/issues`, title: "降级与失败记录，可按类型批量重试" },
+        "异常清单",
+      ),
+    ),
+  );
+
   const bar = h(
     "header",
     { class: "workbench__bar" },
     h(
       "div",
-      { class: "workbench__title" },
-      h("a", { class: "muted", href: "#/shelf" }, "书架"),
-      h("span", { class: "muted" }, " / "),
-      h("span", { class: "letterpress" }, state.title),
+      { class: "workbench__id" },
+      h(
+        "div",
+        { class: "workbench__title" },
+        h("a", { class: "workbench__slash", href: "#/shelf" }, "书架 /"),
+        h("span", { class: "workbench__book", title: state.title }, state.title),
+        h("span", { class: "workbench__chap" }, `· 第 ${state.index} 章`),
+      ),
+      h(
+        "div",
+        { class: "workbench__steps", "aria-hidden": "true" },
+        h("span", { class: "workbench__step", dataset: { state: "current" } }, "① 分析台词"),
+        h("span", { class: "workbench__step" }, "② 生成音频"),
+        h("span", { class: "workbench__step" }, "③ 导出成品"),
+        progress,
+      ),
     ),
     h(
       "div",
       { class: "workbench__actions" },
-      progress,
-      h(
-        "span",
-        { class: "workbench__flow muted" },
-        "流程：① 分析台词 → ② 生成音频 → ③ 导出成品",
-      ),
       action("分析本章台词", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析"), {
         title: "只重跑当前这一章的逐句标注（谁说的 + 什么情绪），其他章不动；已人工改过的这一章会被覆盖",
-      }),
-      action("分析多个章节…", async () => {
-        // 弹窗多选章节：只分析勾选的章，没勾过的默认勾上"还没分析"的章节
-        const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
-        const picked = await chapterPickerDialog({
-          title: "分析哪些章节的台词？",
-          message:
-            "只重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
-            "对应成品音频随之失效，需要重新生成。",
-          chapters: state.chapters,
-          confirmLabel: "开始分析",
-          selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
-        });
-        if (!picked || !picked.length) return;
-        queued(await api.analyzeChapters(bookId, picked), "章节分析");
-        await refreshChapters();
-      }, {
-        title: "弹窗勾选章节：重跑逐句标注，并重推角色音色（新称呼会并进角色表）；适合整本重来或返工几章",
-      }),
-      action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
-        primary: true,
-        title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
       }),
       action("生成本章音频", async () => queued(await api.generateChapter(bookId, state.index), "本章合成"), {
         title: "只合成当前这一章：逐句 TTS → 拼接出本章音频与字幕，其他章不动",
@@ -780,18 +823,9 @@ async function build(route, host) {
           await api.exportBook(bookId, { mode: "all" });
           toast("已入队整本导出");
         },
-        { title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/" },
+        { primary: true, title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/" },
       ),
-      action(
-        "重新拼接本章",
-        async () => {
-          await api.renderChapter(bookId, state.index);
-          toast("已入队本章重渲染");
-          await refreshChapters();
-        },
-        { title: "不重新跑 TTS：只把本章已有的逐句音频重新拼接、对齐字幕、做响度归一" },
-      ),
-      h("a", { class: "btn btn-ghost", href: `#/book/${bookId}/issues`, title: "降级与失败记录，可按类型批量重试" }, "异常清单"),
+      more,
     ),
   );
 
@@ -877,6 +911,20 @@ async function build(route, host) {
   });
   stopWatch = stopStore;
   onTeardown(stopStore);
+
+  // 顶栏实际高度写回 --bar-h：排版区与右侧栏的吸顶位置都跟着它走，
+  // 不再写死 116px，书名换行、字号变化、窄屏两行布局都不会错位。
+  const barHeight = () => {
+    const height = Math.round(bar.getBoundingClientRect().height);
+    if (height) document.documentElement.style.setProperty("--bar-h", `${height}px`);
+  };
+  barHeight();
+  if (typeof ResizeObserver === "function") {
+    const observer = new ResizeObserver(barHeight);
+    observer.observe(bar);
+    onTeardown(() => observer.disconnect());
+  }
+
   return container;
 }
 

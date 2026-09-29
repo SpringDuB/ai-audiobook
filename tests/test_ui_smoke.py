@@ -169,21 +169,26 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert workspace["counts"]["lines"] == 0
     assert "第一句。" in workspace["text"]
 
-    # 顶栏按钮说人话 + 每个都有悬浮说明
+    # 顶栏：常驻三个主按钮 + 「更多」菜单，低频动作不挤在顶栏
     buttons = _probe(
         f"{served}/#/book/{book_id}",
         tmp_path / "bar",
         extra=(
-            "--eval=JSON.stringify([...document.querySelectorAll('.workbench__actions .btn')]"
-            ".map((node) => ({ label: node.textContent, title: node.title })))",
+            "--eval=JSON.stringify({"
+            " labels: [...document.querySelectorAll('.workbench__actions .btn')].map((node) => node.textContent),"
+            " titles: [...document.querySelectorAll('.workbench__actions .btn')].map((node) => node.title),"
+            " more: [...document.querySelectorAll('.workbench__more .menu .menu__item')].map((node) => node.textContent),"
+            " moreTitle: (document.querySelector('.workbench__more > summary') || {}).title || '',"
+            " bookWrap: getComputedStyle(document.querySelector('.workbench__book')).whiteSpace,"
+            " })",
         ),
     )
     assert buttons["consoleErrors"] == []
     bar = json.loads(next(value for key, value in buttons.items() if key.startswith("eval:")))
-    labels = [item["label"] for item in bar]
-    assert labels[:2] == ["分析本章台词", "分析多个章节…"]
-    assert "生成整本音频" in labels and "生成本章音频" in labels and "导出整本成品" in labels
-    assert all(item["title"] for item in bar)
+    assert bar["labels"] == ["分析本章台词", "生成本章音频", "导出整本成品"]
+    assert all(bar["titles"]) and bar["moreTitle"]
+    assert bar["more"] == ["生成整本音频", "分析多个章节…", "重新拼接本章", "异常清单"]
+    assert bar["bookWrap"] == "nowrap"          # 长书名永远单行 + 省略号
 
     # 切到「角色文本」页签，逐句标注要能直接看
     script = _probe(f"{served}/#/book/{book_id}", tmp_path / "script", extra=("--click=.script__tools .tab:nth-child(2)",))
@@ -251,7 +256,8 @@ def test_analyze_button_opens_chapter_picker(served, settings, narrator_lines, t
         f"{served}/#/book/{book_id}",
         tmp_path / "analyze-picker",
         extra=(
-            "--click=.workbench__actions .btn:nth-of-type(2)",
+            "--click=.workbench__more > summary",
+            "--click=.workbench__more .menu button:nth-of-type(2)",
             "--eval=JSON.stringify({ modal: Boolean(document.querySelector('.modal--wide')),"
             " rows: document.querySelectorAll('.pick-row').length,"
             " text: (document.querySelector('.modal') || {}).innerText || '' })",
@@ -332,3 +338,42 @@ def test_mobile_viewport_has_bottom_rail(served, settings, tmp_path):
     assert page["consoleErrors"] == []
     rail = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
     assert rail["bottom"] == 844 and rail["height"] < 120     # 固定在底部而不是铺满
+
+
+def test_theme_boot_and_toggle_persists(served, settings, tmp_path):
+    """首访落一个主题（跟随系统），点切换后翻转并写进 localStorage。"""
+    boot_page = _probe(
+        f"{served}/#/shelf",
+        tmp_path / "theme-boot",
+        extra=(
+            "--eval=JSON.stringify({"
+            " theme: document.documentElement.dataset.theme,"
+            " scheme: getComputedStyle(document.documentElement).colorScheme,"
+            " label: document.getElementById('theme-toggle').getAttribute('aria-label'),"
+            " })",
+        ),
+    )
+    assert boot_page["consoleErrors"] == []
+    boot = json.loads(next(value for key, value in boot_page.items() if key.startswith("eval:")))
+    assert boot["theme"] in {"light", "dark"}
+    assert boot["scheme"] == boot["theme"]              # 原生控件跟随主题
+    assert boot["label"].startswith("切换到")
+
+    toggled_page = _probe(
+        f"{served}/#/shelf",
+        tmp_path / "theme-toggle",
+        extra=(
+            "--click=#theme-toggle",
+            "--eval=JSON.stringify({"
+            " theme: document.documentElement.dataset.theme,"
+            " saved: localStorage.getItem('aiab-theme'),"
+            " meta: document.querySelector('meta[name=\"theme-color\"]').content,"
+            " bg: getComputedStyle(document.body).backgroundColor,"
+            " })",
+        ),
+    )
+    assert toggled_page["consoleErrors"] == []
+    toggled = json.loads(next(value for key, value in toggled_page.items() if key.startswith("eval:")))
+    assert toggled["theme"] != boot["theme"]
+    assert toggled["saved"] == toggled["theme"]
+    assert toggled["meta"] == ("#12100e" if toggled["theme"] == "dark" else "#f7f4ef")

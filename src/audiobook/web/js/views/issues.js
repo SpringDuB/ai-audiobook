@@ -66,9 +66,9 @@ async function build(route, host) {
     container.append(
       h(
         "div",
-        { class: "sheet" },
+        { class: "banner" },
         h(
-          "p",
+          "span",
           {},
           `另有 ${failedJobs.length} 个失败任务（不属于降级记录）：`,
           failedJobs
@@ -77,6 +77,7 @@ async function build(route, host) {
             .join("、"),
           failedJobs.length > 6 ? " …" : "",
         ),
+        h("span", { class: "spacer" }),
         h("a", { class: "btn btn-sm", href: "#/jobs" }, "去任务中心重试"),
       ),
     );
@@ -130,16 +131,19 @@ async function build(route, host) {
   draw();
   container.append(
     h(
-      "div",
-      { class: "sheet" },
+      "section",
+      { class: "panel" },
       h(
         "div",
-        { class: "row row--between" },
-        h("span", { class: "muted mono" }, `${shortId(bookId)} · 最近 ${issues.length} 条（倒序）`),
+        { class: "panel__bar" },
+        chips,
+        h("span", { class: "spacer" }),
+        h("span", { class: "count" }, `${shortId(bookId)} · 最近 ${issues.length} 条（倒序）`),
         h(
           "button",
           {
             class: "btn btn-sm",
+            type: "button",
             onClick: async () => {
               try {
                 const result = await api.retryIssues(bookId, filter ? [filter] : []);
@@ -152,7 +156,6 @@ async function build(route, host) {
           "批量重试",
         ),
       ),
-      chips,
       list,
     ),
   );

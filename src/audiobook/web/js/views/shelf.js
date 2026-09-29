@@ -61,8 +61,8 @@ function bookCard(book, refresh) {
     },
     h(
       "div",
-      { class: "row row--between" },
-      h("a", { class: "letterpress book-card__title", href: open }, book.title || book.id),
+      { class: "book-card__top" },
+      h("a", { class: "book-card__title", href: open, title: book.title || book.id }, book.title || book.id),
       h("span", { class: "state-tag", dataset: { state: stats.state || "empty" } }, stateLabel(stats.state)),
     ),
     h("p", { class: "book-card__stats mono" }, statText(stats)),
