@@ -79,7 +79,24 @@ function bookCard(book, refresh) {
 }
 
 function importForm(refresh) {
-  const file = h("input", { type: "file", accept: ".txt,.epub,application/epub+zip,text/plain", required: true });
+  const file = h("input", {
+    id: "import-file",
+    type: "file",
+    accept: ".txt,.epub,application/epub+zip,text/plain",
+    required: true,
+  });
+  // 原生 file 控件比文本框高一截，会把这一行的标签顶歪；包成和音色库同款的选择框
+  const fileName = h("span", { class: "filepick__name" }, "未选择文件");
+  file.addEventListener("change", () => {
+    fileName.textContent = file.files?.[0]?.name || "未选择文件";
+  });
+  const picker = h(
+    "label",
+    { class: "filepick", for: "import-file" },
+    h("span", { class: "btn btn-sm" }, "选择文件"),
+    fileName,
+    file,
+  );
   const title = h("input", { type: "text", placeholder: "书名（可选，默认用文件名）" });
   const submit = h("button", { class: "btn btn-primary", type: "submit" }, "导入并分章");
   const form = h(
@@ -109,15 +126,16 @@ function importForm(refresh) {
         }
       },
     },
+    // 三个控件同一行：标签对齐标签、控件对齐控件；提示语独占下面一行，
+    // 否则「书稿有提示、书名没有」会把两列的基线顶歪。
     h(
       "div",
-      { class: "field" },
-      h("label", {}, "书稿（txt / epub）"),
-      file,
-      h("p", { class: "field__hint muted" }, "epub 会先抽成纯文本再分章，原文一样保留在书页里。"),
+      { class: "import__row" },
+      h("div", { class: "field" }, h("label", { for: "import-file" }, "书稿（txt / epub）"), picker),
+      h("div", { class: "field" }, h("label", {}, "书名"), title),
+      submit,
     ),
-    h("div", { class: "field" }, h("label", {}, "书名"), title),
-    submit,
+    h("p", { class: "field__hint muted" }, "epub 会先抽成纯文本再分章，原文一样保留在书页里。"),
   );
   return form;
 }

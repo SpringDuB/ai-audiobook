@@ -216,13 +216,20 @@ def test_shelf_card_only_has_open_delete_and_opens_on_click(served, settings, na
         f"{served}/#/shelf",
         tmp_path / "shelf-actions",
         extra=(
-            "--eval=JSON.stringify([...document.querySelectorAll('.book-card__actions .btn')]"
-            ".map((node) => node.textContent))",
+            "--eval=JSON.stringify({"
+            " actions: [...document.querySelectorAll('.book-card__actions .btn')].map((node) => node.textContent),"
+            " importFile: Boolean(document.querySelector('.import input[type=file]')),"
+            " importAlign: Math.round((document.querySelector('.import__row > .field') || {}).getBoundingClientRect"
+            " ? document.querySelector('.import__row > .field').getBoundingClientRect().top"
+            "   - document.querySelectorAll('.import__row > .field')[1].getBoundingClientRect().top : 0),"
+            " })",
         ),
     )
     assert page["consoleErrors"] == []
-    actions = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
-    assert actions == ["打开", "删除"]          # 一键生成/异常按钮已下线
+    probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert probe["actions"] == ["打开", "删除"]          # 一键生成/异常按钮已下线
+    assert probe["importFile"] is True                   # 导入区还收得到文件
+    assert probe["importAlign"] == 0                     # 书稿/书名两列的标签顶在同一行
 
     # 点卡片正文（不是链接、不是按钮）也要能进书页
     clicked = _probe(f"{served}/#/shelf", tmp_path / "shelf-card-click", extra=("--click=.book-card__stats",))
