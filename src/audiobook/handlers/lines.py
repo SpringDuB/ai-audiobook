@@ -18,7 +18,7 @@ from ..analysis.readiness import casting_ready
 from ..analysis.roles import names_from_payload, resolve_speaker
 from ..render.chapter import invalidate_chapter_products
 from ..worker import register
-from .characters import require_llm
+from .common import require_llm
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,8 @@ def _spoken_of(ctx, job, chapter) -> list:
     return result.lines
 
 
-def _characters_for(ctx, job, spoken) -> dict:
-    characters = store.read_json(store.characters_path(ctx.settings, job.book_id), default={}) or {}
+def _characters_for(ctx, *, book_id: str, chapter_index: int, spoken, allow_llm: bool = True) -> dict:
+    characters = store.read_json(store.characters_path(ctx.settings, book_id), default={}) or {}
     unknown = [
         item.role
         for item in spoken
@@ -75,32 +75,34 @@ def _characters_for(ctx, job, spoken) -> dict:
     if not unknown:
         return characters
     characters, issues = extend_characters(
-        require_llm(ctx), book_id=job.book_id, payload=characters, spoken=spoken
+        require_llm(ctx) if allow_llm else None,
+        book_id=book_id,
+        payload=characters,
+        spoken=spoken,
     )
     for issue in issues:
         record_issue(
             ctx.settings,
-            job.book_id,
+            book_id,
             issue["kind"],
             reason=issue["reason"],
-            chapter=job.chapter_index,
+            chapter=chapter_index,
             fallback=issue.get("fallback"),
             detail=issue.get("detail"),
         )
-    store.atomic_replace_json(store.characters_path(ctx.settings, job.book_id), characters)
+    store.atomic_replace_json(store.characters_path(ctx.settings, book_id), characters)
     return characters
 
 
-@register("lines")
-def handle_lines(ctx, job) -> None:
-    book_id, chapter_index = job.book_id, job.chapter_index
-    chapters = (store.read_json(store.chapters_path(ctx.settings, book_id), default={}) or {}).get("chapters") or []
-    chapter = next((item for item in chapters if item["index"] == chapter_index), None)
-    if chapter is None:
-        raise RuntimeError(f"chapters.json 里没有第 {chapter_index} 章")
+def materialize_chapter(ctx, *, book_id: str, chapter_index: int, spoken, allow_llm: bool = True) -> list[dict]:
+    """把一章的提取结果落成行记录（role_id / 语速 / 注音），返回落盘的行。
 
-    spoken = _spoken_of(ctx, job, chapter)
-    characters = _characters_for(ctx, job, spoken)
+    allow_llm=False：新称呼只本地补角色，不调大模型。整本提取时用它在每章提取完
+    立刻落盘，前端就能一章一章看到角色文本，而不用等全书提取 + 整合跑完。
+    """
+    characters = _characters_for(
+        ctx, book_id=book_id, chapter_index=chapter_index, spoken=spoken, allow_llm=allow_llm
+    )
     lines, issues = materialize(
         chapter_index=chapter_index,
         spoken=spoken,
@@ -109,13 +111,7 @@ def handle_lines(ctx, job) -> None:
     )
     if not lines:
         raise RuntimeError(f"第 {chapter_index} 章没有产出任何行")
-    lines_path = store.lines_path(ctx.settings, book_id, chapter_index)
-    previous = store.read_jsonl(lines_path)
-    store.write_jsonl_atomic(lines_path, lines)
-    if _synthesis_signature(previous) != _synthesis_signature(lines):
-        # 标注变了：本章与整本成品都不再可信，删掉让「生成有声书」重建
-        removed = invalidate_chapter_products(ctx.settings, book_id, chapter_index)
-        logger.info("第 %s 章标注变化：作废 %d 个成品文件", chapter_index, len(removed))
+    store.write_jsonl_atomic(store.lines_path(ctx.settings, book_id, chapter_index), lines)
     for issue in issues:
         record_issue(
             ctx.settings,
@@ -128,6 +124,32 @@ def handle_lines(ctx, job) -> None:
             fallback=issue.get("fallback"),
             detail=issue.get("detail"),
         )
+    return lines
+
+
+def _chapter_meta(ctx, book_id: str, chapter_index: int) -> dict:
+    chapters = (store.read_json(store.chapters_path(ctx.settings, book_id), default={}) or {}).get("chapters") or []
+    chapter = next((item for item in chapters if item["index"] == chapter_index), None)
+    if chapter is None:
+        raise RuntimeError(f"chapters.json 里没有第 {chapter_index} 章")
+    return chapter
+
+
+@register("lines")
+def handle_lines(ctx, job) -> None:
+    book_id, chapter_index = job.book_id, job.chapter_index
+    chapter = _chapter_meta(ctx, book_id, chapter_index)
+
+    spoken = _spoken_of(ctx, job, chapter)
+    lines_path = store.lines_path(ctx.settings, book_id, chapter_index)
+    previous = store.read_jsonl(lines_path)
+    lines = materialize_chapter(
+        ctx, book_id=book_id, chapter_index=chapter_index, spoken=spoken, allow_llm=True
+    )
+    if _synthesis_signature(previous) != _synthesis_signature(lines):
+        # 标注变了：本章与整本成品都不再可信，删掉让「生成有声书」重建
+        removed = invalidate_chapter_products(ctx.settings, book_id, chapter_index)
+        logger.info("第 %s 章标注变化：作废 %d 个成品文件", chapter_index, len(removed))
     if casting_ready(ctx.settings, ctx.conn, book_id, exclude_job_id=job.id):
         jobs.enqueue(ctx.conn, "casting", book_id)
     ctx.progress(job, len(lines), len(lines), f"{len(lines)} 句")

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from audiobook.config import get_settings
-from audiobook.llm.base import LLMError, LLMRateLimit, LLMReply, LLMTimeout
+from audiobook.llm.base import LLMDisconnected, LLMError, LLMRateLimit, LLMReply, LLMTimeout
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.openai_compat import OpenAICompatClient, build_client
 
@@ -53,6 +53,93 @@ def test_json_mode_can_be_disabled():
 
     _client(handler, json_mode=False).complete("s", "u")
     assert "response_format" not in seen["body"]
+
+
+def _sse(chunks: list[dict]) -> bytes:
+    text = "".join(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" for chunk in chunks)
+    return (text + "data: [DONE]\n\n").encode("utf-8")
+
+
+def test_streaming_reply_is_accumulated_with_usage():
+    """默认走 SSE：网关按空闲超时掐长请求，流式才能把连接养住。"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_sse(
+                [
+                    {"model": "deepseek-flash", "choices": [{"delta": {"content": '{"ok":'}}]},
+                    {"model": "deepseek-flash", "choices": [{"delta": {"content": "true}"}, "finish_reason": "stop"}]},
+                    {
+                        "model": "deepseek-flash",
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 31,
+                            "completion_tokens": 42,
+                            "completion_tokens_details": {"reasoning_tokens": 17},
+                        },
+                    },
+                ]
+            ),
+        )
+
+    reply = _client(handler).complete("s", "u")
+
+    assert seen["body"]["stream"] is True
+    assert seen["body"]["stream_options"] == {"include_usage": True}
+    assert reply.text == '{"ok":true}'
+    assert reply.input_tokens == 31 and reply.output_tokens == 42 and reply.reasoning_tokens == 17
+
+
+def test_stream_options_rejection_falls_back_to_plain_stream():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unknown parameter: stream_options"}})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_sse([{"choices": [{"delta": {"content": "{}"}}]}]),
+        )
+
+    reply = _client(handler).complete("s", "u")
+
+    assert reply.text == "{}"
+    assert len(seen) == 2
+    assert seen[1]["stream"] is True and "stream_options" not in seen[1]
+
+
+def test_stream_rejection_falls_back_to_plain_json():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if body.get("stream"):
+            return httpx.Response(400, json={"error": {"message": "stream is not supported"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    reply = _client(handler).complete("s", "u")
+
+    assert reply.text == "{}"
+    assert "stream" not in seen[-1] and "stream_options" not in seen[-1]
+
+
+def test_disconnect_is_reported_as_llm_disconnected_with_duration():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    with pytest.raises(LLMDisconnected) as excinfo:
+        _client(handler).complete("s", "u")
+
+    assert "RemoteProtocolError" in str(excinfo.value)
+    assert excinfo.value.duration_ms is not None
 
 
 def test_reasoning_tokens_are_reported():

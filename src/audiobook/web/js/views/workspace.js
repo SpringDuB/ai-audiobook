@@ -978,7 +978,13 @@ async function build(route, host) {
     }
     if ((running || queued) && Date.now() - lastRefresh > 5000) {
       lastRefresh = Date.now();
-      refreshChapters();
+      const viewing = state.index;
+      const before = Number(state.chapters.find((c) => c.index === viewing)?.lines || 0);
+      refreshChapters().then(() => {
+        // 整本分析是边提取边落章的：当前这章刚出结果就顺手把它刷出来，不用等整本跑完
+        const after = Number(state.chapters.find((c) => c.index === viewing)?.lines || 0);
+        if (state.index === viewing && after > before) reloadChapter(viewing);
+      });
     }
     // 任务跑完的那一刻刷新一次：本章重分析/重渲染的结果要立刻出现在页面上
     const busy = Boolean(running) || queued > 0;

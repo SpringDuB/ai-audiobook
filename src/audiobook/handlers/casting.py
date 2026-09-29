@@ -6,7 +6,7 @@ from .. import store
 from ..analysis.casting import build_casting, load_voice_library, samples_by_role
 from ..analysis.issues import record_issue
 from ..worker import register
-from .characters import require_llm
+from .common import require_llm
 
 logger = logging.getLogger(__name__)
 

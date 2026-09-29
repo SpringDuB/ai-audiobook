@@ -541,15 +541,15 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.post("/api/books/{book_id}/chapters/{index}/analyze")
     def analyze_chapter(book_id: str, index: int):
-        """只重跑本章的整章分析（角色表还没建就先补一轮全书分析）。"""
+        """只重跑本章的整章分析：提取 + 落行，不碰其它章，也不要求先有角色表。
+
+        没有 characters.json 时由 lines handler 增量补角色（新称呼并进角色表，单章可独立跑完）。
+        """
         if _chapter_meta(settings, book_id, index) is None:
             raise HTTPException(status_code=404, detail="chapter not found")
-        plan: list[tuple[str, int | None]] = []
-        if not store.characters_path(settings, book_id).exists():
-            plan.append(("characters", None))
         # 删掉本章的提取结果 → lines handler 会重新调 LLM 提取（而不是只重算落盘）
         store.extract_path(settings, book_id, index).unlink(missing_ok=True)
-        plan.append(("lines", index))
+        plan: list[tuple[str, int | None]] = [("lines", index)]
         job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
         return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
 

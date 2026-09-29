@@ -62,7 +62,7 @@ def test_tts_status_reports_configured_engine(settings):
 
 
 def test_chapter_analyze_only_queues_that_chapter(settings):
-    """「分析本章」：只重跑这一章的逐句情感标注；角色表没建时先补一轮全书角色分析。"""
+    """「分析本章」：只重跑这一章，没有角色表也能单独跑（新称呼由 lines 增量补进角色表）。"""
     from audiobook import store
 
     client, conn = make_client(settings)
@@ -82,15 +82,15 @@ def test_chapter_analyze_only_queues_that_chapter(settings):
     )
 
     payload = client.post("/api/books/b1/chapters/2/analyze").json()
-    assert payload["plan"] == [["characters", None], ["lines", 2]]
+    assert payload["plan"] == [["lines", 2]]
     kinds = [
         (job["kind"], job["chapter_index"])
         for job in client.get("/api/jobs", params={"book_id": "b1"}).json()["jobs"]
     ]
-    assert sorted(kinds, key=str) == [("characters", None), ("lines", 2)]
+    assert sorted(kinds, key=str) == [("lines", 2)]
+    assert not store.characters_path(settings, "b1").exists()
 
-    # 角色表有了以后只推本章
-    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    # 换一章同样只推那一章
     conn.execute("UPDATE jobs SET status='done'")
     payload = client.post("/api/books/b1/chapters/1/analyze").json()
     assert payload["plan"] == [["lines", 1]]

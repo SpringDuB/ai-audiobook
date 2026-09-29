@@ -201,12 +201,19 @@ def merge_roles(runner, *, book_id: str, entries: list[dict], known: list[str] =
 def extend_characters(
     runner, *, book_id: str, payload: dict, spoken: list[SpokenLine]
 ) -> tuple[dict, list[dict]]:
-    """单章重跑时用：把这一章新冒出来的称呼并进已有角色表（是别名就并进老角色）。"""
+    """单章重跑时用：把这一章新冒出来的称呼并进已有角色表（是别名就并进老角色）。
+
+    runner=None 时不调大模型，只按名字本地补角色（边提取边展示用的临时表，
+    全书整合完成后再由 lines 任务用最终角色表覆盖）。
+    """
     existing = names_from_payload(payload)
     known = {normalize(name) for name in existing}
     entries = [entry for entry in role_entries([(0, spoken)]) if normalize(entry["name"]) not in known]
     if not entries:
         return payload, []
-    groups, issues = _run_merge(runner, book_id=book_id, entries=entries, known=existing)
+    if runner is None:
+        groups, issues = [{"name": entry["name"], "aliases": []} for entry in entries], []
+    else:
+        groups, issues = _run_merge(runner, book_id=book_id, entries=entries, known=existing)
     characters = _apply_groups(list(payload.get("characters") or []), groups, entries)
     return _payload(book_id, characters), issues

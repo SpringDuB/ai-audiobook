@@ -69,7 +69,11 @@ def test_characters_handler_extracts_then_merges_and_enqueues_lines(settings, co
     assert first["emotion"] == "平静" and first["intensity"] == 0.4
     line_jobs = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "lines"]
     assert sorted(j.chapter_index for j in line_jobs) == [0, 1]
-    assert not store.lines_path(settings, book_id, 1).exists()  # 行由 lines handler 产出
+    # 边提取边落行：characters 跑完时行已经在盘上（前端不用等整本跑完），
+    # 后续 lines 任务只是用整合后的最终角色表再刷新一遍
+    progressive = store.read_jsonl(store.lines_path(settings, book_id, 1))
+    assert progressive and progressive[0]["text"] == "走。"
+    assert progressive[0]["speaker_name"] == "小鹿"
     passes = [row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))]
     assert sorted(passes) == ["extract", "extract", "merge"]
 

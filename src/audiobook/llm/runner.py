@@ -1,10 +1,11 @@
 import logging
+import random
 import time
 
 from pydantic import ValidationError
 
 from .. import store
-from .base import LLMError, LLMRateLimit
+from .base import LLMDisconnected, LLMError, LLMRateLimit, LLMTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +51,33 @@ class LlmJsonRunner:
                     reply = self.client.complete(
                         system, prompt, max_output_tokens=self.settings.llm_max_output_tokens
                     )
-            except LLMRateLimit as exc:
-                self.limiter.record_rate_limit()
-                last_error = f"{type(exc).__name__}: {exc}"
-                self._log(book_id, pass_name, chapter_index, scene_id, attempt, False, None, last_error)
-                logger.warning("LLM 限流：pass=%s 并发降到 %s", pass_name, self.limiter.limit)
-                continue
             except LLMError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                self._log(book_id, pass_name, chapter_index, scene_id, attempt, False, None, last_error)
+                # 限流 / 连接被掐断 / 超时都是"并发太高了"的信号：降一档并冷却，
+                # 否则 10 个线程会在同一毫秒一起回头再打，把重试也一起打废。
+                if isinstance(exc, (LLMRateLimit, LLMDisconnected, LLMTimeout)):
+                    lowered = self.limiter.record_rate_limit()
+                    logger.warning(
+                        "LLM %s：pass=%s 并发降到 %s", type(exc).__name__, pass_name, lowered
+                    )
+                    self._backoff(attempt)
+                self._log(
+                    book_id,
+                    pass_name,
+                    chapter_index,
+                    scene_id,
+                    attempt,
+                    False,
+                    None,
+                    last_error,
+                    duration_ms=getattr(exc, "duration_ms", None),
+                )
                 continue
-            except TimeoutError as exc:
-                self.limiter.record_rate_limit()
+            except TimeoutError as exc:  # 等并发槽超时（内置 TimeoutError，不是 LLMTimeout）
+                lowered = self.limiter.record_rate_limit()
                 last_error = f"等待 LLM 并发槽超时: {exc}"
+                logger.warning("LLM 等槽超时：pass=%s 并发降到 %s", pass_name, lowered)
+                self._backoff(attempt)
                 self._log(book_id, pass_name, chapter_index, scene_id, attempt, False, None, last_error)
                 continue
             self.limiter.record_success()
@@ -78,7 +93,16 @@ class LlmJsonRunner:
             f"{pass_name} 趟分析连续 {self.max_attempts} 次失败", self.max_attempts, last_error
         )
 
-    def _log(self, book_id, pass_name, chapter_index, scene_id, attempt, ok, reply, error) -> None:
+    def _backoff(self, attempt: int) -> None:
+        """重试前带抖动地等一会儿；已经是最后一次尝试就不再等。"""
+        if attempt >= self.max_attempts:
+            return
+        delay = min(8.0, 1.0 * attempt) * (0.5 + random.random())
+        time.sleep(delay)
+
+    def _log(
+        self, book_id, pass_name, chapter_index, scene_id, attempt, ok, reply, error, duration_ms=None
+    ) -> None:
         if not book_id:
             return
         store.append_jsonl(
@@ -92,7 +116,7 @@ class LlmJsonRunner:
                 "attempt": attempt,
                 "ok": ok,
                 "model": getattr(reply, "model", None),
-                "duration_ms": getattr(reply, "duration_ms", 0),
+                "duration_ms": getattr(reply, "duration_ms", 0) or duration_ms or 0,
                 "input_tokens": getattr(reply, "input_tokens", None),
                 "output_tokens": getattr(reply, "output_tokens", None),
                 "reasoning_tokens": getattr(reply, "reasoning_tokens", None),

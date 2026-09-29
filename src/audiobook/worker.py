@@ -27,6 +27,7 @@ LLM_KEYS = (
     "llm_timeout_seconds",
     "llm_max_attempts",
     "llm_max_output_tokens",
+    "llm_stream",
 )
 
 

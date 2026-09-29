@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     llm_max_attempts: int = 2
     llm_max_output_tokens: int = 64000
     llm_json_mode: bool = True
+    # 流式请求：非流式长请求会被网关按空闲超时掐断（Server disconnected），别关
+    llm_stream: bool = True
     llm_chunk_chars: int = 8000
     # 逐句情感标注的窗口上限：一章切成若干窗口分别请求 LLM。
     # 一句一条记录，窗口太大输出会被 llm_max_output_tokens 截断，所以字符数与句数都要卡

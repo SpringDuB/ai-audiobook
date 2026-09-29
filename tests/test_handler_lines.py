@@ -103,6 +103,31 @@ def test_lines_handler_reruns_extraction_only_when_it_is_missing(settings, conn)
     assert store.read_jsonl(store.lines_path(settings, book_id, 1))
 
 
+def test_lines_handler_builds_role_table_from_scratch_when_missing(settings, conn):
+    """「分析本章」不依赖 characters.json：这一章自己提取 + 自己补角色表就跑完。"""
+    book_id = "b1"
+    _seed_chapter(settings, book_id)
+    assert not store.characters_path(settings, book_id).exists()
+    jobs.enqueue(conn, "lines", book_id, 1)
+
+    def extract(user: str) -> list[dict]:
+        return [{"text": "“走。”", "role": "苏锐", "emotion": "平静", "intensity": 0.3}]
+
+    llm = FakeLLM(
+        routes={
+            "【EXTRACT】": extract,
+            "【MERGE_ROLES】": {"characters": [{"name": "苏锐", "aliases": []}]},
+        }
+    )
+    assert run_once(_ctx(settings, conn, llm)) is True
+
+    rows = store.read_jsonl(store.lines_path(settings, book_id, 1))
+    assert [row["kind"] for row in rows] == ["dialogue"]
+    assert rows[0]["speaker_name"] == "苏锐"
+    payload = store.read_json(store.characters_path(settings, book_id))
+    assert [c["name"] for c in payload["characters"]] == ["旁白", "苏锐"]
+
+
 def test_casting_not_ready_while_analysis_jobs_are_active(settings, conn):
     book_id = "b1"
     _seed_chapter(settings, book_id)

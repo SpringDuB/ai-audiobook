@@ -13,14 +13,10 @@ from ..analysis.issues import record_issue
 from ..analysis.merge import merge_roles, role_entries
 from ..analysis.roles import names_from_payload
 from ..worker import register
+from .common import require_llm
+from .lines import materialize_chapter
 
 logger = logging.getLogger(__name__)
-
-
-def require_llm(ctx):
-    if ctx.llm is None:
-        raise RuntimeError("worker 未配置 LLM：请设置 AB_LLM_BASE_URL 后重启 worker")
-    return ctx.llm
 
 
 @register("characters")
@@ -80,6 +76,25 @@ def handle_characters(ctx, job) -> None:
                         chapter=chapter["index"],
                         fallback=issue.get("fallback"),
                         detail=issue.get("detail"),
+                    )
+                # 边提取边落行：前端不用等全书整合跑完，一章算完就能看到角色文本
+                try:
+                    materialize_chapter(
+                        ctx,
+                        book_id=book_id,
+                        chapter_index=chapter["index"],
+                        spoken=result.lines,
+                        allow_llm=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 提前落行失败不影响整本分析
+                    logger.warning("第 %s 章提前落行失败: %s", chapter["index"], exc)
+                    record_issue(
+                        ctx.settings,
+                        book_id,
+                        "chapter_materialize_failed",
+                        reason=f"{type(exc).__name__}: {exc}",
+                        chapter=chapter["index"],
+                        fallback="整本提取结束后由 lines 任务重新落行",
                     )
                 results.append((chapter["index"], result.lines))
             finally:
