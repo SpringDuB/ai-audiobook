@@ -1,0 +1,1533 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AI 有声书 · 新界面方案预览</title>
+  <script>
+    // 先落主题再上色，避免刷新时闪白/闪黑
+    (function () {
+      try {
+        var saved = localStorage.getItem("aiab-theme");
+        var system = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : system;
+      } catch (error) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    })();
+  </script>
+  <style>
+    /* ============================================================ 语义 token
+       双主题只有一个来源：颜色全部走变量，组件里不写裸色值。
+       深色 = 墨，浅色 = 纸；强调色 = 校样蓝（编辑部改稿的蓝铅笔，不参与印刷）；
+       朱砂只留给「异常 / 破坏性操作」。 */
+    :root {
+      color-scheme: light;
+
+      --bg: #f7f4ef;
+      --surface: #fcfaf7;
+      --surface-2: #f1ede6;
+      --inset: #efeae2;
+      --border: #e4ddd2;
+      --border-strong: #d6cdbf;
+      --border-input: #93897a;
+
+      --text: #1b1815;
+      --text-muted: #5a544b;
+      --text-faint: #736c60;
+
+      --accent: #2c4e9a;
+      --accent-hover: #25417f;
+      --accent-soft: #e7ecf8;
+      --on-accent: #fffdfa;
+
+      --danger: #b23a28;
+      --danger-soft: #f8e9e5;
+      --ok: #2f6b4f;
+      --ok-soft: #e6f0ea;
+      --warn: #8a5a11;
+      --warn-soft: #f7eeda;
+
+      --scrim: rgba(30, 24, 18, 0.42);
+      --shadow-1: 0 1px 2px rgba(43, 33, 22, 0.07), 0 6px 16px rgba(43, 33, 22, 0.05);
+      --shadow-2: 0 18px 44px rgba(43, 33, 22, 0.18);
+
+      --font-sans: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+      --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+      --font-mono: "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+
+      --text-xs: 0.75rem;
+      --text-sm: 0.8125rem;
+      --text-base: 0.875rem;
+      --text-lg: 1.0625rem;
+      --text-xl: 1.375rem;
+      --text-2xl: 1.875rem;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --space-7: 48px;
+
+      --radius-sm: 6px;
+      --radius: 10px;
+      --radius-pill: 999px;
+
+      --masthead-h: 52px;
+      --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+      --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+    }
+
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+
+      --bg: #12100e;
+      --surface: #1a1714;
+      --surface-2: #221e1a;
+      --inset: #151311;
+      --border: #2e2823;
+      --border-strong: #3d362f;
+      --border-input: #6b6255;
+
+      --text: #f3eee6;
+      --text-muted: #b4aca0;
+      --text-faint: #8c8377;
+
+      --accent: #93b4f5;
+      --accent-hover: #a8c4fa;
+      --accent-soft: #1c2436;
+      --on-accent: #0f1420;
+
+      --danger: #e4735c;
+      --danger-soft: #2a1b17;
+      --ok: #6fbf95;
+      --ok-soft: #16241d;
+      --warn: #e0a852;
+      --warn-soft: #262013;
+
+      --scrim: rgba(6, 5, 4, 0.6);
+      --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.45);
+      --shadow-2: 0 20px 48px rgba(0, 0, 0, 0.55);
+    }
+
+    /* ============================================================ 基础 */
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: var(--text-base);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 160ms var(--ease-out), color 160ms var(--ease-out);
+    }
+    h1, h2, h3, h4 { margin: 0 0 var(--space-3); line-height: 1.3; font-weight: 600; }
+    h1 { font-family: var(--font-serif); font-size: var(--text-2xl); letter-spacing: 0.01em; }
+    h2 { font-size: var(--text-xl); }
+    h3 { font-size: var(--text-lg); }
+    p { margin: 0 0 var(--space-3); }
+    .mono, code { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--text-sm); }
+    .muted { color: var(--text-muted); }
+    .faint { color: var(--text-faint); }
+    :focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--radius-sm); }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+    }
+
+    /* ============================================================ 顶栏与导航 */
+    .masthead {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      block-size: var(--masthead-h);
+      padding: 0 var(--space-5);
+      background: var(--surface);
+      border-block-end: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: var(--space-3); min-inline-size: 0; }
+    .brand__mark {
+      display: grid;
+      place-items: center;
+      inline-size: 30px;
+      block-size: 30px;
+      border-radius: var(--radius-sm);
+      background: var(--accent);
+      color: var(--on-accent);
+      font-size: var(--text-sm);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      flex: none;
+    }
+    .brand__name { font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+    .crumb {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      min-inline-size: 0;
+      color: var(--text-faint);
+      font-size: var(--text-sm);
+    }
+    .crumb__sep { color: var(--border-strong); }
+    .crumb__here { color: var(--text-muted); white-space: nowrap; }
+    .masthead__tail { margin-inline-start: auto; display: flex; align-items: center; gap: var(--space-2); }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 3px var(--space-3);
+      border-radius: var(--radius-pill);
+      background: var(--surface-2);
+      color: var(--text-muted);
+      font-size: var(--text-xs);
+      white-space: nowrap;
+    }
+    .status__dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--ok); }
+
+    .icon-btn {
+      display: grid;
+      place-items: center;
+      inline-size: 32px;
+      block-size: 32px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: var(--text-base);
+      transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out), border-color 140ms var(--ease-out);
+    }
+    .icon-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+    .icon-btn:active { transform: scale(0.97); }
+
+    .rail {
+      position: fixed;
+      inset-block: var(--masthead-h) 0;
+      inset-inline-start: 0;
+      inline-size: 88px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: var(--space-4) var(--space-2);
+      background: var(--surface);
+      border-inline-end: 1px solid var(--border);
+    }
+    .rail a {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      padding: var(--space-2) var(--space-1);
+      border-radius: var(--radius-sm);
+      color: var(--text-faint);
+      text-decoration: none;
+      font-size: var(--text-xs);
+      transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out);
+    }
+    .rail a:hover { background: var(--surface-2); color: var(--text); }
+    .rail a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .rail__mark { font-family: var(--font-serif); font-size: var(--text-lg); line-height: 1.2; }
+
+    main { margin-inline-start: 88px; padding: var(--space-6) var(--space-5) var(--space-7); }
+    .wrap { max-inline-size: 1120px; margin-inline: auto; }
+
+    .spec { margin-block-end: var(--space-7); }
+    .spec__head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; margin-block-end: var(--space-2); }
+    .spec__head h2 { margin: 0; }
+    .spec__note { margin: 0 0 var(--space-4); max-inline-size: 76ch; color: var(--text-muted); font-size: var(--text-sm); }
+    .spec__stage { padding: var(--space-4); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+    .spec__stage--flush { padding: 0; overflow: hidden; }
+
+    /* ============================================================ 控件 */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 6px var(--space-3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: var(--text-sm);
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 90ms var(--ease-out);
+    }
+    .btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+    .btn:active { transform: scale(0.98); }
+    .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+    .btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .btn--ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+    .btn--ghost:hover { background: var(--surface-2); color: var(--text); }
+    .btn--danger { background: transparent; border-color: var(--border); color: var(--danger); }
+    .btn--danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+    .btn--sm { padding: 2px var(--space-2); font-size: var(--text-xs); }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px var(--space-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      color: var(--text-muted);
+      font-size: var(--text-xs);
+      white-space: nowrap;
+    }
+    .tag--accent { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+    .tag--ok { border-color: transparent; background: var(--ok-soft); color: var(--ok); }
+    .tag--warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+    .tag--danger { border-color: transparent; background: var(--danger-soft); color: var(--danger); }
+
+    .field { display: grid; gap: var(--space-1); }
+    .field > label { font-size: var(--text-sm); color: var(--text-muted); }
+    .field__hint { margin: 0; font-size: var(--text-xs); color: var(--text-faint); }
+    input[type="text"], input[type="search"], select, textarea {
+      inline-size: 100%;
+      padding: 6px var(--space-3);
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-sm);
+      background: var(--inset);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: var(--text-sm);
+    }
+    input::placeholder, textarea::placeholder { color: var(--text-faint); }
+
+    .progress { display: flex; align-items: center; gap: var(--space-2); min-inline-size: 8rem; }
+    .progress__track { position: relative; flex: 1; block-size: 4px; border-radius: var(--radius-pill); background: var(--surface-2); overflow: hidden; }
+    .progress__fill { position: absolute; inset-block: 0; left: 0; border-radius: inherit; background: var(--accent); }
+
+    /* ============================================================ 书架 */
+    .import {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: end;
+      padding: var(--space-4);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .dropzone {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3);
+      border: 1px dashed var(--border-input);
+      border-radius: var(--radius-sm);
+      background: var(--inset);
+      color: var(--text-muted);
+      font-size: var(--text-sm);
+    }
+    .book-grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); margin-block-start: var(--space-4); }
+    .book-card {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+      padding: var(--space-4);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      transition: border-color 140ms var(--ease-out), box-shadow 140ms var(--ease-out), transform 140ms var(--ease-out);
+    }
+    .book-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-1); transform: translateY(-1px); }
+    .book-card__top { display: flex; align-items: flex-start; gap: var(--space-2); }
+    .book-card__title {
+      flex: 1;
+      min-inline-size: 0;
+      margin: 0;
+      font-family: var(--font-serif);
+      font-size: var(--text-lg);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .book-card__meta { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; color: var(--text-faint); font-size: var(--text-xs); }
+    .book-card__actions { display: flex; gap: var(--space-2); margin-block-start: auto; padding-block-start: var(--space-2); }
+
+    /* ============================================================ 工作台顶栏（本次要修的地方） */
+    .wb { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .wb__bar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: var(--space-4);
+      padding: var(--space-3) var(--space-4);
+      border-block-end: 1px solid var(--border);
+    }
+    .wb__id { min-inline-size: 0; display: grid; gap: 2px; }
+    .wb__title {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-2);
+      min-inline-size: 0;
+      font-size: var(--text-lg);
+      font-weight: 600;
+    }
+    .wb__title > .wb__book {
+      min-inline-size: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;   /* 关键：书名永不换行，超出就省略号 */
+    }
+    .wb__title > .wb__slash, .wb__title > .wb__chap { flex: none; color: var(--text-faint); font-weight: 400; }
+    .wb__steps { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-faint); }
+    .wb__step { display: inline-flex; align-items: center; gap: 4px; }
+    .wb__step[data-state="current"] { color: var(--accent); font-weight: 600; }
+    .wb__step + .wb__step::before { content: "→"; color: var(--border-strong); margin-inline-end: var(--space-2); }
+    .wb__actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; }
+    .wb__body { display: grid; grid-template-columns: 15rem minmax(0, 1fr) 20rem; }
+    .wb__col { padding: var(--space-4); }
+    .wb__col + .wb__col { border-inline-start: 1px solid var(--border); }
+    .wb__col h4 { margin: 0 0 var(--space-2); font-size: var(--text-xs); color: var(--text-faint); font-weight: 400; letter-spacing: 0.06em; }
+
+    .chapter-item {
+      display: grid;
+      grid-template-columns: 1.75rem minmax(0, 1fr) auto;
+      align-items: center;
+      gap: var(--space-2);
+      inline-size: 100%;
+      padding: var(--space-2);
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: var(--text-sm);
+      text-align: start;
+      cursor: pointer;
+    }
+    .chapter-item:hover { background: var(--surface-2); color: var(--text); }
+    .chapter-item[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .chapter-item__no { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+
+    .line {
+      display: grid;
+      grid-template-columns: 2rem minmax(0, 1fr);
+      gap: var(--space-3);
+      padding: var(--space-3) var(--space-2);
+      border-block-end: 1px solid var(--border);
+    }
+    .line:hover { background: var(--surface-2); }
+    .line__seq { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); padding-block-start: 4px; }
+    .line__who { display: inline-flex; align-items: center; gap: var(--space-2); margin-block-end: var(--space-1); }
+    .line__role { font-size: var(--text-xs); color: var(--text-muted); }
+    .line__role--narration { color: var(--text-faint); }
+    .line__text { margin: 0; font-family: var(--font-serif); font-size: 0.9375rem; line-height: 1.9; }
+    .line__tools { display: flex; align-items: center; gap: var(--space-2); margin-block-start: var(--space-2); }
+    .emo { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--text-faint); }
+    .emo__bar { inline-size: 34px; block-size: 3px; border-radius: var(--radius-pill); background: var(--surface-2); position: relative; overflow: hidden; }
+    .emo__bar > span { position: absolute; inset-block: 0; left: 0; background: var(--accent); opacity: 0.75; }
+
+    .cast-row {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: var(--space-3);
+      padding: var(--space-3) 0;
+      border-block-end: 1px solid var(--border);
+    }
+    .cast-row__avatar {
+      display: grid;
+      place-items: center;
+      inline-size: 28px;
+      block-size: 28px;
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      color: var(--text-muted);
+      font-family: var(--font-serif);
+      font-size: var(--text-sm);
+    }
+    .cast-row__name { display: flex; align-items: center; gap: var(--space-2); font-weight: 600; }
+    .cast-row__recs { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-block-start: var(--space-2); }
+    .rec {
+      display: inline-flex;
+      align-items: stretch;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .rec[data-picked="true"] { border-color: var(--accent); background: var(--accent-soft); }
+    .rec__pick {
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: var(--text-xs);
+      padding: 1px var(--space-3);
+      cursor: pointer;
+    }
+    .rec[data-picked="true"] .rec__pick { color: var(--accent); font-weight: 600; }
+    .rec__play {
+      border: 0;
+      border-inline-start: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-faint);
+      font-size: var(--text-xs);
+      padding: 0 var(--space-2);
+      cursor: pointer;
+      transition: color 140ms var(--ease-out), background-color 140ms var(--ease-out);
+    }
+    .rec__play:hover { background: var(--surface-2); color: var(--accent); }
+    .rec__play[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+    /* ============================================================ 通用页面骨架 */
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; margin-block-end: var(--space-4); }
+    .page-head h3 { margin: 0; font-size: var(--text-xl); }
+    .page-head p { margin: var(--space-1) 0 0; color: var(--text-muted); font-size: var(--text-sm); }
+    .page-head__actions { display: flex; align-items: center; gap: var(--space-2); }
+
+    .stat-row { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr)); margin-block-end: var(--space-4); }
+    .stat { padding: var(--space-3) var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+    .stat__num { font-family: var(--font-mono); font-size: var(--text-xl); font-variant-numeric: tabular-nums; line-height: 1.2; }
+    .stat__label { font-size: var(--text-xs); color: var(--text-faint); }
+    .stat[data-tone="accent"] .stat__num { color: var(--accent); }
+    .stat[data-tone="danger"] .stat__num { color: var(--danger); }
+
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+    .panel + .panel { margin-block-start: var(--space-4); }
+    .panel__bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-4); border-block-end: 1px solid var(--border); }
+    .panel__bar h4 { margin: 0; font-size: var(--text-base); }
+    .panel__bar .count { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .panel__bar .spacer { margin-inline-start: auto; }
+    .panel__body { padding: var(--space-3) var(--space-4); }
+    .panel > summary { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); cursor: pointer; list-style: none; font-size: var(--text-base); font-weight: 600; }
+    .panel > summary::-webkit-details-marker { display: none; }
+    .panel > summary::before { content: "▸"; color: var(--text-faint); }
+    .panel[open] > summary::before { content: "▾"; }
+
+    /* ============================================================ 任务中心 */
+    .list-head,
+    .job-row { display: grid; gap: var(--space-3); align-items: center; grid-template-columns: 4.75rem minmax(0, 1fr) minmax(0, 1.25fr) auto 5.5rem; }
+    .list-head { padding: var(--space-2) var(--space-4); font-size: var(--text-xs); color: var(--text-faint); letter-spacing: 0.06em; }
+    .job-row { padding: var(--space-3) var(--space-4); border-block-start: 1px solid var(--border); font-size: var(--text-sm); }
+    .job-row:first-of-type { border-block-start: 0; }
+    .job-row__id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .job-row__what { display: grid; gap: 2px; min-inline-size: 0; }
+    .job-row__kind { font-weight: 600; }
+    .job-row__meta { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .job-row__state { display: grid; gap: 4px; min-inline-size: 0; }
+    .job-row__status { display: flex; align-items: center; gap: var(--space-2); }
+    .job-row__act { display: flex; justify-content: flex-end; }
+    .job-row[data-status="failed"] .job-row__msg { color: var(--danger); font-size: var(--text-xs); }
+    .job-row[data-status="done"] { color: var(--text-muted); }
+
+    /* ============================================================ 异常清单 */
+    .banner { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-4); margin-block-end: var(--space-4); border: 1px solid transparent; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); font-size: var(--text-sm); }
+    .banner .spacer { margin-inline-start: auto; }
+    .chips-bar { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+    .chip { padding: 2px var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); color: var(--text-muted); font-family: var(--font-sans); font-size: var(--text-xs); cursor: pointer; transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out); }
+    .chip:hover { border-color: var(--border-strong); color: var(--text); }
+    .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .issue-row { position: relative; display: grid; gap: 6px; padding: var(--space-3) var(--space-4) var(--space-3) calc(var(--space-4) + 6px); border-block-start: 1px solid var(--border); }
+    .issue-row:first-of-type { border-block-start: 0; }
+    .issue-row::before { content: ""; position: absolute; inset-block: var(--space-3); inset-inline-start: 0; inline-size: 3px; border-radius: var(--radius-pill); background: var(--warn); }
+    .issue-row[data-severity="fail"]::before { background: var(--danger); }
+    .issue-row__head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .issue-row__reason { margin: 0; font-size: var(--text-sm); }
+    .issue-row__fallback { margin: 0; padding: var(--space-2) var(--space-3); border-inline-start: 2px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--surface-2); color: var(--text-muted); font-size: var(--text-xs); }
+    select.inline { inline-size: auto; min-inline-size: 11rem; }
+
+    /* ============================================================ 音色库 */
+    .upload { display: grid; gap: var(--space-4); grid-template-columns: 17rem minmax(0, 1fr); }
+    .dropzone--audio { display: grid; place-items: center; gap: var(--space-2); min-block-size: 10rem; padding: var(--space-4); text-align: center; border: 1px dashed var(--border-input); border-radius: var(--radius); background: var(--inset); color: var(--text-muted); font-size: var(--text-sm); }
+    .field-grid { display: grid; gap: 0 var(--space-3); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .field-grid .field { margin-block-end: var(--space-3); }
+    .field--wide { grid-column: 1 / -1; }
+    .voice-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); }
+    .voice-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-4) var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+    .voice-card__head { display: flex; align-items: center; gap: var(--space-2); }
+    .voice-card__name { font-family: var(--font-serif); font-size: var(--text-base); font-weight: 600; }
+    .voice-card__tags { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+    .voice-card__desc { margin: 0; color: var(--text-muted); font-size: var(--text-xs); line-height: 1.6; }
+    .voice-card__foot { display: flex; align-items: center; gap: var(--space-2); margin-block-start: auto; padding-block-start: var(--space-2); }
+    .voice-card__id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .player { display: flex; align-items: center; gap: var(--space-2); padding: 3px var(--space-2); background: var(--inset); border: 1px solid var(--border); border-radius: var(--radius-pill); }
+    .player__btn { display: grid; place-items: center; inline-size: 22px; block-size: 22px; border: 0; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 10px; cursor: pointer; }
+    .player__track { position: relative; flex: 1; block-size: 3px; border-radius: var(--radius-pill); background: var(--border); overflow: hidden; }
+    .player__fill { position: absolute; inset-block: 0; left: 0; background: var(--accent); }
+    .player__time { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .disabled-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); border-block-start: 1px solid var(--border); font-size: var(--text-sm); }
+    .disabled-row:first-of-type { border-block-start: 0; }
+
+    /* ============================================================ 设置 */
+    .settings-grid { display: grid; gap: var(--space-4); }
+    .setting-section { padding: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+    .setting-section > h3 { margin: 0 0 var(--space-1); font-size: var(--text-lg); }
+    .setting-section__note { margin: 0 0 var(--space-4); color: var(--text-muted); font-size: var(--text-sm); }
+    .field-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .status-panel { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-4); background: var(--inset); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .status-panel__meta { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px var(--space-3); border-radius: var(--radius-pill); font-size: var(--text-xs); }
+    .pill--ok { background: var(--ok-soft); color: var(--ok); }
+    .pill--idle { background: var(--surface-2); color: var(--text-muted); }
+    .pill--warn { background: var(--warn-soft); color: var(--warn); }
+    .pill__dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: currentColor; }
+    .log { margin: 0; padding: var(--space-3); max-block-size: 11rem; overflow: auto; background: var(--inset); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.75; color: var(--text-muted); white-space: pre-wrap; }
+    .log-details > summary { padding: var(--space-3) 0 0; cursor: pointer; color: var(--text-muted); font-size: var(--text-sm); }
+    .log-details[open] > summary { margin-block-end: var(--space-2); }
+
+    @media (max-width: 900px) {
+      .upload { grid-template-columns: minmax(0, 1fr); }
+      .list-head { display: none; }
+      .job-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .job-row__id,
+      .job-row__state { grid-column: 1 / -1; }
+      .field-grid,
+      .field-grid--3 { grid-template-columns: minmax(0, 1fr); }
+    }
+
+    /* ============================================================ 标本与色板 */
+    .row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+    .stack { display: grid; gap: var(--space-3); }
+    .spec__grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
+    .swatches { display: grid; gap: var(--space-2); grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }
+    .swatch { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+    .swatch__chip { inline-size: 36px; block-size: 36px; border-radius: var(--radius-sm); border: 1px solid var(--border); flex: none; }
+    .swatch__name { font-family: var(--font-mono); font-size: var(--text-xs); }
+    .swatch__use { font-size: var(--text-xs); color: var(--text-faint); }
+
+    .modal-demo { display: grid; place-items: center; padding: var(--space-5); background: var(--scrim); border-radius: var(--radius); }
+    .modal {
+      inline-size: min(26rem, 100%);
+      display: grid;
+      gap: var(--space-3);
+      padding: var(--space-5);
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-2);
+    }
+    .modal__actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+    .toast {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-4);
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-pill);
+      box-shadow: var(--shadow-2);
+      font-size: var(--text-sm);
+    }
+
+    code {
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--surface-2);
+      color: var(--text-muted);
+    }
+
+    @media (max-width: 1000px) {
+      .wb__body { grid-template-columns: minmax(0, 1fr); }
+      .wb__col + .wb__col { border-inline-start: 0; border-block-start: 1px solid var(--border); }
+      .import { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 760px) {
+      .rail { display: none; }
+      main { margin-inline-start: 0; }
+      .wb__bar { grid-template-columns: minmax(0, 1fr); }
+      .wb__actions { flex-wrap: wrap; }
+      .wb__steps { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true">声</span>
+      <span class="brand__name">AI 有声书</span>
+    </div>
+    <nav class="crumb" aria-label="面包屑">
+      <span>书架</span>
+      <span class="crumb__sep">/</span>
+      <span class="crumb__here">活着</span>
+    </nav>
+    <div class="masthead__tail">
+      <span class="status"><span class="status__dot" aria-hidden="true"></span><span class="mono">空闲</span></span>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="切换浅色主题" title="切换浅色主题">☾</button>
+    </div>
+  </header>
+
+  <nav class="rail" aria-label="主导航">
+    <a href="#shelf" aria-current="page"><span class="rail__mark">书</span><span>书架</span></a>
+    <a href="#jobs"><span class="rail__mark">刻</span><span>任务</span></a>
+    <a href="#issues"><span class="rail__mark">校</span><span>异常</span></a>
+    <a href="#voices"><span class="rail__mark">声</span><span>音色</span></a>
+    <a href="#settings"><span class="rail__mark">规</span><span>设置</span></a>
+  </nav>
+
+  <main>
+    <div class="wrap">
+      <section class="spec" id="top">
+        <div class="spec__head">
+          <h2>方案预览</h2>
+          <span class="tag tag--accent">双主题：纸 / 墨</span>
+        </div>
+        <p class="spec__note">
+          这是新界面的静态预览，用的就是将来要落到 <code>theme.css</code> 的那套语义 token。
+          右上角按钮切换深浅主题；第 ② 段是长书名在工作台顶栏里不再换行，
+          ③ 到 ⑥ 段是任务中心、异常清单、音色库、设置的重新设计，左侧导航可以直接跳过去。
+        </p>
+      </section>
+
+      <section class="spec" id="shelf">
+        <div class="spec__head">
+          <h2>① 书架</h2>
+          <span class="tag">原文 / epub 导入</span>
+        </div>
+        <p class="spec__note">
+          导入区收成一行：拖放区、书名、主按钮。书卡标题固定两行截断，完整书名走悬浮提示；
+          进度用一条 4px 细线表示，不再靠一堆并列标签堆信息。
+        </p>
+        <div class="spec__stage">
+          <div class="import">
+            <div class="field">
+              <label for="demo-file">书稿</label>
+              <div class="dropzone" id="demo-file">拖入 .txt / .epub，或<button class="btn btn--sm" type="button">选择文件</button></div>
+              <p class="field__hint">epub 会先抽成纯文本再分章，原文照旧保留在书页里。</p>
+            </div>
+            <div class="field">
+              <label for="demo-title">书名</label>
+              <input id="demo-title" type="text" placeholder="留空则用文件名…">
+              <p class="field__hint">可选</p>
+            </div>
+            <button class="btn btn--primary" type="button">导入并分章</button>
+          </div>
+
+          <div class="book-grid">
+            <article class="book-card">
+              <div class="book-card__top">
+                <h3 class="book-card__title" title="活着 (余华) (z-library.sk, 1lib.sk, z-lib.sk)">活着 (余华) (z-library.sk, 1lib.sk, z-lib.sk)</h3>
+                <span class="tag">待分析</span>
+              </div>
+              <div class="book-card__meta"><span>11 章</span><span>已分析 0/11</span><span>已生成 0/11</span></div>
+              <span class="progress" aria-label="进度 0/11"><span class="progress__track"><span class="progress__fill" style="width:0%"></span></span><span class="mono faint">0/11</span></span>
+              <div class="book-card__actions">
+                <button class="btn btn--sm btn--primary" type="button">打开</button>
+                <button class="btn btn--sm btn--danger" type="button">删除</button>
+              </div>
+            </article>
+
+            <article class="book-card">
+              <div class="book-card__top">
+                <h3 class="book-card__title" title="地球最后一个修仙者">地球最后一个修仙者</h3>
+                <span class="tag tag--accent">合成中</span>
+              </div>
+              <div class="book-card__meta"><span>9 章</span><span>已分析 9/9</span><span>已生成 8/9</span><span class="mono">24:13</span></div>
+              <span class="progress" aria-label="进度 8/9"><span class="progress__track"><span class="progress__fill" style="width:88%"></span></span><span class="mono faint">8/9</span></span>
+              <div class="book-card__actions">
+                <button class="btn btn--sm btn--primary" type="button">打开</button>
+                <button class="btn btn--sm btn--danger" type="button">删除</button>
+              </div>
+            </article>
+
+            <article class="book-card">
+              <div class="book-card__top">
+                <h3 class="book-card__title" title="仙子破道曲">仙子破道曲</h3>
+                <span class="tag tag--warn">异常 239 处</span>
+              </div>
+              <div class="book-card__meta"><span>154 章</span><span>已分析 24/154</span><span>已生成 0/154</span></div>
+              <span class="progress" aria-label="进度 24/154"><span class="progress__track"><span class="progress__fill" style="width:16%"></span></span><span class="mono faint">24/154</span></span>
+              <div class="book-card__actions">
+                <button class="btn btn--sm btn--primary" type="button">打开</button>
+                <button class="btn btn--sm btn--danger" type="button">删除</button>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="workbench">
+        <div class="spec__head">
+          <h2>② 工作台顶栏：长书名不再换行</h2>
+          <span class="tag tag--danger">修复项</span>
+        </div>
+        <p class="spec__note">
+          书名永远是单行 + 省略号（<code>min-inline-size: 0</code> + <code>text-overflow: ellipsis</code>），
+          顶栏自身不再 <code>flex-wrap</code>；动作区只留三个主按钮，其余收进「更多」。
+          窄屏时是「标题一行、动作一行」的显式布局，不靠折行碰运气。
+        </p>
+        <div class="spec__stage spec__stage--flush">
+          <div class="wb">
+            <div class="wb__bar">
+              <div class="wb__id">
+                <div class="wb__title">
+                  <span class="wb__slash">书架 /</span>
+                  <span class="wb__book" title="活着 (余华) (z-library.sk, 1lib.sk, z-lib.sk) 全本精校版 第 2 版">活着 (余华) (z-library.sk, 1lib.sk, z-lib.sk) 全本精校版 第 2 版</span>
+                  <span class="wb__chap">· 前言</span>
+                </div>
+                <div class="wb__steps">
+                  <span class="wb__step" data-state="current">分析台词</span>
+                  <span class="wb__step">生成音频</span>
+                  <span class="wb__step">导出成品</span>
+                </div>
+              </div>
+              <div class="wb__actions">
+                <button class="btn btn--sm" type="button" title="用大模型把本章拆成旁白与台词，并标注情绪">分析本章台词</button>
+                <button class="btn btn--sm" type="button" title="逐句合成本章音频，随后自动拼接">生成本章音频</button>
+                <button class="btn btn--sm btn--primary" type="button" title="合成整本并导出 wav / srt / mkv">导出整本成品</button>
+                <button class="btn btn--sm btn--ghost" type="button" aria-haspopup="menu" title="更多操作">更多 ▾</button>
+              </div>
+            </div>
+            <div class="wb__body">
+              <div class="wb__col">
+                <h4>章节 11</h4>
+                <button class="chapter-item" type="button" aria-current="true"><span class="chapter-item__no">0</span><span>前言</span><span class="mono faint">1765 字</span></button>
+                <button class="chapter-item" type="button"><span class="chapter-item__no">1</span><span>第一章</span><span class="mono faint">0 句</span></button>
+                <button class="chapter-item" type="button"><span class="chapter-item__no">2</span><span>第二章</span><span class="mono faint">0 句</span></button>
+                <button class="chapter-item" type="button"><span class="chapter-item__no">3</span><span>第三章</span><span class="mono faint">0 句</span></button>
+              </div>
+              <div class="wb__col">
+                <h4>角色文本 · 第 1 段</h4>
+                <div class="line">
+                  <span class="line__seq">001</span>
+                  <div>
+                    <span class="line__who"><span class="tag">旁白</span></span>
+                    <p class="line__text">我比现在年轻十岁的时候，获得了一个游手好闲的职业，去乡间收集民间歌谣。</p>
+                  </div>
+                </div>
+                <div class="line">
+                  <span class="line__seq">002</span>
+                  <div>
+                    <span class="line__who"><span class="tag tag--accent">福贵</span><span class="tag">亲切邻家</span></span>
+                    <p class="line__text">家珍，你把苦根抱过来，让他看看他爹。</p>
+                    <div class="line__tools">
+                      <span class="emo">悲 <span class="emo__bar"><span style="width:72%"></span></span><span class="mono">0.72</span></span>
+                      <span class="emo">平静 <span class="emo__bar"><span style="width:31%"></span></span><span class="mono">0.31</span></span>
+                      <button class="btn btn--sm btn--ghost" type="button" title="试听这一句">▶ 试听</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="line">
+                  <span class="line__seq">003</span>
+                  <div>
+                    <span class="line__who"><span class="tag tag--accent">家珍</span><span class="tag">优雅女设计师</span></span>
+                    <p class="line__text">你别说了，孩子还小。</p>
+                    <div class="line__tools">
+                      <span class="emo">忧 <span class="emo__bar"><span style="width:64%"></span></span><span class="mono">0.64</span></span>
+                      <button class="btn btn--sm btn--ghost" type="button" title="试听这一句">▶ 试听</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="wb__col">
+                <h4>角色音色 · 本章 3 人</h4>
+                <div class="cast-row">
+                  <span class="cast-row__avatar" aria-hidden="true">福</span>
+                  <div>
+                    <div class="cast-row__name">福贵 <span class="tag tag--ok">已选</span></div>
+                    <div class="cast-row__recs">
+                      <span class="rec" data-picked="true">
+                        <button class="rec__pick" type="button">亲切邻家 0.92</button>
+                        <button class="rec__play" type="button" aria-label="试听音色 亲切邻家" title="试听">▶</button>
+                      </span>
+                      <span class="rec">
+                        <button class="rec__pick" type="button">沉稳帝王 0.71</button>
+                        <button class="rec__play" type="button" aria-label="试听音色 沉稳帝王" title="试听">▶</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div class="cast-row">
+                  <span class="cast-row__avatar" aria-hidden="true">家</span>
+                  <div>
+                    <div class="cast-row__name">家珍</div>
+                    <div class="cast-row__recs">
+                      <span class="rec">
+                        <button class="rec__pick" type="button">优雅女设计师 0.88</button>
+                        <button class="rec__play" type="button" aria-label="试听音色 优雅女设计师" title="试听">▶</button>
+                      </span>
+                      <span class="rec">
+                        <button class="rec__pick" type="button">傲娇千金 0.55</button>
+                        <button class="rec__play" type="button" aria-label="试听音色 傲娇千金" title="试听">▶</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div class="cast-row">
+                  <span class="cast-row__avatar" aria-hidden="true">旁</span>
+                  <div>
+                    <div class="cast-row__name">旁白</div>
+                    <div class="cast-row__recs">
+                      <span class="rec" data-picked="true">
+                        <button class="rec__pick" type="button">沉稳叙述 0.95</button>
+                        <button class="rec__play" type="button" aria-label="试听音色 沉稳叙述" title="试听">▶</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="jobs">
+        <div class="spec__head">
+          <h2>③ 任务中心</h2>
+          <span class="tag">状态分组 + 列头</span>
+        </div>
+        <p class="spec__note">
+          四组任务按「运行中 → 排队中 → 失败 → 最近完成」排，顶部四个数字给总量，列表加列头：
+          任务号、对象、进度、状态各占一列。长错误信息只在自己那一列里折行，不再把别的字段挤变形。
+          功能不变：刷新、取消、重试、每组的空态提示都在。
+        </p>
+        <div class="spec__stage">
+          <div class="page-head">
+            <div>
+              <h3>任务中心</h3>
+              <p>长任务都在 worker 里跑；关掉浏览器不会中断。</p>
+            </div>
+            <div class="page-head__actions">
+              <button class="btn btn--sm" type="button">刷新</button>
+            </div>
+          </div>
+
+          <div class="stat-row">
+            <div class="stat" data-tone="accent"><div class="stat__num">1</div><div class="stat__label">运行中</div></div>
+            <div class="stat"><div class="stat__num">3</div><div class="stat__label">排队中</div></div>
+            <div class="stat" data-tone="danger"><div class="stat__num">2</div><div class="stat__label">失败</div></div>
+            <div class="stat"><div class="stat__num">8</div><div class="stat__label">最近完成</div></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__bar">
+              <h4>运行中</h4>
+              <span class="count">1</span>
+            </div>
+            <div class="list-head" aria-hidden="true">
+              <span>任务</span><span>对象</span><span>进度</span><span>状态</span><span></span>
+            </div>
+            <div class="job-row" data-status="running">
+              <span class="job-row__id">#1042</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">章节合成</span>
+                <span class="job-row__meta">1d3e01bf · 第 8 章</span>
+              </span>
+              <span class="job-row__state">
+                <span class="progress"><span class="progress__track"><span class="progress__fill" style="width:62%"></span></span><span class="mono faint">62/100</span></span>
+                <span class="job-row__meta">第 62 句 · 家珍｜悲 0.64</span>
+              </span>
+              <span class="job-row__status">
+                <span class="tag tag--accent">运行中 1/3</span>
+                <span class="job-row__meta">14:22</span>
+              </span>
+              <span class="job-row__act"><button class="btn btn--sm btn--danger" type="button">取消</button></span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__bar">
+              <h4>排队中</h4>
+              <span class="count">3</span>
+            </div>
+            <div class="job-row" data-status="queued">
+              <span class="job-row__id">#1043</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">逐句标注</span>
+                <span class="job-row__meta">8e0b910b · 第 42 章</span>
+              </span>
+              <span class="job-row__state"><span class="job-row__meta">等待 worker 空闲</span></span>
+              <span class="job-row__status">
+                <span class="tag">排队 0/3</span>
+                <span class="job-row__meta">14:22</span>
+              </span>
+              <span class="job-row__act"><button class="btn btn--sm btn--danger" type="button">取消</button></span>
+            </div>
+            <div class="job-row" data-status="queued">
+              <span class="job-row__id">#1044</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">整本导出</span>
+                <span class="job-row__meta">0e686403 · 全书</span>
+              </span>
+              <span class="job-row__state"><span class="job-row__meta">等待前一个合成任务</span></span>
+              <span class="job-row__status">
+                <span class="tag">排队 0/3</span>
+                <span class="job-row__meta">14:21</span>
+              </span>
+              <span class="job-row__act"><button class="btn btn--sm btn--danger" type="button">取消</button></span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__bar">
+              <h4>失败</h4>
+              <span class="count">2</span>
+            </div>
+            <div class="job-row" data-status="failed">
+              <span class="job-row__id">#1039</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">章节合成</span>
+                <span class="job-row__meta">1d3e01bf · 第 7 章</span>
+              </span>
+              <span class="job-row__state">
+                <span class="job-row__msg">tts_endpoint_down：8020 无响应，已重试 2 次</span>
+              </span>
+              <span class="job-row__status">
+                <span class="tag tag--danger">失败 2/3</span>
+                <span class="job-row__meta">13:51</span>
+              </span>
+              <span class="job-row__act"><button class="btn btn--sm" type="button">重试</button></span>
+            </div>
+            <div class="job-row" data-status="failed">
+              <span class="job-row__id">#1036</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">逐句标注</span>
+                <span class="job-row__meta">8e0b910b · 第 41 章</span>
+              </span>
+              <span class="job-row__state">
+                <span class="job-row__msg">chapter_window_failed：模型输出不是合法 JSON</span>
+              </span>
+              <span class="job-row__status">
+                <span class="tag tag--danger">失败 2/3</span>
+                <span class="job-row__meta">13:20</span>
+              </span>
+              <span class="job-row__act"><button class="btn btn--sm" type="button">重试</button></span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__bar">
+              <h4>最近完成</h4>
+              <span class="count">8</span>
+            </div>
+            <div class="job-row" data-status="done">
+              <span class="job-row__id">#1041</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">章节渲染</span>
+                <span class="job-row__meta">1d3e01bf · 第 6 章</span>
+              </span>
+              <span class="job-row__state"><span class="job-row__meta">已输出 12:04 · 312 句</span></span>
+              <span class="job-row__status">
+                <span class="tag">完成 1/1</span>
+                <span class="job-row__meta">14:02</span>
+              </span>
+              <span class="job-row__act"></span>
+            </div>
+            <div class="job-row" data-status="done">
+              <span class="job-row__id">#1040</span>
+              <span class="job-row__what">
+                <span class="job-row__kind">自动选角</span>
+                <span class="job-row__meta">8e0b910b · 第 12 章</span>
+              </span>
+              <span class="job-row__state"><span class="job-row__meta">7 个角色，命中 6 个音色</span></span>
+              <span class="job-row__status">
+                <span class="tag">完成 1/1</span>
+                <span class="job-row__meta">13:58</span>
+              </span>
+              <span class="job-row__act"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="issues">
+        <div class="spec__head">
+          <h2>④ 异常清单</h2>
+          <span class="tag">失败 / 降级 分色</span>
+        </div>
+        <p class="spec__note">
+          失败走朱砂、降级走赭黄，左侧 3px 色条一眼分辨严重度；筛选片带条数，批量重试按当前筛选重排队。
+          不属于降级记录的失败任务仍然单独提示，并给出「去任务中心重试」。
+        </p>
+        <div class="spec__stage">
+          <div class="page-head">
+            <div>
+              <h3>异常清单</h3>
+              <p>降级与失败都必须可见；批量重试会把相关章节重新排队。</p>
+            </div>
+            <div class="page-head__actions">
+              <select class="inline" aria-label="选择书">
+                <option>仙子破道曲</option>
+                <option>活着（余华）</option>
+              </select>
+              <a class="btn btn--sm btn--ghost" href="#jobs">任务中心</a>
+            </div>
+          </div>
+
+          <div class="banner">
+            <span>另有 2 个失败任务（不属于降级记录）：lines#8、post#3</span>
+            <span class="spacer"></span>
+            <a class="btn btn--sm" href="#jobs">去任务中心重试</a>
+          </div>
+
+          <div class="panel">
+            <div class="panel__bar">
+              <div class="chips-bar">
+                <button class="chip" type="button" aria-pressed="true">全部 12</button>
+                <button class="chip" type="button">分段分析失败 7</button>
+                <button class="chip" type="button">未知说话人 3</button>
+                <button class="chip" type="button">音色复用 2</button>
+              </div>
+              <span class="spacer"></span>
+              <button class="btn btn--sm" type="button">批量重试</button>
+            </div>
+
+            <div class="issue-row" data-severity="fail">
+              <div class="issue-row__head">
+                <span>09/29 15:44</span><span>分段分析失败</span><span>第 8 章</span><span>句 0012</span>
+              </div>
+              <p class="issue-row__reason">第 1/1 段提取失败：extract 趟分析连续 2 次失败</p>
+              <p class="issue-row__fallback">降级：这一段整段按旁白处理，原文保留，说话人与情绪丢失</p>
+            </div>
+            <div class="issue-row" data-severity="fail">
+              <div class="issue-row__head">
+                <span>09/29 15:31</span><span>合成失败</span><span>第 12 章</span><span>句 0087</span>
+              </div>
+              <p class="issue-row__reason">tts_line_failed：参考音频缺失，重试 2 次仍失败</p>
+            </div>
+            <div class="issue-row" data-severity="warn">
+              <div class="issue-row__head">
+                <span>09/29 15:12</span><span>未知说话人</span><span>第 41 章</span>
+              </div>
+              <p class="issue-row__reason">这一句没推断出说话人，已标为「未知」，可在书页里手动改</p>
+            </div>
+            <div class="issue-row" data-severity="warn">
+              <div class="issue-row__head">
+                <span>09/29 14:58</span><span>音色复用</span><span>全书</span>
+              </div>
+              <p class="issue-row__reason">「王胖子」与「胖子」判定为同一人，沿用同一个音色</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="voices">
+        <div class="spec__head">
+          <h2>⑤ 音色库</h2>
+          <span class="tag">上传 / 试听 / 停用</span>
+        </div>
+        <p class="spec__note">
+          上传区改成「左边丢音频、右边填元数据」，参考音频是第一等公民；卡片上的试听改成一条紧凑播放条；
+          停用区折叠在页面底部，随时可以启用回来。功能不变，仍然只有上传、试听、停用、启用四件事。
+        </p>
+        <div class="spec__stage">
+          <div class="page-head">
+            <div>
+              <h3>音色库</h3>
+              <p>可用 91 个 · 已停用 5 个；试听用的是参考音频。</p>
+            </div>
+            <div class="page-head__actions">
+              <a class="btn btn--sm btn--ghost" href="#settings">TTS 设置</a>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__bar">
+              <h4>上传新音色</h4>
+              <span class="count">参考音频 5 到 15 秒最稳</span>
+            </div>
+            <div class="panel__body">
+              <div class="upload">
+                <div class="dropzone--audio">
+                  <span>把参考音频拖到这里</span>
+                  <button class="btn btn--sm" type="button">选择文件</button>
+                  <span class="faint">wav / mp3 / m4a / flac / ogg，超过 60 秒会被拒</span>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="v-name">音色名称</label>
+                    <input id="v-name" type="text" placeholder="例如：低沉反派…">
+                  </div>
+                  <div class="field">
+                    <label for="v-gender">性别</label>
+                    <select id="v-gender"><option>不填</option><option>男</option><option>女</option><option>中性</option></select>
+                  </div>
+                  <div class="field">
+                    <label for="v-age">年龄</label>
+                    <select id="v-age"><option>不填</option><option>青年</option><option>中年</option></select>
+                  </div>
+                  <div class="field">
+                    <label for="v-rate">语速</label>
+                    <select id="v-rate"><option>不填</option><option>快</option><option>中</option><option>慢</option></select>
+                  </div>
+                  <div class="field">
+                    <label for="v-usage">用途</label>
+                    <select id="v-usage"><option>角色对话</option><option>播报解说</option><option>旁白</option></select>
+                  </div>
+                  <div class="field">
+                    <label for="v-tags">标签</label>
+                    <input id="v-tags" type="text" placeholder="磁性, 低沉, 反派…">
+                  </div>
+                  <div class="field field--wide">
+                    <label for="v-desc">介绍</label>
+                    <textarea id="v-desc" rows="2" placeholder="一句话介绍这个音色，用来给大模型推荐…"></textarea>
+                    <p class="field__hint">标签和介绍都会进大模型的音色清单，写清性格与题材更容易被推荐。</p>
+                  </div>
+                </div>
+              </div>
+              <div class="row" style="justify-content:flex-end">
+                <span class="faint" style="font-size:var(--text-xs)">上传后立刻可以在选音色里看到</span>
+                <button class="btn btn--primary" type="button">加入音色库</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="voice-grid" style="margin-block-start:var(--space-4)">
+            <article class="voice-card">
+              <div class="voice-card__head">
+                <span class="cast-row__avatar" aria-hidden="true">亲</span>
+                <span class="voice-card__name">亲切邻家</span>
+                <span class="tag">内置</span>
+              </div>
+              <div class="voice-card__tags">
+                <span class="tag">男</span><span class="tag">青年</span><span class="tag">中</span>
+                <span class="tag">随和</span><span class="tag">都市</span>
+              </div>
+              <p class="voice-card__desc">邻居大哥式的自然男声，适合日常对话与旁白。</p>
+              <span class="player" role="group" aria-label="试听 亲切邻家">
+                <button class="player__btn" type="button" aria-label="播放 亲切邻家">▶</button>
+                <span class="player__track"><span class="player__fill" style="width:24%"></span></span>
+                <span class="player__time">0:12</span>
+              </span>
+              <div class="voice-card__foot">
+                <span class="voice-card__id">v001</span>
+                <span class="spacer" style="margin-inline-start:auto"></span>
+                <button class="btn btn--sm btn--danger" type="button">停用</button>
+              </div>
+            </article>
+
+            <article class="voice-card">
+              <div class="voice-card__head">
+                <span class="cast-row__avatar" aria-hidden="true">优</span>
+                <span class="voice-card__name">优雅女设计师</span>
+                <span class="tag">内置</span>
+              </div>
+              <div class="voice-card__tags">
+                <span class="tag">女</span><span class="tag">青年</span><span class="tag">慢</span>
+                <span class="tag">慵懒</span><span class="tag">言情</span>
+              </div>
+              <p class="voice-card__desc">字尾轻收的都市女声，适合成年女性角色。</p>
+              <span class="player" role="group" aria-label="试听 优雅女设计师">
+                <button class="player__btn" type="button" aria-label="播放 优雅女设计师">▶</button>
+                <span class="player__track"><span class="player__fill" style="width:0%"></span></span>
+                <span class="player__time">0:09</span>
+              </span>
+              <div class="voice-card__foot">
+                <span class="voice-card__id">v017</span>
+                <span class="spacer" style="margin-inline-start:auto"></span>
+                <button class="btn btn--sm btn--danger" type="button">停用</button>
+              </div>
+            </article>
+
+            <article class="voice-card">
+              <div class="voice-card__head">
+                <span class="cast-row__avatar" aria-hidden="true">反</span>
+                <span class="voice-card__name">低沉反派</span>
+                <span class="tag tag--accent">上传</span>
+              </div>
+              <div class="voice-card__tags">
+                <span class="tag">男</span><span class="tag">中年</span><span class="tag">磁性</span>
+              </div>
+              <p class="voice-card__desc">胸腔共鸣重的反派声线，适合压迫感台词。</p>
+              <span class="player" role="group" aria-label="试听 低沉反派">
+                <button class="player__btn" type="button" aria-label="播放 低沉反派">▶</button>
+                <span class="player__track"><span class="player__fill" style="width:0%"></span></span>
+                <span class="player__time">0:11</span>
+              </span>
+              <div class="voice-card__foot">
+                <span class="voice-card__id">u003</span>
+                <span class="spacer" style="margin-inline-start:auto"></span>
+                <button class="btn btn--sm btn--danger" type="button">停用</button>
+              </div>
+            </article>
+          </div>
+
+          <details class="panel" style="margin-block-start:var(--space-4)">
+            <summary>已停用（5）</summary>
+            <p class="panel__body faint" style="font-size:var(--text-xs);margin:0">停用的音色不会被大模型推荐，也不会出现在选音色里；音频和标签都还在。</p>
+            <div class="disabled-row">
+              <span class="cast-row__avatar" aria-hidden="true">憨</span>
+              <span>憨厚壮汉</span>
+              <span class="mono faint">v028</span>
+              <button class="btn btn--sm" type="button">启用</button>
+            </div>
+            <div class="disabled-row">
+              <span class="cast-row__avatar" aria-hidden="true">沉</span>
+              <span>沉稳帝王</span>
+              <span class="mono faint">v039</span>
+              <button class="btn btn--sm" type="button">启用</button>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="spec" id="settings">
+        <div class="spec__head">
+          <h2>⑥ 设置</h2>
+          <span class="tag">LLM / TTS / 高级</span>
+        </div>
+        <p class="spec__note">
+          三段式：大模型、TTS 服务、高级。TTS 状态收成一块状态面板（状态药丸 + 地址 + 后端 + pid + 合成引擎），
+          启动与停止并排，日志折叠在下面保持最后 220 行。字段、提示、保存行为都不动。
+        </p>
+        <div class="spec__stage">
+          <div class="settings-grid">
+            <div class="page-head" style="margin-block-end:0">
+              <div>
+                <h3>设置</h3>
+                <p>改动写进 data/settings.json；worker 每轮任务前重读，不用重启。</p>
+              </div>
+              <div class="page-head__actions">
+                <button class="btn btn--primary" type="button">保存设置</button>
+              </div>
+            </div>
+            <p class="faint" style="font-size:var(--text-xs);margin:0">目前全部来自 .env / 环境变量；在界面上改过的项会写进 data/settings.json</p>
+
+            <section class="setting-section">
+              <h3>大模型（LLM）</h3>
+              <p class="setting-section__note">密钥只从项目根目录 .env 读，不回显、也不写进 settings.json。</p>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="s-llm-url">LLM 端点</label>
+                  <input id="s-llm-url" type="text" value="https://api.example.com/v1">
+                </div>
+                <div class="field">
+                  <label for="s-llm-model">模型</label>
+                  <input id="s-llm-model" type="text" value="deepseek-v3">
+                </div>
+                <div class="field">
+                  <label for="s-llm-temp">温度</label>
+                  <input id="s-llm-temp" type="text" value="0.3">
+                </div>
+                <div class="field">
+                  <label for="s-llm-conc">并发</label>
+                  <input id="s-llm-conc" type="text" value="8">
+                  <p class="field__hint">分析角色文本用；按你的额度给，8 到 16 稳。</p>
+                </div>
+              </div>
+              <div class="row">
+                <span class="tag tag--ok">密钥已配置</span>
+                <span class="faint" style="font-size:var(--text-xs)">密钥只从 .env 读，界面上改不了</span>
+              </div>
+            </section>
+
+            <section class="setting-section">
+              <h3>TTS 服务</h3>
+              <p class="setting-section__note">点一下，IndexTTS-2.5 就在本机独立进程里起来（和后端不共进程），合成引擎自动切过去。首次启动可能要等权重下载。</p>
+
+              <div class="status-panel">
+                <span class="pill pill--ok"><span class="pill__dot" aria-hidden="true"></span>运行中</span>
+                <span class="status-panel__meta">http://127.0.0.1:8020</span>
+                <span class="status-panel__meta">backend indextts</span>
+                <span class="status-panel__meta">pid 48213</span>
+                <span class="status-panel__meta">合成引擎 http</span>
+              </div>
+
+              <div class="row" style="margin-block:var(--space-3)">
+                <button class="btn btn--primary" type="button">一键启动 TTS 服务</button>
+                <button class="btn btn--danger" type="button">停止</button>
+                <span class="faint" style="font-size:var(--text-xs)">启动时会先按「模型来源」下载或校验权重，再加载模型；进度和报错都打在下面的运行日志里。</span>
+              </div>
+
+              <div class="field-grid field-grid--3">
+                <div class="field">
+                  <label for="s-backend">推理后端</label>
+                  <select id="s-backend"><option>indextts（IndexTTS-2.5）</option></select>
+                </div>
+                <div class="field">
+                  <label for="s-source">模型来源</label>
+                  <select id="s-source"><option>local（本地已有权重）</option><option>modelscope</option><option>huggingface</option></select>
+                </div>
+                <div class="field">
+                  <label for="s-dir">模型目录</label>
+                  <input id="s-dir" type="text" value="IndexTTS-2.5">
+                </div>
+                <div class="field">
+                  <label for="s-mirror">HF 镜像（可空）</label>
+                  <input id="s-mirror" type="text" placeholder="例如 https://hf-mirror.com…">
+                </div>
+                <div class="field">
+                  <label for="s-port">端口</label>
+                  <input id="s-port" type="text" value="8020">
+                </div>
+              </div>
+
+              <details class="log-details">
+                <summary>运行日志</summary>
+                <pre class="log">[14:02:11] loading IndexTTS-2.5 from local weights
+[14:02:19] BigVGAN ready (cuda:0, fp16)
+[14:02:19] warming up 3 synthesis workers
+[14:02:21] serving on http://127.0.0.1:8020</pre>
+              </details>
+            </section>
+
+            <details class="panel">
+              <summary>高级（一般不用动）</summary>
+              <div class="panel__body">
+                <p class="faint" style="font-size:var(--text-xs);margin:0 0 var(--space-3)">改完保存即可：worker 每轮任务前会重读设置，不用重启 worker。</p>
+                <div class="field-grid field-grid--3">
+                  <div class="field field--wide">
+                    <label for="s-endpoints">TTS 端点（一行一个）</label>
+                    <textarea id="s-endpoints" rows="2">http://127.0.0.1:8020</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="s-conc">合成并发</label>
+                    <input id="s-conc" type="text" value="3">
+                  </div>
+                  <div class="field">
+                    <label for="s-conc-max">并发上限</label>
+                    <input id="s-conc-max" type="text" value="3">
+                  </div>
+                </div>
+                <p class="faint" style="font-size:var(--text-xs);margin:0">ffmpeg 由项目自带；响度按有声书的稳妥默认值固定，不用你调。</p>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="controls">
+        <div class="spec__head">
+          <h2>⑦ 控件标本</h2>
+          <span class="tag">按压 / 悬停 / 焦点 / 禁用</span>
+        </div>
+        <p class="spec__note">
+          按钮按下有 0.98 缩放；悬停只改背景与描边；焦点环在两种主题下都按「底色 + 强调色」双环画，
+          在浅色底上也不会糊掉。所有动效 90 到 160ms，走 <code>--ease-out</code>。
+        </p>
+        <div class="spec__stage spec__grid">
+          <div class="stack">
+            <h3>按钮</h3>
+            <div class="row">
+              <button class="btn btn--primary" type="button">主操作</button>
+              <button class="btn" type="button">次操作</button>
+              <button class="btn btn--ghost" type="button">幽灵</button>
+              <button class="btn btn--danger" type="button">删除</button>
+              <button class="btn" type="button" disabled>禁用</button>
+            </div>
+          </div>
+          <div class="stack">
+            <h3>状态标签</h3>
+            <div class="row">
+              <span class="tag">待分析</span>
+              <span class="tag tag--accent">合成中</span>
+              <span class="tag tag--ok">已完成</span>
+              <span class="tag tag--warn">异常 7 处</span>
+              <span class="tag tag--danger">音色已停用</span>
+            </div>
+          </div>
+          <div class="stack">
+            <h3>表单</h3>
+            <div class="field">
+              <label for="demo-search">搜索音色</label>
+              <input id="demo-search" type="search" placeholder="名称、标签、用途…">
+              <p class="field__hint">输入框描边对底色的对比度在浅色 3.3:1、深色 3.0:1。</p>
+            </div>
+          </div>
+          <div class="stack">
+            <h3>进度</h3>
+            <span class="progress"><span class="progress__track"><span class="progress__fill" style="width:62%"></span></span><span class="mono faint">62%</span></span>
+            <div class="row"><span class="toast"><span class="tag tag--ok">完成</span>第 8 章音频已生成</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="modal">
+        <div class="spec__head">
+          <h2>⑧ 弹窗</h2>
+          <span class="tag">破坏性操作二次确认</span>
+        </div>
+        <p class="spec__note">遮罩统一走 <code>--scrim</code>，深色下是墨色、浅色下是暖灰；弹窗圆角与卡片同一档，不加额外装饰。</p>
+        <div class="spec__stage">
+          <div class="modal-demo">
+            <div class="modal" role="dialog" aria-modal="true" aria-label="删除这本书">
+              <h3>删除这本书？</h3>
+              <p class="muted">《活着》的章节、台词、音频与导出成品都会一起删除，无法撤销。</p>
+              <div class="modal__actions">
+                <button class="btn" type="button">取消</button>
+                <button class="btn btn--danger" type="button">删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="spec" id="tokens">
+        <div class="spec__head">
+          <h2>⑨ 色板</h2>
+          <span class="tag">当前主题</span>
+        </div>
+        <p class="spec__note">
+          强调色从「朱砂红」换成「校样蓝」：红只剩异常与删除，这样主操作和报错才区分得开。
+          正文对比度 16:1（深色 16.4:1），浅色下的次要文字 5.6:1，都过 WCAG AA。
+        </p>
+        <div class="swatches" id="swatches"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const root = document.documentElement;
+    const toggle = document.getElementById("theme-toggle");
+
+    function paintToggle() {
+      const dark = root.dataset.theme === "dark";
+      toggle.textContent = dark ? "☾" : "☀";
+      const next = dark ? "浅色" : "深色";
+      toggle.setAttribute("aria-label", `切换到${next}主题`);
+      toggle.title = `切换到${next}主题`;
+    }
+
+    toggle.addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("aiab-theme", root.dataset.theme); } catch (error) { /* 隐身模式 */ }
+      paintToggle();
+      paintSwatches();
+    });
+
+    const TOKENS = [
+      ["--bg", "页面底色"],
+      ["--surface", "面板 / 卡片"],
+      ["--surface-2", "悬停 / 次级面"],
+      ["--border", "分隔线"],
+      ["--text", "正文"],
+      ["--text-muted", "次要文字"],
+      ["--text-faint", "辅助文字"],
+      ["--accent", "主操作 / 当前项"],
+      ["--danger", "异常 / 删除"],
+      ["--ok", "完成"],
+      ["--warn", "等待 / 警告"],
+    ];
+
+    function paintSwatches() {
+      const host = document.getElementById("swatches");
+      const styles = getComputedStyle(root);
+      host.replaceChildren(...TOKENS.map(([name, use]) => {
+        const chip = document.createElement("span");
+        chip.className = "swatch__chip";
+        chip.style.background = `var(${name})`;
+        const text = document.createElement("span");
+        const code = document.createElement("span");
+        code.className = "swatch__name";
+        const value = styles.getPropertyValue(name).trim().toUpperCase();
+        code.textContent = `${name} ${value}`;
+        const label = document.createElement("span");
+        label.className = "swatch__use";
+        label.textContent = use;
+        text.append(code, document.createElement("br"), label);
+        const wrap = document.createElement("div");
+        wrap.className = "swatch";
+        wrap.append(chip, text);
+        return wrap;
+      }));
+    }
+
+    paintToggle();
+    paintSwatches();
+  </script>
+</body>
+</html>
