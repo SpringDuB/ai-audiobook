@@ -158,19 +158,22 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert workspace["consoleErrors"] == []
     assert workspace["view"] == "book"
     assert workspace["counts"]["chapterItems"] == 1
-    assert workspace["counts"]["lines"] == 2
     assert workspace["counts"]["castRows"] == 1
     assert workspace["counts"]["recChips"] == 2   # 推荐音色直接排在角色行上
-    assert workspace["counts"]["seals"] >= 2
-    assert "第一句。" in workspace["text"]
     assert "角色音色" in workspace["text"]
     assert "推荐" in workspace["text"]
+    # 默认停在「原文」页签：进书先看干净原文，不再直接甩出角色文本
+    assert workspace["counts"]["rawParagraphs"] >= 1
+    assert workspace["counts"]["lines"] == 0
+    assert "第一句。" in workspace["text"]
 
-    # 切到「原文」页签，原文要能直接看
-    raw = _probe(f"{served}/#/book/{book_id}", tmp_path / "raw", extra=("--click=.script__tools .tab:nth-child(2)",))
-    assert raw["consoleErrors"] == []
-    assert raw["counts"]["lines"] == 0
-    assert raw["counts"]["rawParagraphs"] >= 1
+    # 切到「角色文本」页签，逐句标注要能直接看
+    script = _probe(f"{served}/#/book/{book_id}", tmp_path / "script", extra=("--click=.script__tools .tab:nth-child(2)",))
+    assert script["consoleErrors"] == []
+    assert script["counts"]["lines"] == 2
+    assert script["counts"]["seals"] >= 2   # 每句一枚钤印，只有角色文本里才有
+    assert script["counts"]["rawParagraphs"] == 0
+    assert "第一句。" in script["text"]
 
 
 def test_workspace_voice_picker_lists_categories(served, settings, narrator_lines, tmp_path):

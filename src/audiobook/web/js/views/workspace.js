@@ -15,9 +15,10 @@ const DELIVERIES = [
   ["sneer", "冷笑"],
 ];
 
+// 页签顺序就是显示顺序：默认停在「原文」，想看逐句标注再切「角色文本」
 const TAB_LABELS = {
-  lines: "角色文本",
   text: "原文",
+  lines: "角色文本",
 };
 
 function short(id) {
@@ -345,7 +346,7 @@ async function build(route, host) {
     title: bookPayload.book?.title || short(bookId),
     casting: castingPayload.roles || [],
     index: pickIndex(route, chapters),
-    tab: "lines",
+    tab: "text",
     scope: "chapter",
     chapter: null,
   };
