@@ -1,6 +1,7 @@
 import { store } from "./store.js";
 import { parseHash, startRouter } from "./router.js";
 import { errorState, h, runTeardowns } from "./ui.js";
+import { icon } from "./icons.js";
 import * as shelf from "./views/shelf.js";
 import * as workspace from "./views/workspace.js";
 import * as jobs from "./views/jobs.js";
@@ -26,7 +27,7 @@ function paintTheme() {
   const theme = currentTheme();
   if (themeButton) {
     const next = theme === "dark" ? "浅色" : "深色";
-    themeButton.textContent = theme === "dark" ? "☾" : "☀";
+    themeButton.replaceChildren(icon(theme === "dark" ? "moon" : "sun", { size: 17 }));
     themeButton.setAttribute("aria-label", `切换到${next}主题`);
     themeButton.title = `切换到${next}主题`;
   }

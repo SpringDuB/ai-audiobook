@@ -30,6 +30,7 @@ def test_static_assets_are_offline_only(settings):
         "/static/js/store.js",
         "/static/js/router.js",
         "/static/js/ui.js",
+        "/static/js/icons.js",
         "/static/js/format.js",
         "/static/favicon.svg",
     ):
@@ -44,6 +45,12 @@ def test_static_assets_are_offline_only(settings):
     assert "--accent:" in theme and "--danger:" in theme
     # 颜色只在 theme.css 的 token 层出现，页面样式里不许写裸色值
     assert re.search(r"#[0-9a-fA-F]{3,8}\b", client.get("/static/app.css").text) is None
+
+    # 图标是内联的 SVG，不走 CDN / 雪碧图
+    icons = client.get("/static/js/icons.js").text
+    assert "fetch(" not in icons and "url(" not in icons and "<img" not in icons
+    assert "createElementNS" in icons and "currentColor" in icons and "viewBox" in icons
+    assert "Lucide" in icons                     # 保留上游版权声明
 
 
 def test_view_modules_are_served(settings):

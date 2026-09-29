@@ -3,6 +3,7 @@
 
 import { api } from "../api.js";
 import { duration } from "../format.js";
+import { icon } from "../icons.js";
 import { store } from "../store.js";
 import { closeVoicePicker, loadVoices, openVoicePicker } from "../voicepicker.js";
 import { chapterPickerDialog, emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
@@ -181,7 +182,8 @@ function lineRow(line, ctx) {
       title: line.has_audio ? "试听这句" : "这句还没合成",
       onClick: () => ctx.play(line, playButton),
     },
-    line.has_audio ? "▶ 试听" : "未合成",
+    icon("play", { size: 12 }),
+    line.has_audio ? "试听" : "未合成",
   );
   const renderRead = () => {
     body.replaceChildren(
@@ -191,7 +193,7 @@ function lineRow(line, ctx) {
         "div",
         { class: "line__tools" },
         playButton,
-        h("button", { class: "btn btn-sm", type: "button", onClick: () => renderEdit() }, "编辑"),
+        h("button", { class: "btn btn-sm", type: "button", onClick: () => renderEdit() }, icon("pencil", { size: 12 }), "编辑"),
         h(
           "button",
           {
@@ -209,6 +211,7 @@ function lineRow(line, ctx) {
               }
             },
           },
+          icon("rotate-ccw", { size: 12 }),
           "重生成",
         ),
       ),
@@ -307,7 +310,7 @@ function roleRow(role, scope, ctx) {
                     "aria-label": `试听 ${item.voice_name || item.voice_id}`,
                     onClick: (event) => ctx.preview(item.voice_id, event.currentTarget),
                   },
-                  "▶",
+                  icon("play", { size: 12 }),
                 ),
               );
             }),
@@ -321,6 +324,7 @@ function roleRow(role, scope, ctx) {
         type: "button",
         onClick: (event) => ctx.pick(role, event.currentTarget),
       },
+      icon("mic", { size: 12 }),
       "换音色",
     ),
   );
@@ -389,7 +393,7 @@ async function build(route, host) {
   const resetPreviewButtons = () => {
     document.querySelectorAll(".rec-play[data-playing='1']").forEach((node) => {
       node.dataset.playing = "0";
-      node.textContent = "▶";
+      node.replaceChildren(icon("play", { size: 12 }));
     });
   };
   const previewVoice = (voiceId, button) => {
@@ -407,7 +411,7 @@ async function build(route, host) {
     previewAudio.src = voice.sample_url;
     previewAudio.play().catch(() => toast("浏览器拦住了播放，再点一次", "error"));
     button.dataset.playing = "1";
-    button.textContent = "■";
+    button.replaceChildren(icon("square", { size: 12 }));
   };
   previewAudio.addEventListener("ended", resetPreviewButtons);
   onTeardown(() => {
@@ -438,6 +442,11 @@ async function build(route, host) {
   const castTabs = h("div", { class: "tabs tabs--sm" });
   const scriptTabs = h("div", { class: "tabs", role: "tablist" });
   const progress = h("span", { class: "workbench__progress mono", dataset: { book: bookId } }, "");
+  // 逐句试听按钮的两种状态：▶ 试听 / ■ 停止
+  const setPlayLabel = (button, playing) => {
+    button.replaceChildren(icon(playing ? "square" : "play", { size: 12 }), playing ? "停止" : "试听");
+  };
+
   const audio = new Audio();
   audio.preload = "none";
   onTeardown(() => {
@@ -449,18 +458,18 @@ async function build(route, host) {
     if (!line.has_audio) return;
     if (audio.dataset.lineId === line.id && !audio.paused) {
       audio.pause();
-      button.textContent = "▶ 试听";
+      setPlayLabel(button, false);
       return;
     }
     audio.dataset.lineId = line.id;
     audio.src = line.audio_url;
     audio.play().then(() => {
-      button.textContent = "■ 停止";
+      setPlayLabel(button, true);
     }).catch(() => toast("浏览器拦住了播放，再点一次", "error"));
   };
   audio.addEventListener("ended", () => {
     const row = scriptBody.querySelector(`[data-line-id="${audio.dataset.lineId}"] .line__tools .btn`);
-    if (row) row.textContent = "▶ 试听";
+    if (row) setPlayLabel(row, false);
   });
 
   /* --- 选角 --- */
@@ -717,7 +726,7 @@ async function build(route, host) {
 
   /* --- 顶部工具条 --- */
 
-  const action = (label, fn, { primary = false, title = "", menu = false } = {}) =>
+  const action = (label, fn, { primary = false, title = "", menu = false, glyph = "" } = {}) =>
     h(
       "button",
       {
@@ -737,6 +746,7 @@ async function build(route, host) {
           }
         },
       },
+      glyph ? icon(glyph, { size: 14 }) : null,
       label,
     );
 
@@ -755,6 +765,7 @@ async function build(route, host) {
     },
     {
       menu: true,
+      glyph: "folder-open",
       title: "在系统文件管理器里打开 output/：整本 wav / srt / mkv、分章文件与播放列表都在里面",
     },
   );
@@ -769,7 +780,7 @@ async function build(route, host) {
   const more = h(
     "details",
     { class: "workbench__more" },
-    h("summary", { title: "导出成品、打开成果文件夹、重新拼接本章、异常清单" }, "更多 ▾"),
+    h("summary", { title: "导出成品、打开成果文件夹、重新拼接本章、异常清单" }, "更多", icon("ellipsis", { size: 14 })),
     h(
       "div",
       { class: "menu", role: "menu" },
@@ -779,7 +790,11 @@ async function build(route, host) {
           await api.exportBook(bookId, { mode: "all" });
           toast("已入队整本导出；跑完可以在「更多 ▾」里打开成果文件夹");
         },
-        { menu: true, title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/" },
+        {
+          menu: true,
+          glyph: "package",
+          title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/",
+        },
       ),
       openFolder,
       action(
@@ -789,11 +804,16 @@ async function build(route, host) {
           toast("已入队本章重渲染");
           await refreshChapters();
         },
-        { menu: true, title: "不重新跑 TTS：只把本章已有的逐句音频重新拼接、对齐字幕、做响度归一" },
+        {
+          menu: true,
+          glyph: "refresh-cw",
+          title: "不重新跑 TTS：只把本章已有的逐句音频重新拼接、对齐字幕、做响度归一",
+        },
       ),
       h(
         "a",
         { class: "menu__item", href: `#/book/${bookId}/issues`, title: "降级与失败记录，可按类型批量重试" },
+        icon("triangle-alert", { size: 14 }),
         "异常清单",
       ),
     ),
@@ -825,9 +845,11 @@ async function build(route, host) {
       "div",
       { class: "workbench__actions" },
       action("分析本章台词", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析"), {
+        glyph: "scan-text",
         title: "只重跑当前这一章的逐句标注（谁说的 + 什么情绪），其他章不动；已人工改过的这一章会被覆盖",
       }),
       action("生成本章音频", async () => queued(await api.generateChapter(bookId, state.index), "本章合成"), {
+        glyph: "file-audio",
         title: "只合成当前这一章：逐句 TTS → 拼接出本章音频与字幕，其他章不动",
       }),
       action(
@@ -849,11 +871,13 @@ async function build(route, host) {
           await refreshChapters();
         },
         {
+          glyph: "book-open-text",
           title: "整本重跑逐句标注，并重推角色音色（新称呼会并进角色表）；弹窗里可以只勾几章返工",
         },
       ),
       action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
         primary: true,
+        glyph: "headphones",
         title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
       }),
       more,
@@ -879,6 +903,7 @@ async function build(route, host) {
           h(
             "button",
             { class: "btn btn-sm btn-ghost", type: "button", onClick: () => refreshChapters() },
+            icon("refresh-cw", { size: 12 }),
             "刷新",
           ),
         ),
@@ -899,8 +924,8 @@ async function build(route, host) {
         h(
           "p",
           { class: "cast__foot muted" },
-          "点推荐音色直接选中，点 ▶ 先试听这段参考音频；换完的章节要重新生成才生效。",
-          h("a", { class: "row", href: "#/voices" }, "去音色库上传 / 停用音色 →"),
+          "点推荐音色直接选中，点试听按钮先听这段参考音频；换完的章节要重新生成才生效。",
+          h("a", { class: "row", href: "#/voices" }, icon("audio-lines", { size: 12 }), "去音色库上传 / 停用音色"),
         ),
       ),
     ),

@@ -94,7 +94,7 @@
 }
 .rail a:hover { background: var(--surface-2); color: var(--text); }
 .rail a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.rail__mark { font-family: var(--font-serif); font-size: var(--text-lg); line-height: 1.25; }
+.rail__icon { display: flex; align-items: center; justify-content: center; block-size: 22px; }
 
 #main {
   padding: var(--space-5) var(--space-6) var(--space-8);
@@ -414,6 +414,9 @@
 .chip__num { color: var(--text-faint); }
 .rec-chip { display: inline-flex; align-items: stretch; }
 .rec-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-inline-start: var(--line);
   background: transparent;

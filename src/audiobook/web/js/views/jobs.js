@@ -3,6 +3,7 @@
 
 import { api } from "../api.js";
 import { clock, jobStateLabel, kindLabel, shortId } from "../format.js";
+import { icon } from "../icons.js";
 import { h, progressBar, renderWithState, toast } from "../ui.js";
 
 const COLUMNS = ["任务", "对象", "进度", "状态", ""];
@@ -36,6 +37,7 @@ function jobRow(job, refresh) {
             }
           },
         },
+        icon("x", { size: 12 }),
         "取消",
       ),
     );
@@ -58,6 +60,7 @@ function jobRow(job, refresh) {
             }
           },
         },
+        icon("rotate-ccw", { size: 12 }),
         "重试",
       ),
     );
@@ -148,7 +151,11 @@ async function build(host) {
         h("h1", { class: "letterpress" }, "任务中心"),
         h("p", { class: "muted" }, "长任务都在 worker 里跑；关掉浏览器不会中断。"),
       ),
-      h("div", { class: "page-head__actions" }, h("button", { class: "btn", type: "button", onClick: refresh }, "刷新")),
+      h(
+        "div",
+        { class: "page-head__actions" },
+        h("button", { class: "btn", type: "button", onClick: refresh }, icon("refresh-cw", { size: 14 }), "刷新"),
+      ),
     ),
     h(
       "div",

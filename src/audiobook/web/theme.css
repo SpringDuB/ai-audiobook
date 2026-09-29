@@ -187,6 +187,9 @@ a:hover { color: var(--accent); }
   font-size: var(--text-sm);
 }
 
+/* 图标：内联 SVG（Lucide），颜色与线宽都跟随文字 */
+.icon { flex: none; vertical-align: -0.15em; }
+
 :focus-visible {
   outline: none;
   box-shadow: var(--focus);

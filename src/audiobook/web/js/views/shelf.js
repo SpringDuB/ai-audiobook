@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { duration, stateLabel } from "../format.js";
+import { icon } from "../icons.js";
 import { confirmDialog, emptyState, h, renderWithState, toast } from "../ui.js";
 
 function statText(stats) {
@@ -39,6 +40,7 @@ function bookCard(book, refresh) {
         }
       },
     },
+    icon("trash-2", { size: 13 }),
     "删除",
   );
   return h(
@@ -72,7 +74,7 @@ function bookCard(book, refresh) {
     h(
       "div",
       { class: "book-card__actions" },
-      h("a", { class: "btn btn-primary", href: open }, "打开"),
+      h("a", { class: "btn btn-primary", href: open }, icon("book-open", { size: 13 }), "打开"),
       remove,
     ),
   );
@@ -93,12 +95,12 @@ function importForm(refresh) {
   const picker = h(
     "label",
     { class: "filepick", for: "import-file" },
-    h("span", { class: "btn btn-sm" }, "选择文件"),
+    h("span", { class: "btn btn-sm" }, icon("upload", { size: 12 }), "选择文件"),
     fileName,
     file,
   );
   const title = h("input", { type: "text", placeholder: "书名（可选，默认用文件名）" });
-  const submit = h("button", { class: "btn btn-primary", type: "submit" }, "导入并分章");
+  const submit = h("button", { class: "btn btn-primary", type: "submit" }, icon("upload", { size: 14 }), "导入并分章");
   const form = h(
     "form",
     {
@@ -154,7 +156,12 @@ async function build(host) {
         h("h1", { class: "letterpress" }, "书架"),
         h("p", { class: "muted" }, "导入书稿（txt / epub）→ 打开书页分析台词 → 生成音频 → 导出成品。"),
       ),
-      h("div", { class: "page-head__actions" }, h("a", { class: "btn", href: "#/jobs" }, "任务中心"), h("a", { class: "btn btn-ghost", href: "#/settings" }, "设置")),
+      h(
+        "div",
+        { class: "page-head__actions" },
+        h("a", { class: "btn", href: "#/jobs" }, icon("list-checks", { size: 14 }), "任务中心"),
+        h("a", { class: "btn btn-ghost", href: "#/settings" }, icon("settings", { size: 14 }), "设置"),
+      ),
     ),
     importForm(refresh),
   );

@@ -2,6 +2,7 @@
 // 书架、音色库、选角面板共用这一份。
 
 import { api } from "./api.js";
+import { icon } from "./icons.js";
 import { h, toast } from "./ui.js";
 
 let library = null;
@@ -111,7 +112,7 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
     if (playing === voice.id) {
       audio.pause();
       playing = null;
-      button.textContent = "试听";
+      button.replaceChildren(icon("play", { size: 12 }), "试听");
       return;
     }
     if (!voice.has_ref) {
@@ -121,7 +122,7 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
     audio.src = voice.sample_url;
     audio.play().catch(() => toast("浏览器拦住了播放，再点一次", "error"));
     playing = voice.id;
-    button.textContent = "停止";
+    button.replaceChildren(icon("square", { size: 12 }), "停止");
   };
 
   const voiceRow = (voice) => {
@@ -170,6 +171,7 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
             type: "button",
             onClick: (event) => play(voice, event.currentTarget),
           },
+          icon("play", { size: 12 }),
           "试听",
         ),
       ),
@@ -225,7 +227,12 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
       "header",
       { class: "picker__head" },
       h("h3", { class: "letterpress" }, roleName ? `给「${roleName}」选音色` : "选择音色"),
-      h("button", { class: "btn btn-sm btn-ghost", type: "button", onClick: closeVoicePicker }, "关闭"),
+      h(
+        "button",
+        { class: "btn btn-sm btn-ghost", type: "button", onClick: closeVoicePicker },
+        icon("x", { size: 12 }),
+        "关闭",
+      ),
     ),
     h("div", { class: "picker__search" }, search),
     facetHolder,
@@ -233,7 +240,12 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
     h(
       "div",
       { class: "picker__foot" },
-      h("a", { href: "#/voices", onClick: closeVoicePicker }, "去音色库上传 / 停用音色 →"),
+      h(
+        "a",
+        { href: "#/voices", onClick: closeVoicePicker },
+        icon("audio-lines", { size: 12 }),
+        "去音色库上传 / 停用音色",
+      ),
     ),
   );
   const backdrop = h("div", {

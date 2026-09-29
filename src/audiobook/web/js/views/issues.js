@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { clock, issueKindLabel, shortId } from "../format.js";
+import { icon } from "../icons.js";
 import { emptyState, h, renderWithState, toast } from "../ui.js";
 
 const FAIL_KINDS = new Set([
@@ -52,7 +53,12 @@ async function build(route, host) {
       "div",
       { class: "page-head" },
       h("div", { class: "page-head__title" }, h("h1", { class: "letterpress" }, "异常清单"), h("p", { class: "muted" }, "降级与失败都必须可见；批量重试会把相关章节重新排队。")),
-      h("div", { class: "page-head__actions" }, books.length ? picker : null, h("a", { class: "btn btn-ghost", href: "#/jobs" }, "任务中心")),
+      h(
+        "div",
+        { class: "page-head__actions" },
+        books.length ? picker : null,
+        h("a", { class: "btn btn-ghost", href: "#/jobs" }, icon("list-checks", { size: 14 }), "任务中心"),
+      ),
     ),
   );
   if (!bookId) {
@@ -78,7 +84,7 @@ async function build(route, host) {
           failedJobs.length > 6 ? " …" : "",
         ),
         h("span", { class: "spacer" }),
-        h("a", { class: "btn btn-sm", href: "#/jobs" }, "去任务中心重试"),
+        h("a", { class: "btn btn-sm", href: "#/jobs" }, icon("list-checks", { size: 12 }), "去任务中心重试"),
       ),
     );
   }
@@ -153,6 +159,7 @@ async function build(route, host) {
               }
             },
           },
+          icon("rotate-ccw", { size: 12 }),
           "批量重试",
         ),
       ),

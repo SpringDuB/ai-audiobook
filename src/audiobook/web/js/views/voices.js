@@ -3,6 +3,7 @@
 
 import { api } from "../api.js";
 import { duration } from "../format.js";
+import { icon } from "../icons.js";
 import { emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
 import { loadVoices } from "../voicepicker.js";
 
@@ -18,7 +19,7 @@ const preview = { audio: null, ui: null };
 function resetPreview() {
   const ui = preview.ui;
   if (ui) {
-    ui.button.textContent = "▶";
+    ui.button.replaceChildren(icon("play", { size: 11 }));
     ui.fill.style.width = "0%";
   }
   preview.ui = null;
@@ -52,7 +53,7 @@ function playVoice(voice, ui) {
   audio
     .play()
     .then(() => {
-      ui.button.textContent = "■";
+      ui.button.replaceChildren(icon("pause", { size: 11 }));
     })
     .catch(() => {
       resetPreview();
@@ -66,7 +67,7 @@ function playerFor(voice) {
   const button = h(
     "button",
     { class: "player__btn", type: "button", "aria-label": `试听 ${voice.name}` },
-    "▶",
+    icon("play", { size: 11 }),
   );
   button.addEventListener("click", () => playVoice(voice, { button, fill, time }));
   return h(
@@ -116,7 +117,7 @@ function uploadForm(refresh) {
     rows: 2,
     placeholder: "一句话介绍这个音色，用来给大模型推荐…",
   });
-  const submit = h("button", { class: "btn btn-primary", type: "submit" }, "加入音色库");
+  const submit = h("button", { class: "btn btn-primary", type: "submit" }, icon("plus", { size: 14 }), "加入音色库");
 
   return h(
     "form",
@@ -171,7 +172,7 @@ function uploadForm(refresh) {
           "label",
           { class: "dropzone--audio", for: "voice-file" },
           h("span", {}, "把参考音频拖到这里"),
-          h("span", { class: "btn btn-sm" }, "选择文件"),
+          h("span", { class: "btn btn-sm" }, icon("upload", { size: 12 }), "选择文件"),
           h("span", { class: "field__hint" }, "wav / mp3 / m4a / flac / ogg，超过 60 秒会被拒"),
           file,
         ),
@@ -227,6 +228,7 @@ function voiceCard(voice, refresh) {
         }
       },
     },
+    icon("archive", { size: 12 }),
     "停用",
   );
   return h(
@@ -294,6 +296,7 @@ function disabledSection(voices, refresh) {
               }
             },
           },
+          icon("rotate-ccw", { size: 12 }),
           "启用",
         ),
       ),
@@ -332,7 +335,7 @@ async function build(host) {
       h(
         "div",
         { class: "page-head__actions" },
-        h("a", { class: "btn btn-ghost", href: "#/settings" }, "TTS 设置"),
+        h("a", { class: "btn btn-ghost", href: "#/settings" }, icon("settings", { size: 14 }), "TTS 设置"),
       ),
     ),
     uploadForm(refresh),

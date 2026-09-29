@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { icon } from "../icons.js";
 import { h, onTeardown, renderWithState, toast } from "../ui.js";
 
 const LLM_FIELDS = [
@@ -169,6 +170,7 @@ async function build() {
         }
       },
     },
+    icon("play", { size: 14 }),
     "一键启动 TTS 服务",
   );
   const stopButton = h(
@@ -191,6 +193,7 @@ async function build() {
         }
       },
     },
+    icon("square", { size: 12 }),
     "停止",
   );
 
@@ -256,6 +259,7 @@ async function build() {
         }
       },
     },
+    icon("check", { size: 14 }),
     "保存设置",
   );
 

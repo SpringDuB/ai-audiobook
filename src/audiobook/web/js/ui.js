@@ -1,3 +1,5 @@
+import { icon } from "./icons.js";
+
 export function h(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {
@@ -114,6 +116,7 @@ export function confirmDialog({ title, message, confirmLabel = "确定", cancelL
     const confirm = h(
       "button",
       { class: `btn ${danger ? "btn-danger" : "btn-primary"}`, type: "button", onClick: () => finish(true) },
+      icon(danger ? "trash-2" : "check", { size: 13 }),
       confirmLabel,
     );
     const panel = h(
