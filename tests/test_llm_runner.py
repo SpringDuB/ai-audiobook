@@ -95,18 +95,35 @@ class _Disconnected:
         raise LLMDisconnected("LLM 连接被掐断: Server disconnected", duration_ms=self.duration_ms)
 
 
-def test_disconnect_lowers_limiter_and_logs_duration(settings):
+def test_disconnect_pauses_without_lowering_limit_and_logs_duration(settings):
     llm = _Disconnected()
-    limiter = AdaptiveLimiter(max_concurrency=8, cooldown_seconds=0.0)
+    limiter = AdaptiveLimiter(max_concurrency=8, cooldown_seconds=0.0, soft_cooldown_seconds=0.0)
     runner = LlmJsonRunner(llm, limiter, settings, max_attempts=1)
 
     with pytest.raises(LlmJsonError):
         runner.run(system="s", user="【PASS_D】正文", model_cls=Demo, pass_name="D", book_id="b4")
 
-    assert limiter.limit == 4  # 断连按"并发太高"处理，降一档
+    # 单次断连只是链路抖动：停顿一下重试，不把整个池子的并发打下来
+    assert limiter.limit == 8
+    assert limiter.stats()["soft_failures"] == 1
     row = store.read_jsonl(store.llm_log_path(settings, "b4"))[0]
     assert "LLMDisconnected" in row["error"]
     assert row["duration_ms"] == 60123  # 失败也要记时长，别再是 0ms
+
+
+def test_repeated_disconnects_escalate_to_a_real_downgrade(settings, monkeypatch):
+    """连续断连（没有一次成功）说明不是偶发抖动：第 3 次起按限流处理，降一档。"""
+    monkeypatch.setattr("audiobook.llm.runner.time.sleep", lambda seconds: None)
+    llm = _Disconnected()
+    limiter = AdaptiveLimiter(
+        max_concurrency=8, cooldown_seconds=0.0, soft_cooldown_seconds=0.0, soft_escalate_after=3
+    )
+    runner = LlmJsonRunner(llm, limiter, settings, max_attempts=3)
+
+    with pytest.raises(LlmJsonError):
+        runner.run(system="s", user="【PASS_E】正文", model_cls=Demo, pass_name="E", book_id="b5")
+
+    assert limiter.limit == 4
 
 
 def test_disconnect_retries_with_jittered_backoff(settings, monkeypatch):

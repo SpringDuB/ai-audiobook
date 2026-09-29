@@ -36,6 +36,7 @@ export function stateLabel(state) {
 const KIND_LABELS = {
   chapter_split: "分章",
   characters: "角色分析",
+  chapters: "多章分析",
   lines: "逐句标注",
   casting: "自动选角",
   synthesize: "章节合成",

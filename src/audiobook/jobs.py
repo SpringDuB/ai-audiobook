@@ -21,6 +21,8 @@ class Job:
     error: str | None = None
     created_at: int = 0
     updated_at: int = 0
+    # 任务参数（如批量分析的章节清单）；progress 是执行中的进度，会被覆盖，别把参数塞那里
+    payload: dict | None = None
 
 
 def _row_to_job(row: sqlite3.Row) -> Job:
@@ -36,6 +38,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         error=row["error"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        payload=json.loads(row["payload"]) if row["payload"] else None,
     )
 
 
@@ -52,10 +55,13 @@ def list_jobs(conn: sqlite3.Connection, book_id: str | None = None) -> list[Job]
     return [_row_to_job(r) for r in rows]
 
 
-def enqueue(conn, kind, book_id, chapter_index=None, priority=100, max_attempts=3, now=None) -> int:
+def enqueue(
+    conn, kind, book_id, chapter_index=None, priority=100, max_attempts=3, now=None, payload=None
+) -> int:
     """幂等入队：同一 (kind, book, chapter) 在未完成状态下复用同一条记录。"""
     ts = now_ms(now)
     key = -1 if chapter_index is None else chapter_index
+    payload_json = json.dumps(payload, ensure_ascii=False) if payload else None
     for _ in range(3):
         row = conn.execute(
             "SELECT id FROM jobs WHERE kind=? AND book_id=? AND IFNULL(chapter_index,-1)=?"
@@ -67,13 +73,30 @@ def enqueue(conn, kind, book_id, chapter_index=None, priority=100, max_attempts=
         try:
             cur = conn.execute(
                 "INSERT INTO jobs(kind, book_id, chapter_index, status, priority, max_attempts,"
-                " created_at, updated_at) VALUES(?,?,?,'queued',?,?,?,?)",
-                (kind, book_id, chapter_index, priority, max_attempts, ts, ts),
+                " payload, created_at, updated_at) VALUES(?,?,?,'queued',?,?,?,?,?)",
+                (kind, book_id, chapter_index, priority, max_attempts, payload_json, ts, ts),
             )
             return int(cur.lastrowid)
         except sqlite3.IntegrityError:
             continue
     raise RuntimeError(f"enqueue 冲突未解决: {kind}/{book_id}/{chapter_index}")
+
+
+def find_active(conn, kind, book_id, chapter_index=None) -> Job | None:
+    """找同键的排队/运行中任务（enqueue 幂等复用的就是这一条）。"""
+    key = -1 if chapter_index is None else chapter_index
+    row = conn.execute(
+        "SELECT * FROM jobs WHERE kind=? AND book_id=? AND IFNULL(chapter_index,-1)=?"
+        " AND status IN ('queued','running') ORDER BY id LIMIT 1",
+        (kind, book_id, key),
+    ).fetchone()
+    return _row_to_job(row) if row else None
+
+
+def set_payload(conn, job_id: int, payload: dict | None, now=None) -> None:
+    ts = now_ms(now)
+    raw = json.dumps(payload, ensure_ascii=False) if payload else None
+    conn.execute("UPDATE jobs SET payload=?, updated_at=? WHERE id=?", (raw, ts, job_id))
 
 
 def claim(conn, worker_id, lease_seconds=30, now=None) -> Job | None:

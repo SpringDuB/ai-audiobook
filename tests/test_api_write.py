@@ -74,16 +74,47 @@ def _seed_three_chapters(settings, narrator_lines) -> str:
     return book_id
 
 
-def test_analyze_chapters_only_queues_picked_chapters(settings, narrator_lines):
+def test_analyze_chapters_queues_one_batch_job_for_picked_chapters(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_three_chapters(settings, narrator_lines)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 0), {"windows": 1, "lines": []})
     store.atomic_replace_json(store.extract_path(settings, book_id, 1), {"windows": 1, "lines": []})
-    body = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1]}).json()
-    assert body["plan"] == [["lines", 1]]
-    # 勾选章节的旧提取结果被删掉 → lines handler 会重新调 LLM 提取
+    body = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1, 2]}).json()
+    # 勾选多章合成一个批量任务（内部按大模型并发同时提这几章），不再一章一个 job
+    assert body["plan"] == [["chapters", None]]
+    # 勾选章节的旧提取结果被删掉 → 批量任务会重新调 LLM 提取
     assert not store.extract_path(settings, book_id, 1).exists()
+    # 没勾的章一个文件都不碰
+    assert store.extract_path(settings, book_id, 0).exists()
     job = jobs.get_job(_conn(settings), body["job_ids"][0])
-    assert (job.kind, job.chapter_index) == ("lines", 1)
+    assert (job.kind, job.chapter_index) == ("chapters", None)
+    assert job.payload == {"chapters": [1, 2]}
+
+
+def test_analyze_chapters_merges_second_click_into_queued_batch(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    first = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1]}).json()
+    second = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [2]}).json()
+    # 还没开跑：两次勾选并进同一条批量任务，不会各跑一批
+    assert second["job_ids"] == first["job_ids"]
+    assert jobs.get_job(_conn(settings), first["job_ids"][0]).payload == {"chapters": [1, 2]}
+
+
+def test_analyze_chapters_while_batch_running_queues_extra_chapters_as_lines(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    first = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1]}).json()
+    conn = _conn(settings)
+    claimed = jobs.claim(conn, "w1")  # 模拟 worker 已经在跑这条批量任务
+    assert claimed.id == first["job_ids"][0]
+
+    body = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1, 2]}).json()
+    # 在跑的批量任务不认新清单：没覆盖的第 2 章退回按章 lines，已覆盖的第 1 章不重复排
+    assert body["plan"] == [["lines", 2]]
+    assert body["running_job_id"] == claimed.id
+    job = jobs.get_job(conn, body["job_ids"][0])
+    assert (job.kind, job.chapter_index) == ("lines", 2)
 
 
 def test_analyze_chapters_with_all_selected_runs_full_book_merge(settings, narrator_lines):

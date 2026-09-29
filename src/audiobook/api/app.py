@@ -555,11 +555,11 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.post("/api/books/{book_id}/analyze/chapters")
     def analyze_chapters(book_id: str, payload: dict | None = None):
-        """只重跑勾选章节的分析：删掉这些章的提取结果，由 lines 任务重新调 LLM。
+        """只重跑勾选章节的分析：删掉这些章的提取结果，再重新提取。
 
         勾选全部章节时走整书 characters 任务（跨章合并同人异名更准，跑完会自动
-        为每章排队 lines）；只勾选一部分时按章重跑，新冒出来的称呼由 lines 任务
-        增量并进现有角色表。
+        为每章排队 lines）；勾选一部分时走一个 chapters 批量任务：job 内部按大模型
+        并发同时提这几章（和 characters 同一模式），新称呼并进现有角色表。
         """
         try:
             picked = sorted({int(item) for item in ((payload or {}).get("chapters") or [])})
@@ -574,14 +574,42 @@ def create_app(settings, conn) -> FastAPI:
         unknown = [index for index in picked if index not in known]
         if unknown:
             raise HTTPException(status_code=400, detail=f"不存在的章节：{unknown}")
+        if len(picked) == len(known):
+            for index in picked:
+                store.extract_path(settings, book_id, index).unlink(missing_ok=True)
+            plan: list[tuple[str, int | None]] = [("characters", None)]
+            job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
+            return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
+
+        active = jobs.find_active(conn, "chapters", book_id)
+        if active is not None and active.status == "running":
+            # 已经在跑的批量任务只认它开始时那份清单：这次勾选里它没覆盖的章退回按章
+            # lines（各章一个 job），保证不会静默丢单。它已覆盖的章交给它自己跑。
+            covered = {int(item) for item in ((active.payload or {}).get("chapters") or [])}
+            extra = [index for index in picked if index not in covered]
+            for index in extra:
+                store.extract_path(settings, book_id, index).unlink(missing_ok=True)
+            plan = [("lines", index) for index in extra]
+            job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
+            return {
+                "ok": True,
+                "queued": len(job_ids),
+                "plan": plan,
+                "job_ids": job_ids,
+                "running_job_id": active.id,
+            }
+
         for index in picked:
             store.extract_path(settings, book_id, index).unlink(missing_ok=True)
-        if len(picked) == len(known):
-            plan: list[tuple[str, int | None]] = [("characters", None)]
-        else:
-            plan = [("lines", index) for index in picked]
-        job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
-        return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
+        if active is not None:
+            # 还没开跑：把这次勾选并进同一条批量任务，避免两次点击各跑一批
+            merged = sorted({int(item) for item in ((active.payload or {}).get("chapters") or [])} | set(picked))
+            jobs.set_payload(conn, active.id, {"chapters": merged})
+            return {"ok": True, "queued": 1, "plan": [["chapters", None]], "job_ids": [active.id]}
+
+        job_id = jobs.enqueue(conn, "chapters", book_id, payload={"chapters": picked})
+        plan = [("chapters", None)]
+        return {"ok": True, "queued": 1, "plan": plan, "job_ids": [job_id]}
 
     @app.post("/api/books/{book_id}/generate")
     def generate_book(book_id: str):

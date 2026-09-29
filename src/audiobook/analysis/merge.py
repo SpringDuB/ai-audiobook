@@ -199,18 +199,27 @@ def merge_roles(runner, *, book_id: str, entries: list[dict], known: list[str] =
 
 
 def extend_characters(
-    runner, *, book_id: str, payload: dict, spoken: list[SpokenLine]
+    runner,
+    *,
+    book_id: str,
+    payload: dict,
+    spoken: list[SpokenLine] | None = None,
+    extractions: list[tuple[int, list[SpokenLine]]] | None = None,
 ) -> tuple[dict, list[dict]]:
-    """单章重跑时用：把这一章新冒出来的称呼并进已有角色表（是别名就并进老角色）。
+    """单章/多章重跑时用：把新冒出来的称呼并进已有角色表（是别名就并进老角色）。
 
+    extractions 用于一次并入多章（[(chapter_index, lines), ...]），与 spoken 二选一：
+    多章时章号/首次出场要按真实章号记，否则新角色的 chapters 会全记成第 0 章。
     runner=None 时不调大模型，只按名字本地补角色（边提取边展示用的临时表，
     全书整合完成后再由 lines 任务用最终角色表覆盖）。
     """
+    source = extractions if extractions is not None else [(0, spoken or [])]
     existing = names_from_payload(payload)
     known = {normalize(name) for name in existing}
-    entries = [entry for entry in role_entries([(0, spoken)]) if normalize(entry["name"]) not in known]
+    entries = [entry for entry in role_entries(source) if normalize(entry["name"]) not in known]
     if not entries:
-        return payload, []
+        # 没有新称呼也要给出可用角色表：全旁白章节 / 首次分析时 payload 可能是空的
+        return (payload or _payload(book_id, [_narrator_entry()])), []
     if runner is None:
         groups, issues = [{"name": entry["name"], "aliases": []} for entry in entries], []
     else:

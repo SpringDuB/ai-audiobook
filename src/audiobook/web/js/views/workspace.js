@@ -2,7 +2,7 @@
 // 一屏之内完成"看章节 → 看分析 → 配音色"三件事。
 
 import { api } from "../api.js";
-import { duration } from "../format.js";
+import { duration, kindLabel } from "../format.js";
 import { icon } from "../icons.js";
 import { store } from "../store.js";
 import { closeVoicePicker, loadVoices, openVoicePicker } from "../voicepicker.js";
@@ -972,7 +972,7 @@ async function build(route, host) {
     const queued = mine.filter((job) => job.status === "queued").length;
     if (running) {
       const jobProgress = running.progress || {};
-      progress.textContent = `${running.kind} ${jobProgress.done ?? 0}/${jobProgress.total ?? 0}${queued ? ` · 排队 ${queued}` : ""}`;
+      progress.textContent = `${kindLabel(running.kind)} ${jobProgress.done ?? 0}/${jobProgress.total ?? 0}${queued ? ` · 排队 ${queued}` : ""}`;
     } else {
       progress.textContent = queued ? `排队 ${queued}` : "";
     }

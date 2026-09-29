@@ -98,3 +98,24 @@ def test_progress_roundtrip(conn):
     job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
     jobs.set_progress(conn, job_id, 3, 10, "第 3 行")
     assert jobs.get_job(conn, job_id).progress == {"done": 3, "total": 10, "message": "第 3 行"}
+
+
+def test_payload_roundtrip_and_active_lookup(conn):
+    job_id = jobs.enqueue(conn, "chapters", "book1", payload={"chapters": [2, 5]})
+    job = jobs.get_job(conn, job_id)
+    assert job.payload == {"chapters": [2, 5]}
+    assert jobs.find_active(conn, "chapters", "book1").id == job_id
+    assert jobs.find_active(conn, "chapters", "other-book") is None
+
+    jobs.set_payload(conn, job_id, {"chapters": [2, 5, 7]})
+    assert jobs.get_job(conn, job_id).payload == {"chapters": [2, 5, 7]}
+
+
+def test_payload_survives_progress_updates(conn):
+    """参数放 payload、不放 progress：进度写盘不会把章节清单冲掉。"""
+    job_id = jobs.enqueue(conn, "chapters", "book1", payload={"chapters": [1]})
+    jobs.claim(conn, "w1")
+    jobs.set_progress(conn, job_id, 1, 1, "第 1 章")
+    job = jobs.get_job(conn, job_id)
+    assert job.payload == {"chapters": [1]}
+    assert job.progress["message"] == "第 1 章"

@@ -54,3 +54,28 @@ def test_slot_raises_timeout_when_cooldown_never_ends():
     with pytest.raises(TimeoutError):
         with limiter.slot(timeout=0.05):
             pass
+
+
+def test_transport_error_pauses_without_halving_until_repeated():
+    """单次断连只是链路抖动：停顿一下，不降并发；连续 3 次才升级成硬限流。"""
+    limiter = AdaptiveLimiter(
+        max_concurrency=8, cooldown_seconds=60.0, soft_cooldown_seconds=5.0, soft_escalate_after=3
+    )
+    assert limiter.record_transport_error() == 8
+    assert limiter.limit == 8
+    assert 0 < limiter.stats()["cooldown_remaining"] <= 5
+
+    assert limiter.record_transport_error() == 8
+    assert limiter.limit == 8
+
+    assert limiter.record_transport_error() == 4  # 第 3 次连续失败 → 当作真限流，减半
+    assert limiter.stats()["cooldown_remaining"] > 5  # 用完整冷却，不是 5 秒
+
+
+def test_success_resets_transport_error_streak():
+    limiter = AdaptiveLimiter(max_concurrency=8, soft_escalate_after=3)
+    limiter.record_transport_error()
+    limiter.record_transport_error()
+    limiter.record_success()
+    assert limiter.stats()["soft_failures"] == 0
+    assert limiter.record_transport_error() == 8  # 成功过就不算"连续失败"，不会一上来就升级

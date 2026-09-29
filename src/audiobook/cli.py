@@ -328,6 +328,7 @@ def main(argv=None) -> int:
         from .handlers import (  # noqa: F401
             book_export,
             casting,
+            chapter_batch,
             characters,
             lines,
             post,

@@ -3,7 +3,7 @@ from .analysis.casting import voice_for_speaker
 from .render.chapter import RENDER_VERSION
 
 # 分析链（书稿 → 角色 → 逐句情感 → 选角）与合成链（合成 → 渲染 → 合本）
-ANALYSIS_KINDS = {"chapter_split", "characters", "lines", "casting"}
+ANALYSIS_KINDS = {"chapter_split", "characters", "chapters", "lines", "casting"}
 AUDIO_KINDS = {"synthesize", "post", "book_export"}
 PHASE_KINDS = {"analysis": ANALYSIS_KINDS, "audio": AUDIO_KINDS}
 

@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   lease_expires_at INTEGER,
   worker_id        TEXT,
   progress         TEXT,
+  payload          TEXT,
   error            TEXT,
   cancel_requested INTEGER NOT NULL DEFAULT 0,
   created_at       INTEGER NOT NULL,
@@ -49,6 +50,14 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """老库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加字段。"""
+    names = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in names:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    conn.execute("PRAGMA user_version=1")
+    _ensure_column(conn, "jobs", "payload", "TEXT")
+    conn.execute("PRAGMA user_version=2")

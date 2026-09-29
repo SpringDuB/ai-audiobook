@@ -53,12 +53,20 @@ class LlmJsonRunner:
                     )
             except LLMError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                # 限流 / 连接被掐断 / 超时都是"并发太高了"的信号：降一档并冷却，
-                # 否则 10 个线程会在同一毫秒一起回头再打，把重试也一起打废。
-                if isinstance(exc, (LLMRateLimit, LLMDisconnected, LLMTimeout)):
+                # 限流是服务端明确的背压 → 降档 + 冷却；断连/超时多数是链路抖动
+                # → 短促停顿、不降档，连续多次才升级。否则 10 个线程会在同一毫秒
+                # 一起回头再打，把重试也一起打废。
+                if isinstance(exc, LLMRateLimit):
                     lowered = self.limiter.record_rate_limit()
+                    logger.warning("LLM 限流：pass=%s 并发降到 %s", pass_name, lowered)
+                    self._backoff(attempt)
+                elif isinstance(exc, (LLMDisconnected, LLMTimeout)):
+                    limit = self.limiter.record_transport_error()
                     logger.warning(
-                        "LLM %s：pass=%s 并发降到 %s", type(exc).__name__, pass_name, lowered
+                        "LLM %s：pass=%s 停一下重试（并发 %s）",
+                        type(exc).__name__,
+                        pass_name,
+                        limit,
                     )
                     self._backoff(attempt)
                 self._log(
