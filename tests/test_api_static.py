@@ -13,7 +13,7 @@ def test_root_serves_app_shell(settings):
     assert "/static/theme.css" in body and "/static/js/app.js" in body
     assert 'id="main"' in body and 'id="masthead"' in body and 'id="rail"' in body
     assert "#/shelf" in body and "#/jobs" in body and "#/settings" in body
-    assert "/static/favicon.svg" in body
+    assert "/static/favicon.png" in body and "/static/logo-mark.png" in body
     # 双主题：防闪烁脚本要在样式表之前落主题，顶栏要有切换按钮
     assert 'id="theme-toggle"' in body
     assert 'localStorage.getItem("aiab-theme")' in body
@@ -32,7 +32,8 @@ def test_static_assets_are_offline_only(settings):
         "/static/js/ui.js",
         "/static/js/icons.js",
         "/static/js/format.js",
-        "/static/favicon.svg",
+        "/static/logo-mark.png",
+        "/static/favicon.png",
     ):
         assert client.get(path).status_code == 200, path
     css = client.get("/static/theme.css").text + client.get("/static/app.css").text

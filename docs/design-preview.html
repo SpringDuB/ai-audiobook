@@ -50,6 +50,7 @@
       --warn-soft: #f7eeda;
 
       --scrim: rgba(30, 24, 18, 0.42);
+      --brand-chip: transparent;
       --shadow-1: 0 1px 2px rgba(43, 33, 22, 0.07), 0 6px 16px rgba(43, 33, 22, 0.05);
       --shadow-2: 0 18px 44px rgba(43, 33, 22, 0.18);
 
@@ -109,6 +110,7 @@
       --warn-soft: #262013;
 
       --scrim: rgba(6, 5, 4, 0.6);
+      --brand-chip: #fbfbfb;
       --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.45);
       --shadow-2: 0 20px 48px rgba(0, 0, 0, 0.55);
     }
@@ -154,16 +156,11 @@
     }
     .brand { display: flex; align-items: center; gap: var(--space-3); min-inline-size: 0; }
     .brand__mark {
-      display: grid;
-      place-items: center;
       inline-size: 30px;
       block-size: 30px;
       border-radius: var(--radius-sm);
-      background: var(--accent);
-      color: var(--on-accent);
-      font-size: var(--text-sm);
-      font-weight: 600;
-      letter-spacing: 0.02em;
+      background: var(--brand-chip, transparent);
+      object-fit: contain;
       flex: none;
     }
     .brand__name { font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
@@ -647,7 +644,7 @@
 <body>
   <header class="masthead">
     <div class="brand">
-      <span class="brand__mark" aria-hidden="true">声</span>
+      <img class="brand__mark" src="../src/audiobook/web/logo-mark.png" alt="" width="30" height="30">
       <span class="brand__name">AI 有声书</span>
     </div>
     <nav class="crumb" aria-label="面包屑">

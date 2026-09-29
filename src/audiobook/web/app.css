@@ -15,16 +15,11 @@
 }
 .masthead__brand { display: flex; align-items: center; gap: var(--space-3); min-inline-size: 0; }
 .masthead__mark {
-  display: grid;
-  place-items: center;
   inline-size: 30px;
   block-size: 30px;
   border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--on-accent);
-  font-family: var(--font-serif);
-  font-size: var(--text-base);
-  line-height: 1;
+  background: var(--brand-chip);
+  object-fit: contain;
   flex: none;
 }
 .masthead__name { font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }

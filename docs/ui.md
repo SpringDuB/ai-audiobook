@@ -118,6 +118,15 @@
 线宽 1.75、颜色跟随 `currentColor`，不引 CDN、不引雪碧图；左侧导航、顶栏主流程、台词工具条、
 音色播放条、设置页按钮都用它，图标按钮一律带 `aria-label` 或可见文字。
 
+**品牌标识**：顶栏左侧用 `logo.png`（1024×1024 原图，保留在 `web/` 里当母版）。网页实际加载的是脚本生成的两个派生文件：
+`logo-mark.png`（256×256，抠掉原图里烤进去的棋盘格底，真透明，深色主题下垫一层 `--brand-chip` 浅色垫片保证深紫描边不糊）
+与 `favicon.png`（64×64，浅底平整，给浏览器标签页用）。重新生成用本机 ffmpeg：
+
+```bash
+ffmpeg -y -i src/audiobook/web/logo.png -vf "colorkey=0xf8f8f8:0.08:0.0,scale=256:256:flags=lanczos,format=rgba" -frames:v 1 src/audiobook/web/logo-mark.png
+ffmpeg -y -i src/audiobook/web/logo.png -f lavfi -i "color=c=0xfbfbfb:s=1024x1024" -filter_complex "[0:v]colorkey=0xf8f8f8:0.08:0.0[key];[1:v][key]overlay=format=auto,scale=64:64:flags=lanczos" -frames:v 1 src/audiobook/web/favicon.png
+```
+
 **记忆点**：书页顶栏的步骤条「① 分析台词 → ② 生成音频 → ③ 导出成品」，以及句首与角色行统一的姓氏方块与行号。
 
 ## 4. 后端接口

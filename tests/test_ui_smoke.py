@@ -148,11 +148,23 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     book_id = _seed_book(settings, narrator_lines)
     _seed_voice(settings)
 
-    shelf = _probe(f"{served}/#/shelf", tmp_path / "shelf")
+    shelf = _probe(
+        f"{served}/#/shelf",
+        tmp_path / "shelf",
+        extra=(
+            "--eval=JSON.stringify({"
+            " logo: (document.querySelector('.masthead__mark') || {}).naturalWidth || 0,"
+            " favicon: (document.querySelector('link[rel=icon]') || {}).getAttribute('href') || '',"
+            " })",
+        ),
+    )
     assert shelf["view"] == "shelf" and shelf["boot"] == "ready"
     assert shelf["consoleErrors"] == []
     assert shelf["counts"]["books"] == 1
     assert "冒烟书" in shelf["text"]
+    brand = json.loads(next(value for key, value in shelf.items() if key.startswith("eval:")))
+    assert brand["logo"] > 0                       # 品牌图真的加载出来了
+    assert brand["favicon"] == "/static/favicon.png"
 
     workspace = _probe(f"{served}/#/book/{book_id}", tmp_path / "workspace")
     assert workspace["consoleErrors"] == []

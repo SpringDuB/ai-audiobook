@@ -47,6 +47,8 @@
 
   /* 遮罩与阴影 */
   --scrim: rgba(30, 24, 18, 0.42);
+  /* 品牌标识的底：深色主题下给 logo 一块浅色垫片，深色描边不会糊在深底上 */
+  --brand-chip: transparent;
   --shadow-1: 0 1px 2px rgba(43, 33, 22, 0.07), 0 6px 16px rgba(43, 33, 22, 0.05);
   --shadow-2: 0 18px 44px rgba(43, 33, 22, 0.18);
   --shadow-press: inset 0 1px 0 rgba(255, 255, 255, 0.5);
@@ -147,6 +149,7 @@
   --role-8: #cfc46a; --role-8-soft: #25230f;
 
   --scrim: rgba(6, 5, 4, 0.6);
+  --brand-chip: #fbfbfb;
   --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.45);
   --shadow-2: 0 20px 48px rgba(0, 0, 0, 0.55);
   --shadow-press: inset 0 1px 0 rgba(255, 255, 255, 0.06);

@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" fill="#100f0c"/>
-  <rect x="7.5" y="7.5" width="49" height="49" fill="none" stroke="#c2452f" stroke-width="3"/>
-  <text x="32" y="44" font-family="Noto Serif SC, Source Han Serif SC, SimSun, serif" font-size="34"
-        text-anchor="middle" fill="#f4efe4">书</text>
-</svg>
