@@ -50,10 +50,15 @@ def _wav_seconds(payload: bytes) -> float:
 class IndexTtsBackend:
     name = "indextts-2.5"
     version = "2.5.0"
+    # 并发度：IndexTTS 的 GPT 推理模型有一个实例级条件嵌入槽位，我们打了线程本地补丁
+    # （见 indextts_compat.make_gpt_inference_thread_safe）之后可以真并发。
+    DEFAULT_CONCURRENCY = 3
 
     def __init__(self, settings):
         self.settings = settings
         self._tts = None
+        # None=还没加载（补丁状态未知）；False=补丁没打上，退回单并发
+        self._thread_safe: bool | None = None
 
     def is_loaded(self) -> bool:
         return self._tts is not None
@@ -105,12 +110,26 @@ class IndexTtsBackend:
             "模型就绪：%s（source=%s verified=%s）", report["path"], report["source"], report["verified"]
         )
 
-        self._tts = IndexTTS2(
-            cfg_path=str(model_dir / "config.yaml"),
-            model_dir=str(model_dir),
-            use_bf16=self.settings.use_bf16,
-            use_qwen_emo=self.settings.use_qwen_emo,
+        from ..indextts_compat import (
+            apply_bf16_modules,
+            fast_model_loading,
+            make_gpt_inference_thread_safe,
         )
+
+        # 加载期优化：权重 mmap 直读 + 大模型直接在显存上构造（不再"CPU 一份 + 显存一份"）
+        with fast_model_loading(self.settings.device):
+            self._tts = IndexTTS2(
+                cfg_path=str(model_dir / "config.yaml"),
+                model_dir=str(model_dir),
+                use_bf16=self.settings.use_bf16,
+                use_qwen_emo=self.settings.use_qwen_emo,
+            )
+
+        self._thread_safe = make_gpt_inference_thread_safe()
+        if not self._thread_safe:
+            logger.warning("并发补丁没打上：IndexTTS 的条件嵌入槽位仍是实例级，服务退回单并发")
+        # 大模块降 bf16（默认只降 w2v-bert）：显存省一半，并发更稳
+        apply_bf16_modules(self._tts, self.settings.use_bf16)
         logger.info(
             "IndexTTS-2.5 已加载：%s（情绪通道：%s）",
             model_dir,
@@ -124,14 +143,14 @@ class IndexTtsBackend:
         _release_gpu_memory()
 
     def recommended_concurrency(self) -> int:
-        if self.settings.max_concurrency:
-            return int(self.settings.max_concurrency)
-        total = _vram_total_mb(self.settings)
-        if total >= 16000:
-            return 3
-        if total >= 10000:
-            return 2
-        return 1
+        """并发上限：默认 3，可用 AIAB_TTS_MAX_CONCURRENCY 调。
+
+        以前并发会 500，是因为 GPT 推理模型用实例属性存"当前请求的条件嵌入"；打上线程本地
+        补丁后可以真并发。补丁失败（上游结构变了）时退回 1，宁可慢也不能算错。
+        """
+        if self._thread_safe is False:
+            return 1
+        return max(1, int(self.settings.max_concurrency or self.DEFAULT_CONCURRENCY))
 
     def capabilities(self) -> dict:
         return {
@@ -147,7 +166,8 @@ class IndexTtsBackend:
             "languages": ["ZH", "EN", "JP", "ES", "AR"],
             "sampleRate": 22050,
             "maxTextChars": self.settings.max_text_chars,
-            "supportsSeed": False,
+            # 传 seed 时后端会先给 torch 播种再推理：同一 seed + 同一输入可复现（A/B 对比用）
+            "supportsSeed": True,
             "supportsWarmup": True,
         }
 
@@ -159,6 +179,12 @@ class IndexTtsBackend:
         duration_factor = 1.0 / (request.rate or 1.0)
         # 文本描述优先（要服务端加载了 QwenEmotion），否则退回 8 维向量
         use_text = bool(self.settings.use_qwen_emo and request.emotion_text)
+        if request.seed is not None:
+            import torch
+
+            torch.manual_seed(int(request.seed))
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(int(request.seed))
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "out.wav"
             self._tts.infer(

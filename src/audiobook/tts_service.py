@@ -194,6 +194,9 @@ class LocalTtsService:
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",
             "PYTHONUNBUFFERED": "1",
+            # 多路并发推理时显存吃满（8G 卡实测峰值 8187/8187MB）：开可扩展段减少碎片，
+            # 否则同一个 batch 跑几轮就可能因为碎片 OOM 而触发降档
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         }
         # 后端进程常常是从根项目的 .venv 里起来的；这个变量会让 `uv run --project tts`
         # 报警说 VIRTUAL_ENV 和项目环境不匹配（其实会用 tts/.venv），去掉更干净

@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 import uuid
@@ -6,6 +7,8 @@ from pathlib import Path
 
 from .backends.base import SynthesisRequest
 from .schemas import SynthPayload
+
+logger = logging.getLogger(__name__)
 
 
 def wav_duration_seconds(path: Path) -> float:
@@ -62,7 +65,17 @@ class ServiceState:
         self.settings = settings
         self.started_at = time.time()
         self.refs: dict[str, dict] = {}
-        self.capacity = max(1, int(settings.max_concurrency or backend.recommended_concurrency() or 1))
+        # 后端自报的是"安全上限"（模型不是线程安全的就只能是 1），配置只能往下调，不能往上顶
+        backend_limit = max(1, int(backend.recommended_concurrency() or 1))
+        requested = max(1, int(settings.max_concurrency or backend_limit))
+        self.capacity = min(requested, backend_limit)
+        if requested > backend_limit:
+            logger.warning(
+                "配置并发 %s 超过后端安全上限 %s，已按 %s 启动（后端模型不支持并发推理）",
+                requested,
+                backend_limit,
+                self.capacity,
+            )
         self._gate = threading.BoundedSemaphore(self.capacity)
         self.inflight = 0
         self.total_audio_sec = 0.0
@@ -174,7 +187,10 @@ class ServiceState:
             raise
         except RuntimeError as exc:
             if "out of memory" in str(exc).lower():
+                logger.exception("TTS 引擎显存不足")
                 raise ServiceError("oom", f"显存不足: {exc}", 503) from exc
+            # 引擎 500 以前只有一句 message，堆栈被吞掉；出问题根本没法定位，这里必须留痕
+            logger.exception("TTS 引擎推理失败")
             raise ServiceError("engine_error", str(exc), 500) from exc
         finally:
             with self._lock:

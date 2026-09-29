@@ -45,6 +45,18 @@ def test_health_reports_configured_capacity_and_gpu_fields(tmp_path):
     assert set(gpu_info(TtsSettings())) >= {"device", "vramTotalMB", "vramUsedMB"}
 
 
+def test_capacity_never_exceeds_backend_safety_limit(tmp_path):
+    """配置只能往下调：后端说只能 1 路（模型不是线程安全的），配 3 也必须按 1 起。"""
+
+    class SingleThreadedBackend(StubBackend):
+        def recommended_concurrency(self) -> int:
+            return 1
+
+    state = _state(tmp_path, SingleThreadedBackend(), max_concurrency=3)
+    assert state.capacity == 1
+    assert state.health()["recommendedConcurrency"] == 1
+
+
 def test_concurrency_gate_serializes_when_capacity_is_one(tmp_path):
     backend = SlowBackend(delay=0.2)
     state = _state(tmp_path, backend, max_concurrency=1)

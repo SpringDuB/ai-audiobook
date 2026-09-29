@@ -49,10 +49,27 @@ def fake_indextts(monkeypatch):
     model_download.HF_TO_MODELSCOPE_REPO_MAP = {}
     utils.model_download = model_download
     package.utils = utils
+
+    # GPT 推理模型的并发补丁目标（load() 里会往它上面装线程本地 property）
+    gpt = types.ModuleType("indextts.gpt")
+    model_v2 = types.ModuleType("indextts.gpt.model_v2")
+
+    class FakeGPT2InferenceModel:
+        def __init__(self):
+            self.cached_mel_emb = None
+
+        def store_mel_emb(self, mel_emb):
+            self.cached_mel_emb = mel_emb
+
+    model_v2.GPT2InferenceModel = FakeGPT2InferenceModel
+    gpt.model_v2 = model_v2
+    package.gpt = gpt
     monkeypatch.setitem(sys.modules, "indextts", package)
     monkeypatch.setitem(sys.modules, "indextts.infer_v2_5", module)
     monkeypatch.setitem(sys.modules, "indextts.utils", utils)
     monkeypatch.setitem(sys.modules, "indextts.utils.model_download", model_download)
+    monkeypatch.setitem(sys.modules, "indextts.gpt", gpt)
+    monkeypatch.setitem(sys.modules, "indextts.gpt.model_v2", model_v2)
     monkeypatch.setattr(sys, "version_info", (3, 11, 9))
     calls["repo_map"] = model_download.HF_TO_MODELSCOPE_REPO_MAP
     return calls
@@ -156,17 +173,28 @@ def test_synthesize_maps_rate_to_duration_factor(fake_indextts, tmp_path):
     assert result.engine == "indextts-2.5"
 
 
-def test_recommended_concurrency_prefers_explicit_setting(tmp_path, monkeypatch):
-    explicit = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, max_concurrency=2))
-    assert explicit.recommended_concurrency() == 2
+def test_recommended_concurrency_honors_setting_with_default_three(tmp_path):
+    """默认 3 路并发；显式配置优先；只有补丁打不上时才退回 1（宁可慢也不能算错）。"""
+    default = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path))
+    assert default.recommended_concurrency() == 3
 
-    auto = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, max_concurrency=0))
-    monkeypatch.setattr("aiab_tts.backends.indextts._vram_total_mb", lambda settings: 24000)
-    assert auto.recommended_concurrency() == 3
-    monkeypatch.setattr("aiab_tts.backends.indextts._vram_total_mb", lambda settings: 12000)
-    assert auto.recommended_concurrency() == 2
-    monkeypatch.setattr("aiab_tts.backends.indextts._vram_total_mb", lambda settings: 6000)
-    assert auto.recommended_concurrency() == 1
+    explicit = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, max_concurrency=5))
+    assert explicit.recommended_concurrency() == 5
+
+    degraded = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path, max_concurrency=3))
+    degraded._thread_safe = False
+    assert degraded.recommended_concurrency() == 1
+
+
+def test_synthesize_serializes_model_access(fake_indextts, tmp_path):
+    """load() 必须给 GPT 推理模型打上线程本地补丁（并发安全的根因修复）。"""
+    backend = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path))
+    backend.load()  # 用假模型，不加载真实权重
+
+    from indextts.gpt.model_v2 import GPT2InferenceModel
+
+    assert isinstance(GPT2InferenceModel.cached_mel_emb, property)
+    assert backend.recommended_concurrency() == 3
 
 
 def test_capabilities_describe_indextts_2_5(fake_indextts, tmp_path):
@@ -183,3 +211,21 @@ def test_unload_releases_model(fake_indextts, tmp_path):
     backend.load()
     backend.unload()
     assert backend.is_loaded() is False
+
+
+def test_synthesize_seeds_torch_when_seed_given(fake_indextts, tmp_path, monkeypatch):
+    """传 seed 时先给 torch 播种：同一 seed + 同一输入可复现（A/B 对比要用）。"""
+    import torch
+
+    calls = []
+    monkeypatch.setattr(torch, "manual_seed", lambda value: calls.append(("cpu", value)))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "manual_seed_all", lambda value: calls.append(("cuda", value)))
+
+    backend = IndexTtsBackend(TtsSettings(backend="indextts", model_dir=tmp_path))
+    backend.load()
+    request = SynthesisRequest(text="播种测试。", ref_path=tmp_path / "ref.wav", lang="ZH", seed=20260929)
+    backend.synthesize(request)
+
+    assert calls == [("cpu", 20260929), ("cuda", 20260929)]
+    assert backend.capabilities()["supportsSeed"] is True
