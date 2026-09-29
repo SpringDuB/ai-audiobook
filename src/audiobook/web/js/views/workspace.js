@@ -83,6 +83,17 @@ function chapterItem(chapter, state, onSelect) {
 
 /* ---------------------------------------------------------------- 句子行 */
 
+/* 角色配色：同一个角色在整章里颜色稳定，旁白保持中性 */
+const ROLE_HUES = 8;
+
+function roleHue(roleId) {
+  const key = String(roleId || "");
+  if (!key || key === "narrator") return "narrator";
+  let hash = 0;
+  for (const char of key) hash = (hash * 31 + char.codePointAt(0)) % 1000003;
+  return String(hash % ROLE_HUES);
+}
+
 function metaChips(line) {
   const emotion = line.emotion || {};
   return [
@@ -209,7 +220,7 @@ function lineRow(line, ctx) {
   renderRead();
   const row = h(
     "article",
-    { class: "line", dataset: { lineId: line.id } },
+    { class: "line", dataset: { lineId: line.id, hue: roleHue(line.speaker) } },
     h("span", { class: "line__seq mono" }, String(ctx.displaySeq ?? line.seq ?? "").padStart(3, "0")),
     h("span", { class: "line__seal" }, seal(line.speaker_name || line.speaker)),
     body,
@@ -413,6 +424,7 @@ async function build(route, host) {
     tab: "text",
     scope: "chapter",
     chapter: null,
+    output: bookPayload.output || null,
   };
   let currentLines = [];
   let chapterRequest = 0;
@@ -731,44 +743,45 @@ async function build(route, host) {
   const queued = (result, what) =>
     toast(result.queued ? `已入队${what} ${result.queued} 个任务，进度看右上角` : `${what}没有需要补的任务`);
 
-  // 低频动作收进「更多」，顶栏常驻按钮不超过三个
+  // 导出与返工收进「更多」：外部常驻的四步是 单章分析 / 单章音频 / 整本分析 / 整本音频
   const closeMore = () => {
     if (more) more.open = false;
   };
+  const openFolder = action(
+    "打开成果文件夹",
+    async () => {
+      const result = await api.revealOutput(bookId);
+      toast(result.opened ? `已在文件管理器里打开 ${result.dir}` : `没打开成功，产物在 ${result.dir}`);
+    },
+    {
+      menu: true,
+      title: "在系统文件管理器里打开 output/：整本 wav / srt / mkv、分章文件与播放列表都在里面",
+    },
+  );
+  const paintOutputAction = () => {
+    const ready = Boolean(state.output?.exists);
+    openFolder.disabled = !ready;
+    openFolder.title = ready
+      ? "在系统文件管理器里打开 output/：整本 wav / srt / mkv、分章文件与播放列表都在里面"
+      : "还没有导出产物：先点上面的「导出整本成品」";
+  };
+  paintOutputAction();
   const more = h(
     "details",
     { class: "workbench__more" },
-    h("summary", { title: "整本合成、批量分析、重新拼接、异常清单" }, "更多 ▾"),
+    h("summary", { title: "导出成品、打开成果文件夹、重新拼接本章、异常清单" }, "更多 ▾"),
     h(
       "div",
       { class: "menu", role: "menu" },
-      action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
-        menu: true,
-        title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
-      }),
       action(
-        "分析多个章节…",
+        "导出整本成品",
         async () => {
-          // 弹窗多选章节：只分析勾选的章，没勾过的默认勾上"还没分析"的章节
-          const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
-          const picked = await chapterPickerDialog({
-            title: "分析哪些章节的台词？",
-            message:
-              "只重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
-              "对应成品音频随之失效，需要重新生成。",
-            chapters: state.chapters,
-            confirmLabel: "开始分析",
-            selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
-          });
-          if (!picked || !picked.length) return;
-          queued(await api.analyzeChapters(bookId, picked), "章节分析");
-          await refreshChapters();
+          await api.exportBook(bookId, { mode: "all" });
+          toast("已入队整本导出；跑完可以在「更多 ▾」里打开成果文件夹");
         },
-        {
-          menu: true,
-          title: "弹窗勾选章节：重跑逐句标注，并重推角色音色（新称呼会并进角色表）；适合整本重来或返工几章",
-        },
+        { menu: true, title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/" },
       ),
+      openFolder,
       action(
         "重新拼接本章",
         async () => {
@@ -818,13 +831,31 @@ async function build(route, host) {
         title: "只合成当前这一章：逐句 TTS → 拼接出本章音频与字幕，其他章不动",
       }),
       action(
-        "导出整本成品",
+        "分析全本台词",
         async () => {
-          await api.exportBook(bookId, { mode: "all" });
-          toast("已入队整本导出");
+          // 弹窗多选章节：默认勾上还没分析的章，也可以只挑几章返工
+          const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
+          const picked = await chapterPickerDialog({
+            title: "分析哪些章节的台词？",
+            message:
+              "整本重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
+              "对应成品音频随之失效，需要重新生成。",
+            chapters: state.chapters,
+            confirmLabel: "开始分析",
+            selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
+          });
+          if (!picked || !picked.length) return;
+          queued(await api.analyzeChapters(bookId, picked), "章节分析");
+          await refreshChapters();
         },
-        { primary: true, title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/" },
+        {
+          title: "整本重跑逐句标注，并重推角色音色（新称呼会并进角色表）；弹窗里可以只勾几章返工",
+        },
       ),
+      action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
+        primary: true,
+        title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
+      }),
       more,
     ),
   );
@@ -883,12 +914,35 @@ async function build(route, host) {
   let stopWatch = null;
   let lastRefresh = 0;
   let wasBusy = false;
+  const seenExports = new Set();
+  let exportBaseline = null;
+  const refreshOutput = async () => {
+    try {
+      state.output = await api.output(bookId);
+      paintOutputAction();
+    } catch {
+      /* 还没有 output/ 目录不算错 */
+    }
+  };
   const stopStore = store.subscribe((current) => {
     if (!document.body.contains(progress)) {
       if (stopWatch) stopWatch();
       return;
     }
     const mine = current.jobs.filter((job) => job.book_id === bookId);
+    // 整本导出跑完：亮起「打开成果文件夹」，并提示一声
+    const exportsDone = mine.filter((job) => job.kind === "book_export" && job.status === "done");
+    if (exportBaseline === null) {
+      exportsDone.forEach((job) => seenExports.add(job.id));   // 首次订阅时把历史任务当基线，不弹提示
+      exportBaseline = true;
+    } else {
+      for (const job of exportsDone) {
+        if (seenExports.has(job.id)) continue;
+        seenExports.add(job.id);
+        refreshOutput();
+        toast("整本导出完成，可在「更多 ▾」里打开成果文件夹");
+      }
+    }
     const running = mine.find((job) => job.status === "running");
     const queued = mine.filter((job) => job.status === "queued").length;
     if (running) {

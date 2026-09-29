@@ -185,9 +185,10 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     )
     assert buttons["consoleErrors"] == []
     bar = json.loads(next(value for key, value in buttons.items() if key.startswith("eval:")))
-    assert bar["labels"] == ["分析本章台词", "生成本章音频", "导出整本成品"]
+    # 外部常驻四步：单章分析 / 单章音频 / 整本分析 / 整本音频
+    assert bar["labels"] == ["分析本章台词", "生成本章音频", "分析全本台词", "生成整本音频"]
     assert all(bar["titles"]) and bar["moreTitle"]
-    assert bar["more"] == ["生成整本音频", "分析多个章节…", "重新拼接本章", "异常清单"]
+    assert bar["more"] == ["导出整本成品", "打开成果文件夹", "重新拼接本章", "异常清单"]
     assert bar["bookWrap"] == "nowrap"          # 长书名永远单行 + 省略号
 
     # 切到「角色文本」页签，逐句标注要能直接看
@@ -256,8 +257,7 @@ def test_analyze_button_opens_chapter_picker(served, settings, narrator_lines, t
         f"{served}/#/book/{book_id}",
         tmp_path / "analyze-picker",
         extra=(
-            "--click=.workbench__more > summary",
-            "--click=.workbench__more .menu button:nth-of-type(2)",
+            "--click=.workbench__actions .btn:nth-of-type(3)",   # 分析全本台词
             "--eval=JSON.stringify({ modal: Boolean(document.querySelector('.modal--wide')),"
             " rows: document.querySelectorAll('.pick-row').length,"
             " text: (document.querySelector('.modal') || {}).innerText || '' })",
@@ -377,3 +377,60 @@ def test_theme_boot_and_toggle_persists(served, settings, tmp_path):
     assert toggled["theme"] != boot["theme"]
     assert toggled["saved"] == toggled["theme"]
     assert toggled["meta"] == ("#12100e" if toggled["theme"] == "dark" else "#f7f4ef")
+
+
+def test_lines_are_colored_by_role(served, settings, narrator_lines, tmp_path):
+    """角色文本里每句都带角色配色槽位；旁白保持中性。"""
+    book_id = _seed_book(settings, narrator_lines)
+    page = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "role-hues",
+        extra=(
+            "--click=.script__tools .tab:nth-child(2)",
+            "--eval=JSON.stringify({"
+            " hues: [...document.querySelectorAll('.line')].map((row) => row.dataset.hue),"
+            " who: (document.querySelector('.line__who') || {}).textContent || '',"
+            " bg: getComputedStyle(document.querySelector('.line__who')).backgroundColor,"
+            " })",
+        ),
+    )
+    assert page["consoleErrors"] == []
+    probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert probe["hues"] == ["narrator", "narrator"]
+    assert probe["who"] == "旁白"
+    assert probe["bg"] != "rgba(0, 0, 0, 0)"
+
+
+def test_open_output_folder_button_follows_export(served, settings, narrator_lines, tmp_path):
+    """「打开成果文件夹」在导出前禁用，产物出现后可用。"""
+    book_id = _seed_book(settings, narrator_lines)
+    find = (
+        "--eval=JSON.stringify((() => {"
+        " const node = [...document.querySelectorAll('.workbench__more .menu__item')]"
+        ".find((item) => item.textContent === '打开成果文件夹');"
+        " return { found: Boolean(node), disabled: Boolean(node && node.disabled), title: (node || {}).title || '' };"
+        " })())"
+    )
+
+    before = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "output-off",
+        extra=("--click=.workbench__more > summary", find),
+    )
+    assert before["consoleErrors"] == []
+    off = json.loads(next(value for key, value in before.items() if key.startswith("eval:")))
+    assert off["found"] is True and off["disabled"] is True
+    assert "先点" in off["title"]
+
+    out = store.output_dir(settings, book_id)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "book.wav").write_bytes(b"RIFF0000WAVE")
+
+    after = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "output-on",
+        extra=("--click=.workbench__more > summary", find),
+    )
+    assert after["consoleErrors"] == []
+    on = json.loads(next(value for key, value in after.items() if key.startswith("eval:")))
+    assert on["disabled"] is False

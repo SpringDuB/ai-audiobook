@@ -35,6 +35,16 @@
   --warn: #8a5a11;
   --warn-soft: #f7eeda;
 
+  /* 角色标记：8 组稳定配色（按角色 id 取模），旁白用中性灰 */
+  --role-1: #2c4e9a; --role-1-soft: #e7ecf8;
+  --role-2: #8a5a11; --role-2-soft: #f7eeda;
+  --role-3: #2f6b4f; --role-3-soft: #e6f0ea;
+  --role-4: #8b3a62; --role-4-soft: #f8e8f0;
+  --role-5: #1f5f73; --role-5-soft: #e4f0f3;
+  --role-6: #a1521f; --role-6-soft: #f8ebe1;
+  --role-7: #4a4a8f; --role-7-soft: #eaeaf7;
+  --role-8: #6b6220; --role-8-soft: #f2f0dc;
+
   /* 遮罩与阴影 */
   --scrim: rgba(30, 24, 18, 0.42);
   --shadow-1: 0 1px 2px rgba(43, 33, 22, 0.07), 0 6px 16px rgba(43, 33, 22, 0.05);
@@ -126,6 +136,15 @@
   --ok-soft: #16241d;
   --warn: #e0a852;
   --warn-soft: #262013;
+
+  --role-1: #93b4f5; --role-1-soft: #1c2436;
+  --role-2: #e0a852; --role-2-soft: #262013;
+  --role-3: #6fbf95; --role-3-soft: #16241d;
+  --role-4: #e39ac0; --role-4-soft: #2a1a23;
+  --role-5: #7fc6d8; --role-5-soft: #14232a;
+  --role-6: #e79a6a; --role-6-soft: #2b1d14;
+  --role-7: #a9a9f0; --role-7-soft: #1e1e33;
+  --role-8: #cfc46a; --role-8-soft: #25230f;
 
   --scrim: rgba(6, 5, 4, 0.6);
   --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.45);

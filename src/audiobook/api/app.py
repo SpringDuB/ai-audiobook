@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -17,6 +20,35 @@ from ..pipeline import resume_book
 from ..tts_service import LocalTtsService
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+
+def _reveal_directory(path: Path) -> bool:
+    """在系统文件管理器里打开目录。失败只返回 False，交给界面提示。"""
+    try:
+        target = Path(path).resolve()
+        if sys.platform.startswith("win"):
+            opener = getattr(os, "startfile", None)
+            if opener is None:
+                return False
+            opener(str(target))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+        return True
+    except Exception:
+        return False
+
+
+def _output_info(settings, book_id: str) -> dict:
+    """导出产物清单：界面用它决定「打开成果文件夹」能不能点。"""
+    directory = store.output_dir(settings, book_id)
+    files: list[dict] = []
+    if directory.exists():
+        for path in sorted(directory.iterdir()):
+            if path.is_file():
+                files.append({"name": path.name, "size": path.stat().st_size})
+    return {"dir": str(directory), "exists": directory.exists(), "files": files}
 
 
 def _character_names(settings, book_id: str) -> dict[str, str]:
@@ -393,6 +425,23 @@ def create_app(settings, conn) -> FastAPI:
         payload = payload or {}
         return {"job_id": jobs.enqueue(conn, "book_export", book_id), "mode": payload.get("mode") or "all"}
 
+    @app.get("/api/books/{book_id}/output")
+    def book_output(book_id: str):
+        """导出目录清单：有没有产物、里面有哪些文件。"""
+        if not store.book_dir(settings, book_id).exists():
+            raise HTTPException(status_code=404, detail="book not found")
+        return _output_info(settings, book_id)
+
+    @app.post("/api/books/{book_id}/output/reveal")
+    def reveal_book_output(book_id: str):
+        """在系统文件管理器里打开导出目录（本机单用户工具，服务端直接打开）。"""
+        if not store.book_dir(settings, book_id).exists():
+            raise HTTPException(status_code=404, detail="book not found")
+        directory = store.output_dir(settings, book_id)
+        if not directory.exists():
+            raise HTTPException(status_code=404, detail="还没有导出产物：先跑「导出整本成品」")
+        return {"opened": _reveal_directory(directory), "dir": str(directory.resolve())}
+
     @app.post("/api/books/{book_id}/chapters/{index}/render")
     def render_chapter_route(book_id: str, index: int):
         """强制重渲染一章：作废该章成品与整本成品，然后入队 post。"""
@@ -474,7 +523,7 @@ def create_app(settings, conn) -> FastAPI:
         if meta is None:
             raise HTTPException(status_code=404, detail="book not found")
         chapters = store.read_json(store.chapters_path(settings, book_id), default={})
-        return {"book": meta, "chapters": chapters}
+        return {"book": meta, "chapters": chapters, "output": _output_info(settings, book_id)}
 
     @app.post("/api/books/{book_id}/run")
     def run_book(book_id: str):
