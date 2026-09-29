@@ -174,6 +174,7 @@ try {
         lines: document.querySelectorAll(".line").length,
         castRows: document.querySelectorAll(".cast-row").length,
         recChips: document.querySelectorAll(".cast-row__recs .chip").length,
+        recPlays: document.querySelectorAll(".cast-row__recs .rec-play").length,
         pickers: document.querySelectorAll(".picker").length,
         pickerRows: document.querySelectorAll(".picker__row").length,
         rawParagraphs: document.querySelectorAll(".raw-text").length,

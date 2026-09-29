@@ -34,6 +34,7 @@ class VoiceProfile:
     voice_quality: tuple[str, ...] = ()
     language_style: tuple[str, ...] = ()
     usage_type: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
     description: str = ""
 
 
@@ -71,6 +72,8 @@ def load_voice_library(settings) -> list[VoiceProfile]:
             continue
         if not isinstance(data, dict):
             continue
+        if data.get("disabled"):
+            continue  # 停用的音色不喂给大模型，也永远不会被推荐
         voices.append(
             VoiceProfile(
                 id=str(_pick(data, "id", default=directory.name)),
@@ -84,6 +87,7 @@ def load_voice_library(settings) -> list[VoiceProfile]:
                 voice_quality=_split_tags(_pick(data, "voice_quality", "voiceQuality", default=[])),
                 language_style=_split_tags(_pick(data, "language_style", "languageStyle", default=[])),
                 usage_type=_split_tags(_pick(data, "usage_type", "usageType", default=[])),
+                tags=_split_tags(_pick(data, "tags", default=[])),
                 description=str(_pick(data, "description")),
             )
         )
@@ -101,9 +105,14 @@ def voice_catalog_text(voices: list[VoiceProfile]) -> str:
             *voice.mood,
             *voice.genres,
             *voice.usage_type,
+            *voice.tags,
         ]
         deduped = list(dict.fromkeys(tag for tag in tags if tag))
-        detail = "/".join(part for part in (base, ",".join(deduped)) if part)
+        # 上传音色往往只有一段介绍：截断后也喂给模型，否则模型只能靠名字猜
+        intro = voice.description.strip().replace("\n", " ")
+        if len(intro) > 60:
+            intro = intro[:60] + "…"
+        detail = "/".join(part for part in (base, ",".join(deduped), intro) if part)
         lines.append(f"{voice.id}｜{voice.name}({detail})")
     return "\n".join(lines)
 

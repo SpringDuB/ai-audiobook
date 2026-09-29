@@ -1,11 +1,132 @@
+// 音色库：试听、上传新音色、停用/启用。
+// 停用 = 收进下面那一栏；大模型推荐和选音色悬浮窗都不会再看到它。
+
 import { api } from "../api.js";
 import { emptyState, h, renderWithState, seal, toast } from "../ui.js";
+import { loadVoices } from "../voicepicker.js";
 
-function voiceCard(voice) {
+const GENDERS = ["", "男", "女", "中性"];
+const AGES = ["", "儿童", "少年", "青年", "中年", "老年"];
+const RATES = ["", "快", "中", "慢"];
+const USAGES = ["", "角色对话", "播报解说", "旁白"];
+
+function pick(options, value = "") {
+  return h(
+    "select",
+    {},
+    ...options.map((item) => h("option", { value: item, selected: item === value }, item || "不填")),
+  );
+}
+
+function field(label, control, hint) {
+  return h(
+    "div",
+    { class: "field" },
+    h("label", {}, label),
+    control,
+    hint ? h("p", { class: "field__hint muted" }, hint) : null,
+  );
+}
+
+function uploadForm(refresh) {
+  const name = h("input", { type: "text", placeholder: "例如：低沉反派", required: true });
+  const file = h("input", { type: "file", accept: "audio/*,.wav,.mp3,.m4a,.flac,.ogg", required: true });
+  const gender = pick(GENDERS);
+  const age = pick(AGES);
+  const rate = pick(RATES);
+  const usage = pick(USAGES, "角色对话");
+  const tags = h("input", { type: "text", placeholder: "磁性, 低沉, 反派（逗号分隔，可空）" });
+  const description = h("textarea", { rows: 2, placeholder: "一句话介绍这个音色，用来给大模型推荐（可空）" });
+  const submit = h("button", { class: "btn btn-primary", type: "submit" }, "加入音色库");
+
+  return h(
+    "form",
+    {
+      class: "sheet voice-upload",
+      onSubmit: async (event) => {
+        event.preventDefault();
+        const picked = file.files?.[0];
+        if (!picked) {
+          toast("先选一个参考音频", "error");
+          return;
+        }
+        const form = new FormData();
+        form.append("name", name.value.trim());
+        form.append("file", picked);
+        form.append("gender", gender.value);
+        form.append("age_group", age.value);
+        form.append("speech_rate", rate.value);
+        form.append("usage_type", usage.value);
+        form.append("tags", tags.value);
+        form.append("description", description.value);
+        submit.disabled = true;
+        try {
+          const result = await api.uploadVoice(form);
+          toast(`已加入音色库：${result.voice?.name || name.value.trim()}`);
+          name.value = "";
+          tags.value = "";
+          description.value = "";
+          file.value = "";
+          await loadVoices({ force: true });   // 选音色悬浮窗立刻能看到
+          refresh();
+        } catch (error) {
+          toast(error.message, "error");
+        } finally {
+          submit.disabled = false;
+        }
+      },
+    },
+    h("h2", { class: "letterpress" }, "上传新音色"),
+    h(
+      "div",
+      { class: "voice-upload__grid" },
+      field("音色名称", name),
+      field("参考音频", file, "5–15 秒干净人声最好；wav / mp3 / m4a / flac / ogg 都行，超过 60 秒会被拒。"),
+      field("性别", gender),
+      field("年龄", age),
+      field("语速", rate),
+      field("用途", usage),
+      field("标签", tags, "标签会进大模型的音色库清单，写清性格/题材更容易被推荐。"),
+      field("介绍", description),
+    ),
+    h("div", { class: "row" }, submit),
+  );
+}
+
+function voiceCard(voice, refresh) {
+  const audio = h("audio", { controls: true, preload: "none", src: voice.sample_url });
+  const toggle = h(
+    "button",
+    {
+      class: "btn btn-sm",
+      type: "button",
+      title: "停用后大模型推荐和选音色都看不到它；音频保留，随时可再启用",
+      onClick: async (event) => {
+        event.target.disabled = true;
+        try {
+          await api.patchVoice(voice.id, { disabled: true });
+          await loadVoices({ force: true });
+          audio.pause();
+          toast(`「${voice.name}」已停用`);
+          refresh();
+        } catch (error) {
+          toast(error.message, "error");
+          event.target.disabled = false;
+        }
+      },
+    },
+    "停用",
+  );
   return h(
     "article",
-    { class: "sheet voice-card" },
-    h("div", { class: "row" }, seal(voice.name), h("span", { class: "letterpress" }, voice.name)),
+    { class: "sheet voice-card", dataset: { voiceId: voice.id } },
+    h(
+      "div",
+      { class: "row" },
+      seal(voice.name),
+      h("span", { class: "letterpress" }, voice.name),
+      voice.source === "upload" ? h("span", { class: "tag" }, "上传") : null,
+    ),
     h(
       "div",
       { class: "voice-card__tags" },
@@ -13,122 +134,90 @@ function voiceCard(voice) {
       voice.age_group ? h("span", { class: "tag" }, voice.age_group) : null,
       ...(voice.tags || []).slice(0, 4).map((tag) => h("span", { class: "tag" }, tag)),
     ),
-    voice.has_ref
-      ? h("audio", { controls: true, preload: "none", src: voice.sample_url })
-      : h("p", { class: "muted" }, "缺少参考音频"),
+    voice.description ? h("p", { class: "voice-card__desc muted" }, voice.description) : null,
+    voice.has_ref ? audio : h("p", { class: "muted" }, "缺少参考音频"),
+    h("div", { class: "voice-card__actions" }, toggle),
   );
 }
 
-async function matrix(books) {
-  if (!books.length) return emptyState("还没有书", "先导入书稿，才能给角色配音色。");
-  let bookId = books[0].id;
-  const holder = h("div");
-  const draw = async () => {
-    holder.replaceChildren(h("p", { class: "muted" }, "读取选角…"));
-    try {
-      const payload = await api.casting(bookId);
-      const options = payload.voices?.length ? payload.voices : [{ id: payload.narrator_voice || "default", name: "default（未配置音色库）" }];
-      holder.replaceChildren(
+function disabledSection(voices, refresh) {
+  return h(
+    "section",
+    { class: "sheet voice-disabled" },
+    h("h2", { class: "letterpress" }, `已停用（${voices.length}）`),
+    h("p", { class: "muted" }, "停用的音色不会再被大模型推荐，也不会出现在选音色里；音频和标签都还在，点「启用」就恢复。"),
+    h(
+      "div",
+      { class: "voice-disabled__list" },
+      ...voices.map((voice) =>
         h(
           "div",
-          { class: "table-wrap" },
+          { class: "voice-disabled__row", dataset: { voiceId: voice.id } },
+          seal(voice.name),
+          h("span", { class: "voice-disabled__name" }, voice.name),
+          h("span", { class: "mono muted" }, voice.id),
           h(
-            "table",
-            { class: "table" },
-            h(
-              "thead",
-              {},
-              h("tr", {}, h("th", {}, "角色"), h("th", {}, "当前音色"), h("th", {}, "匹配分"), h("th", {}, "原因"), h("th", {}, "改为")),
-            ),
-            h(
-              "tbody",
-              {},
-              ...(payload.roles || []).map((role) => {
-                const select = h(
-                  "select",
-                  {},
-                  ...options.map((voice) =>
-                    h("option", { value: voice.id, selected: voice.id === role.voice_id }, voice.name),
-                  ),
-                );
-                return h(
-                  "tr",
-                  {},
-                  h("td", {}, h("span", { class: "row" }, seal(role.name), role.name)),
-                  h("td", { class: "mono" }, role.voice_name || role.voice_id || "—"),
-                  h("td", { class: "mono" }, role.score ?? "—"),
-                  h("td", { class: "muted" }, (role.reasons || []).join("；") || "—"),
-                  h(
-                    "td",
-                    { class: "row" },
-                    select,
-                    h(
-                      "button",
-                      {
-                        class: "btn btn-sm",
-                        onClick: async () => {
-                          try {
-                            const result = await api.setCasting(bookId, role.role_id, { voice_id: select.value });
-                            const chapters = result.invalidated || [];
-                            toast(chapters.length ? `已保存；第 ${chapters.join("、")} 章成品已失效` : "已保存");
-                          } catch (error) {
-                            toast(error.message, "error");
-                          }
-                        },
-                      },
-                      "保存",
-                    ),
-                  ),
-                );
-              }),
-            ),
+            "button",
+            {
+              class: "btn btn-sm",
+              type: "button",
+              onClick: async (event) => {
+                event.target.disabled = true;
+                try {
+                  await api.patchVoice(voice.id, { disabled: false });
+                  await loadVoices({ force: true });
+                  toast(`「${voice.name}」已重新启用`);
+                  refresh();
+                } catch (error) {
+                  toast(error.message, "error");
+                  event.target.disabled = false;
+                }
+              },
+            },
+            "启用",
           ),
         ),
-        payload.voices?.length
-          ? null
-          : h("p", { class: "muted" }, "音色库为空：可以在设置页配置 TTS，M6 迁移后会带 96 个内置音色。"),
-      );
-    } catch (error) {
-      holder.replaceChildren(h("div", { class: "error-block" }, `读取失败：${error.message}`));
-    }
-  };
-  const picker = h(
-    "select",
-    {
-      onChange: (event) => {
-        bookId = event.target.value;
-        draw();
-      },
-    },
-    ...books.map((book) => h("option", { value: book.id }, book.title || book.id)),
+      ),
+    ),
   );
-  await draw();
-  return h("section", { class: "sheet" }, h("div", { class: "row row--between" }, h("h2", { class: "letterpress" }, "角色 → 音色"), picker), holder);
 }
 
-async function build() {
-  const [voicesPayload, booksPayload] = await Promise.all([api.voices(), api.books()]);
-  const voices = voicesPayload.voices || [];
-  const books = booksPayload.books || [];
+async function build(host) {
+  const refresh = () => render(host, { name: "voices" });
+  const payload = await api.voices({ includeDisabled: true });
+  const voices = payload.voices || [];
+  const active = voices.filter((voice) => !voice.disabled);
+  const disabled = voices.filter((voice) => voice.disabled);
+
   const container = h(
     "div",
     {},
     h(
       "div",
       { class: "page-head" },
-      h("div", { class: "page-head__title" }, h("h1", { class: "letterpress" }, "音色库"), h("p", { class: "muted" }, "内置与上传的音色都在这里；试听用的是参考音频。")),
+      h(
+        "div",
+        { class: "page-head__title" },
+        h("h1", { class: "letterpress" }, "音色库"),
+        h(
+          "p",
+          { class: "muted" },
+          `可用 ${active.length} 个${disabled.length ? ` · 已停用 ${disabled.length} 个` : ""}；试听用的是参考音频。`,
+        ),
+      ),
       h("div", { class: "page-head__actions" }, h("a", { class: "btn btn-ghost", href: "#/settings" }, "TTS 设置")),
     ),
+    uploadForm(refresh),
   );
   container.append(
-    voices.length
-      ? h("div", { class: "voice-grid" }, ...voices.map(voiceCard))
-      : emptyState("音色库是空的", "把参考音频放进 data/voices/<id>/（ref.wav + voice.json），或等 M6 迁移内置音色。"),
+    active.length
+      ? h("div", { class: "voice-grid" }, ...active.map((voice) => voiceCard(voice, refresh)))
+      : emptyState("还没有可用音色", "用上面的表单传一段参考音频，或先跑一次内置音色迁移。"),
   );
-  container.append(await matrix(books));
+  if (disabled.length) container.append(disabledSection(disabled, refresh));
   return container;
 }
 
 export function render(host) {
-  return renderWithState(host, () => build());
+  return renderWithState(host, () => build(host));
 }

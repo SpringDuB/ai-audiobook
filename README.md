@@ -1,6 +1,6 @@
 # AI 有声书（ai-audiobook）
 
-本地单用户的「小说 → 多角色情感有声书」流水线：导入 txt，自动分章、识别角色、逐句标注情感，
+本地单用户的「小说 → 多角色情感有声书」流水线：导入 txt / epub，自动分章、识别角色、逐句标注情感，
 再按角色切换音色逐行合成，导出可播放的 `wav / srt / mkv`。
 
 三个进程各干各的：**后端只做快请求，长任务全在 worker，TTS 单独部署**。
@@ -9,7 +9,7 @@
 ## 流水线
 
 ```
-导入 txt ─► 分章(本地，自动) ─► 提取台词与说话人(含对白情绪) ─► 角色整合(同人异名合并) ─► 推荐音色 ─► 合成 ─► 每章渲染 ─► 整本合本
+导入 txt/epub ─► 分章(本地，自动) ─► 提取台词与说话人(含对白情绪) ─► 角色整合(同人异名合并) ─► 推荐音色 ─► 合成 ─► 每章渲染 ─► 整本合本
                                  └──────────────「分析角色文本」──────────────┘          └────「生成有声书」────┘
 ```
 
@@ -75,11 +75,11 @@ uv run aiab tts start --wait 600   # 窗口 3；首次会先下载权重再加�
 
 ## 日常使用
 
-1. **书架**导入 txt → 自动分章；
-2. 点「**分析角色文本**」等分析链跑完（台词提取 → 角色整合 → 音色推荐，每个角色默认用第一条推荐）；
+1. **书架**导入 txt / epub → 自动分章（卡片本身可点进书页，卡上只有「打开 / 删除」）；
+2. 进工作台点「**分析多个章节…**」或「**分析本章台词**」等分析链跑完（台词提取 → 角色整合 → 音色推荐，每个角色默认用第一条推荐）；
 3. 进工作台按需改台词、换音色、逐句试听/重生成；
-4. 点「**生成有声书**」开始合成，每个章节生成 `wav + srt`，最后合出整本；
-5. **导出成品** → `data/books/<bookId>/output/`：`chapter_XXXX.wav/.srt/.mkv`、`book.wav/.srt/.mkv`、`playlist.m3u`；
+4. 点「**生成整本音频**」或「**生成本章音频**」开始合成，每个章节生成 `wav + srt`，最后合出整本；
+5. **导出整本成品** → `data/books/<bookId>/output/`：`chapter_XXXX.wav/.srt/.mkv`、`book.wav/.srt/.mkv`、`playlist.m3u`；
 6. 播放：`mkv` 内嵌软字幕，手机用 VLC / nPlayer / MX Player 直接打开就能看字幕；`wav + srt` 同名放一起也可以；
 7. **删除整本**：书架卡片上的「删除」（二次确认）。它会删掉这本书的数据目录、`books` 行与所有 `jobs` 行；
    如果这本书还有任务在跑，会返回提示让你先去任务中心取消，避免 worker 在目录被删后继续写入。
@@ -90,7 +90,7 @@ uv run aiab tts start --wait 600   # 窗口 3；首次会先下载权重再加�
 |---|---|
 | `uv run aiab serve --port 8300 [--host 0.0.0.0]` | 起后端 + 浏览器 UI（手机连局域网 IP 即可） |
 | `uv run aiab worker [--once] [--max-jobs N]` | 起 worker；`--once` 只领一个任务，便于验收 |
-| `uv run aiab import <book.txt> --title 书名` | 命令行导入并入队分章 |
+| `uv run aiab import <book.txt\|book.epub> --title 书名` | 命令行导入（txt / epub）并入队分章 |
 | `uv run aiab run <bookId>` | 按文件断点补跑下一步（分析 + 合成） |
 | `uv run aiab export <bookId> [--mode chapter/book/all] [--container mp4]` | 导出成品 |
 | `uv run aiab tts start/stop/status/logs` | 一键启停本机 TTS 服务 |
@@ -105,7 +105,7 @@ data/
 ├── service.db                        SQLite：books / jobs
 ├── settings.json                     设置页写入的覆盖项（含 TTS 端点）
 ├── books/<bookId>/
-│   ├── source/original.txt           原始书稿
+│   ├── source/original.txt           书稿纯文本（epub 导入时是抽出来的正文）
 │   ├── chapters.json                 分章结果
 │   ├── analysis/characters.json      角色表（主名 + 别名 + 出现章数）
 │   ├── analysis/extract/chapter_XXXX.json  整章提取原始结果（每句 + 说话人 + 对白情绪，LLM 直出）
@@ -114,7 +114,7 @@ data/
 │   ├── audio/chapter_XXXX/<lineId>.wav     逐句音频（+ .meta.json 缓存键）
 │   ├── output/                       成品 wav/srt/mkv、render.json、合本、播放列表
 │   └── logs/llm.jsonl                LLM 调用日志
-└── voices/<voiceId>/{voice.json,ref.wav}   音色库（迁移的 96 个内置音色）
+└── voices/<voiceId>/{voice.json,ref.wav}   音色库（内置 + 页面上传；停用的是 disabled=true）
 ```
 
 ## 设计约束（有意为之）

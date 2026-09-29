@@ -2,15 +2,6 @@ import { api } from "../api.js";
 import { duration, stateLabel } from "../format.js";
 import { confirmDialog, emptyState, h, renderWithState, toast } from "../ui.js";
 
-const RUN_LABELS = {
-  empty: "一键分析",
-  split: "一键分析",
-  analyzing: "继续分析",
-  analyzed: "一键生成",
-  synthesizing: "继续生成",
-  ready: "重新生成",
-};
-
 function statText(stats) {
   const parts = [`第 ${stats.chapters} 章`, `已分析 ${stats.analyzed}/${stats.chapters}`];
   if (stats.duration_sec) parts.push(`已生成 ${stats.generated}/${stats.chapters} · ${duration(stats.duration_sec)}`);
@@ -20,12 +11,14 @@ function statText(stats) {
 
 function bookCard(book, refresh) {
   const stats = book.stats || {};
+  const open = `#/book/${book.id}`;
   const remove = h(
     "button",
     {
       class: "btn btn-danger",
       type: "button",
       onClick: async (event) => {
+        event.stopPropagation();   // 卡片整体可点，删除别顺手把书页也打开
         const button = event.currentTarget;
         const ok = await confirmDialog({
           title: "删除这本书？",
@@ -50,11 +43,26 @@ function bookCard(book, refresh) {
   );
   return h(
     "article",
-    { class: "sheet book-card" },
+    {
+      class: "sheet book-card",
+      role: "link",
+      tabIndex: 0,
+      "aria-label": `打开《${book.title || book.id}》`,
+      onClick: (event) => {
+        if (event.target.closest("a, button")) return;
+        window.location.hash = open;
+      },
+      onKeydown: (event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        window.location.hash = open;
+      },
+    },
     h(
       "div",
       { class: "row row--between" },
-      h("a", { class: "letterpress book-card__title", href: `#/book/${book.id}` }, book.title || book.id),
+      h("a", { class: "letterpress book-card__title", href: open }, book.title || book.id),
       h("span", { class: "state-tag", dataset: { state: stats.state || "empty" } }, stateLabel(stats.state)),
     ),
     h("p", { class: "book-card__stats mono" }, statText(stats)),
@@ -64,34 +72,14 @@ function bookCard(book, refresh) {
     h(
       "div",
       { class: "book-card__actions" },
-      h(
-        "button",
-        {
-          class: "btn btn-primary",
-          onClick: async (event) => {
-            event.target.disabled = true;
-            try {
-              const result = await api.runBook(book.id);
-              toast(result.queued ? `已入队 ${result.queued} 个任务` : "没有需要排队的任务");
-            } catch (error) {
-              toast(error.message, "error");
-            } finally {
-              event.target.disabled = false;
-              refresh();
-            }
-          },
-        },
-        RUN_LABELS[stats.state] || "一键分析",
-      ),
-      h("a", { class: "btn", href: `#/book/${book.id}` }, "打开"),
-      h("a", { class: "btn btn-ghost", href: `#/book/${book.id}/issues` }, "异常"),
+      h("a", { class: "btn btn-primary", href: open }, "打开"),
       remove,
     ),
   );
 }
 
 function importForm(refresh) {
-  const file = h("input", { type: "file", accept: ".txt", required: true });
+  const file = h("input", { type: "file", accept: ".txt,.epub,application/epub+zip,text/plain", required: true });
   const title = h("input", { type: "text", placeholder: "书名（可选，默认用文件名）" });
   const submit = h("button", { class: "btn btn-primary", type: "submit" }, "导入并分章");
   const form = h(
@@ -102,12 +90,13 @@ function importForm(refresh) {
         event.preventDefault();
         const picked = file.files?.[0];
         if (!picked) {
-          toast("先选一个 txt 文件", "error");
+          toast("先选一个 txt / epub 文件", "error");
           return;
         }
         submit.disabled = true;
         try {
-          const result = await api.upload(picked, title.value.trim() || picked.name.replace(/\.txt$/i, ""));
+          const fallback = picked.name.replace(/\.(txt|epub)$/i, "");
+          const result = await api.upload(picked, title.value.trim() || fallback);
           toast("已导入，正在排队分章");
           file.value = "";
           title.value = "";
@@ -120,7 +109,13 @@ function importForm(refresh) {
         }
       },
     },
-    h("div", { class: "field" }, h("label", {}, "书稿（txt）"), file),
+    h(
+      "div",
+      { class: "field" },
+      h("label", {}, "书稿（txt / epub）"),
+      file,
+      h("p", { class: "field__hint muted" }, "epub 会先抽成纯文本再分章，原文一样保留在书页里。"),
+    ),
     h("div", { class: "field" }, h("label", {}, "书名"), title),
     submit,
   );
@@ -135,13 +130,18 @@ async function build(host) {
     h(
       "div",
       { class: "page-head" },
-      h("div", { class: "page-head__title" }, h("h1", { class: "letterpress" }, "书架"), h("p", { class: "muted" }, "导入书稿 → 一键分析 → 一键生成。中途不需要守着浏览器。")),
+      h(
+        "div",
+        { class: "page-head__title" },
+        h("h1", { class: "letterpress" }, "书架"),
+        h("p", { class: "muted" }, "导入书稿（txt / epub）→ 打开书页分析台词 → 生成音频 → 导出成品。"),
+      ),
       h("div", { class: "page-head__actions" }, h("a", { class: "btn", href: "#/jobs" }, "任务中心"), h("a", { class: "btn btn-ghost", href: "#/settings" }, "设置")),
     ),
     importForm(refresh),
   );
   if (!books.length) {
-    container.append(emptyState("还没有书稿", "选一份 txt 导入，系统会自动清洗与分章。"));
+    container.append(emptyState("还没有书稿", "选一份 txt / epub 导入，系统会自动清洗与分章。"));
   } else {
     container.append(h("div", { class: "book-grid" }, ...books.map((book) => bookCard(book, refresh))));
   }

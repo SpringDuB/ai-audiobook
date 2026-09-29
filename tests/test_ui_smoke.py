@@ -162,10 +162,28 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert workspace["counts"]["recChips"] == 2   # 推荐音色直接排在角色行上
     assert "角色音色" in workspace["text"]
     assert "推荐" in workspace["text"]
+    # 每个推荐音色都要有试听按钮（不是只能选中）
+    assert workspace["counts"]["recPlays"] == workspace["counts"]["recChips"] == 2
     # 默认停在「原文」页签：进书先看干净原文，不再直接甩出角色文本
     assert workspace["counts"]["rawParagraphs"] >= 1
     assert workspace["counts"]["lines"] == 0
     assert "第一句。" in workspace["text"]
+
+    # 顶栏按钮说人话 + 每个都有悬浮说明
+    buttons = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "bar",
+        extra=(
+            "--eval=JSON.stringify([...document.querySelectorAll('.workbench__actions .btn')]"
+            ".map((node) => ({ label: node.textContent, title: node.title })))",
+        ),
+    )
+    assert buttons["consoleErrors"] == []
+    bar = json.loads(next(value for key, value in buttons.items() if key.startswith("eval:")))
+    labels = [item["label"] for item in bar]
+    assert labels[:2] == ["分析本章台词", "分析多个章节…"]
+    assert "生成整本音频" in labels and "生成本章音频" in labels and "导出整本成品" in labels
+    assert all(item["title"] for item in bar)
 
     # 切到「角色文本」页签，逐句标注要能直接看
     script = _probe(f"{served}/#/book/{book_id}", tmp_path / "script", extra=("--click=.script__tools .tab:nth-child(2)",))
@@ -184,6 +202,46 @@ def test_workspace_voice_picker_lists_categories(served, settings, narrator_line
     assert page["counts"]["pickers"] == 1
     assert page["counts"]["pickerRows"] == 1
     assert "测试男声" in page["text"]
+
+
+def test_shelf_card_only_has_open_delete_and_opens_on_click(served, settings, narrator_lines, tmp_path):
+    _seed_book(settings, narrator_lines)
+    page = _probe(
+        f"{served}/#/shelf",
+        tmp_path / "shelf-actions",
+        extra=(
+            "--eval=JSON.stringify([...document.querySelectorAll('.book-card__actions .btn')]"
+            ".map((node) => node.textContent))",
+        ),
+    )
+    assert page["consoleErrors"] == []
+    actions = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert actions == ["打开", "删除"]          # 一键生成/异常按钮已下线
+
+    # 点卡片正文（不是链接、不是按钮）也要能进书页
+    clicked = _probe(f"{served}/#/shelf", tmp_path / "shelf-card-click", extra=("--click=.book-card__stats",))
+    assert clicked["consoleErrors"] == []
+    assert clicked["view"] == "book"
+
+
+def test_voices_page_uploads_and_has_no_casting_matrix(served, settings, tmp_path):
+    _seed_voice(settings)
+    page = _probe(
+        f"{served}/#/voices",
+        tmp_path / "voices",
+        extra=(
+            "--eval=JSON.stringify({"
+            ' upload: Boolean(document.querySelector(".voice-upload")),'
+            ' tables: document.querySelectorAll(".table").length,'
+            ' fileInput: Boolean(document.querySelector(".voice-upload input[type=file]")),'
+            "})",
+        ),
+    )
+    assert page["consoleErrors"] == []
+    assert "上传新音色" in page["text"] and "加入音色库" in page["text"]
+    assert page["counts"]["voices"] == 1
+    probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert probe == {"upload": True, "tables": 0, "fileInput": True}   # 角色 → 音色矩阵已移除
 
 
 def test_analyze_button_opens_chapter_picker(served, settings, narrator_lines, tmp_path):

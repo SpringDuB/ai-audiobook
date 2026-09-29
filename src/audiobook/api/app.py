@@ -1,13 +1,14 @@
 import asyncio
 import json
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .. import audio, jobs, store
+from .. import audio, jobs, store, voicelib
 from ..analysis.casting import voice_for_speaker
 from ..config import EMOTION_TEXT_ENABLED, OVERLAY_KEYS, get_settings, load_overlay, save_overlay
 from ..editing import apply_line_patch, invalidate_chapter
@@ -122,11 +123,22 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.post("/api/books")
     async def upload_book(file: UploadFile = File(...), title: str = Form("未命名")):
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in (".txt", ".epub"):
+            raise HTTPException(status_code=400, detail="只支持 txt / epub：换一个文件再传")
         data = await file.read()
-        tmp = settings.data_dir / "uploads" / (file.filename or "book.txt")
+        if not data:
+            raise HTTPException(status_code=400, detail="文件是空的")
+        tmp = settings.data_dir / "uploads" / f"upload-{uuid.uuid4().hex[:8]}{suffix}"
         store.atomic_write_bytes(tmp, data)
-        book_id = import_book(settings, conn, tmp, title=title)
-        return {"book_id": book_id}
+        book_title = (title or "").strip()
+        if not book_title or book_title == "未命名":
+            book_title = Path(file.filename or "未命名").stem or "未命名"
+        try:
+            book_id = import_book(settings, conn, tmp, title=book_title)
+        except ValueError as exc:  # epub 坏了 / 空文件等：回 400 让前端提示
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"book_id": book_id, "title": book_title}
 
     @app.get("/api/books")
     def list_books():
@@ -207,38 +219,94 @@ def create_app(settings, conn) -> FastAPI:
         rows = store.read_jsonl(store.issues_path(settings, book_id))
         return {"issues": list(reversed(rows))[:200]}
 
+    def _voice_payload(path, meta: dict) -> dict:
+        voice_id = meta.get("id") or path.parent.name
+        # 迁移过来的音色把标签拆成了好几栏，这里合并一份方便前端分类
+        tags = []
+        for key in ("tags", "personality", "genres", "mood", "voice_quality", "language_style"):
+            for value in meta.get(key) or []:
+                if value and value not in tags:
+                    tags.append(value)
+        ref = path.parent / "ref.wav"
+        return {
+            "id": voice_id,
+            "name": meta.get("name") or voice_id,
+            "gender": meta.get("gender"),
+            "age_group": meta.get("age_group"),
+            "speech_rate": meta.get("speech_rate"),
+            "personality": meta.get("personality") or [],
+            "genres": meta.get("genres") or [],
+            "mood": meta.get("mood") or [],
+            "voice_quality": meta.get("voice_quality") or [],
+            "usage_type": meta.get("usage_type") or [],
+            "description": meta.get("description") or "",
+            "tags": tags,
+            "source": meta.get("source") or "builtin",
+            "disabled": bool(meta.get("disabled")),
+            "created_at": meta.get("created_at"),
+            "needs_review": bool(meta.get("needs_review")),
+            "has_ref": ref.exists(),
+            "sample_url": f"/api/voices/{voice_id}/sample",
+        }
+
     @app.get("/api/voices")
-    def list_voices():
+    def list_voices(include_disabled: bool = False):
+        """音色库默认只给"启用的"：停用的音色对大模型和选音色都不可见。"""
         voices = []
         for path in sorted(settings.voices_dir.glob("*/voice.json")):
             meta = store.read_json(path, default={}) or {}
-            voice_id = meta.get("id") or path.parent.name
-            # 迁移过来的音色把标签拆成了好几栏，这里合并一份方便前端分类
-            tags = []
-            for key in ("tags", "personality", "genres", "mood", "voice_quality", "language_style"):
-                for value in meta.get(key) or []:
-                    if value and value not in tags:
-                        tags.append(value)
-            voices.append(
-                {
-                    "id": voice_id,
-                    "name": meta.get("name") or voice_id,
-                    "gender": meta.get("gender"),
-                    "age_group": meta.get("age_group"),
-                    "speech_rate": meta.get("speech_rate"),
-                    "personality": meta.get("personality") or [],
-                    "genres": meta.get("genres") or [],
-                    "mood": meta.get("mood") or [],
-                    "voice_quality": meta.get("voice_quality") or [],
-                    "usage_type": meta.get("usage_type") or [],
-                    "description": meta.get("description") or "",
-                    "tags": tags,
-                    "needs_review": bool(meta.get("needs_review")),
-                    "has_ref": (path.parent / "ref.wav").exists(),
-                    "sample_url": f"/api/voices/{voice_id}/sample",
-                }
-            )
+            payload = _voice_payload(path, meta)
+            if payload["disabled"] and not include_disabled:
+                continue
+            voices.append(payload)
         return {"voices": voices}
+
+    @app.post("/api/voices")
+    async def upload_voice(
+        file: UploadFile = File(...),
+        name: str = Form(...),
+        gender: str = Form(""),
+        age_group: str = Form(""),
+        speech_rate: str = Form(""),
+        usage_type: str = Form(""),
+        tags: str = Form(""),
+        description: str = Form(""),
+    ):
+        """上传一个音色：参考音频 + 标签介绍 → data/voices/<id>/。"""
+        data = await file.read()
+        try:
+            meta = voicelib.add_voice(
+                settings,
+                name=name,
+                audio=data,
+                filename=file.filename or "",
+                gender=gender,
+                age_group=age_group,
+                speech_rate=speech_rate,
+                usage_type=usage_type,
+                tags=tags,
+                description=description,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"voice": _voice_payload(settings.voices_dir / meta["id"] / "voice.json", meta)}
+
+    @app.patch("/api/voices/{voice_id}")
+    def patch_voice(voice_id: str, payload: dict):
+        """停用 / 启用一个音色（音频留着，随时能恢复）。"""
+        try:
+            if "disabled" in payload:
+                meta = voicelib.set_disabled(settings, voice_id, bool(payload["disabled"]))
+            else:
+                meta = voicelib.read_voice_meta(settings, voice_id)
+                if not meta:
+                    raise FileNotFoundError(f"音色不存在：{voice_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        path = settings.voices_dir / (meta.get("id") or voice_id) / "voice.json"
+        return {"voice": _voice_payload(path, meta)}
 
     @app.get("/api/voices/{voice_id}/sample")
     def voice_sample(voice_id: str):
@@ -267,6 +335,8 @@ def create_app(settings, conn) -> FastAPI:
         voices = []
         for path in sorted(settings.voices_dir.glob("*/voice.json")):
             meta = store.read_json(path, default={}) or {}
+            if meta.get("disabled"):
+                continue  # 停用的音色不出现在任何选择入口
             voices.append({"id": path.parent.name, "name": meta.get("name") or path.parent.name})
         role_ids = [role["role_id"] for role in roles]
         return {

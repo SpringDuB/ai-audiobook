@@ -22,8 +22,8 @@ def main(argv=None) -> int:
     p_worker.add_argument("--max-jobs", type=int, default=None, help="最多执行 N 个任务后退出（用于验收）")
     p_worker.add_argument("--worker-id", default=None)
 
-    p_import = sub.add_parser("import", help="导入 txt 并入队分章")
-    p_import.add_argument("txt")
+    p_import = sub.add_parser("import", help="导入 txt / epub 并入队分章")
+    p_import.add_argument("txt", help="书稿路径（.txt 或 .epub）")
     p_import.add_argument("--title", required=True)
     p_import.add_argument("--book-id", default=None)
 

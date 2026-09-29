@@ -228,6 +228,9 @@ function lineRow(line, ctx) {
 function roleRow(role, scope, ctx) {
   const voiceName = role.voice_name || role.voice_id || "未绑定";
   const bound = role.voice_id && role.voice_id !== "default";
+  // 绑了但音色库里找不到（被停用/删掉）——不早点提示，合成时会一片红
+  const boundVoice = bound ? ctx.voiceById.get(role.voice_id) : null;
+  const missing = Boolean(bound && !boundVoice);
   const chapters = role.chapters || [];
   const recommendations = (role.recommendations || []).filter((item) => item.voice_id);
   const picked = recommendations.findIndex((item) => item.voice_id === role.voice_id);
@@ -243,7 +246,14 @@ function roleRow(role, scope, ctx) {
         "div",
         { class: "cast-row__head" },
         h("span", { class: "cast-row__name" }, role.name),
-        h("span", { class: bound ? "tag" : "tag tag--alert", title: voiceName }, voiceName),
+        h(
+          "span",
+          {
+            class: bound && !missing ? "tag" : "tag tag--alert",
+            title: missing ? `${voiceName} 已停用或不在音色库里：换一个音色再生成` : voiceName,
+          },
+          missing ? `${voiceName}（已停用）` : voiceName,
+        ),
         badge ? h("span", { class: "tag tag--rec" }, badge) : null,
       ),
       h(
@@ -256,22 +266,40 @@ function roleRow(role, scope, ctx) {
         ? h(
             "div",
             { class: "cast-row__recs" },
-            ...recommendations.map((item, position) =>
-              h(
-                "button",
-                {
-                  class: "chip",
-                  type: "button",
-                  title: item.reason || "",
-                  "aria-pressed": String(item.voice_id === role.voice_id),
-                  onClick: () => ctx.pickRecommended(role, item),
-                },
-                `${position + 1}. ${item.voice_name || item.voice_id}`,
-                item.confidence
-                  ? h("span", { class: "chip__num mono" }, ` ${Math.round(Number(item.confidence) * 100)}%`)
-                  : null,
-              ),
-            ),
+            ...recommendations.map((item, position) => {
+              const voice = ctx.voiceById.get(item.voice_id);
+              const playable = Boolean(voice?.has_ref);
+              return h(
+                "span",
+                { class: "rec-chip" },
+                h(
+                  "button",
+                  {
+                    class: "chip",
+                    type: "button",
+                    title: item.reason || "",
+                    "aria-pressed": String(item.voice_id === role.voice_id),
+                    onClick: () => ctx.pickRecommended(role, item),
+                  },
+                  `${position + 1}. ${item.voice_name || item.voice_id}`,
+                  item.confidence
+                    ? h("span", { class: "chip__num mono" }, ` ${Math.round(Number(item.confidence) * 100)}%`)
+                    : null,
+                ),
+                h(
+                  "button",
+                  {
+                    class: "rec-play",
+                    type: "button",
+                    disabled: !playable,
+                    title: playable ? `试听「${voice.name}」的参考音频` : "这个音色没有参考音频，试听不了",
+                    "aria-label": `试听 ${item.voice_name || item.voice_id}`,
+                    onClick: (event) => ctx.preview(item.voice_id, event.currentTarget),
+                  },
+                  "▶",
+                ),
+              );
+            }),
           )
         : null,
     ),
@@ -339,6 +367,39 @@ async function build(route, host) {
     return pendingView(route, host, bookPayload.book?.title || short(bookId), chaptersPayload);
   }
   const voiceLibrary = await loadVoices().catch(() => []);
+  const voiceById = new Map(voiceLibrary.map((voice) => [voice.id, voice]));
+
+  // 推荐音色的试听：和正文试听分开一个 audio，互不打断
+  const previewAudio = new Audio();
+  previewAudio.preload = "none";
+  const resetPreviewButtons = () => {
+    document.querySelectorAll(".rec-play[data-playing='1']").forEach((node) => {
+      node.dataset.playing = "0";
+      node.textContent = "▶";
+    });
+  };
+  const previewVoice = (voiceId, button) => {
+    const voice = voiceById.get(voiceId);
+    if (!voice?.has_ref) {
+      toast("这个音色缺少参考音频，试听不了", "error");
+      return;
+    }
+    if (button.dataset.playing === "1") {
+      previewAudio.pause();
+      resetPreviewButtons();
+      return;
+    }
+    resetPreviewButtons();
+    previewAudio.src = voice.sample_url;
+    previewAudio.play().catch(() => toast("浏览器拦住了播放，再点一次", "error"));
+    button.dataset.playing = "1";
+    button.textContent = "■";
+  };
+  previewAudio.addEventListener("ended", resetPreviewButtons);
+  onTeardown(() => {
+    previewAudio.pause();
+    previewAudio.removeEventListener("ended", resetPreviewButtons);
+  });
 
   const state = {
     bookId,
@@ -473,7 +534,7 @@ async function build(route, host) {
     const roles = state.scope === "chapter" ? chapterRoles() : state.casting;
     castList.replaceChildren(
       ...(roles.length
-        ? roles.map((role) => roleRow(role, state.scope, { pick, pickRecommended }))
+        ? roles.map((role) => roleRow(role, state.scope, { pick, pickRecommended, preview: previewVoice, voiceById }))
         : [h("p", { class: "muted" }, state.scope === "chapter" ? "这一章还没有标注结果。" : "全书还没有选角结果。")]),
     );
   };
@@ -641,12 +702,13 @@ async function build(route, host) {
 
   /* --- 顶部工具条 --- */
 
-  const action = (label, fn, { primary = false } = {}) =>
+  const action = (label, fn, { primary = false, title = "" } = {}) =>
     h(
       "button",
       {
         class: primary ? "btn btn-primary" : "btn",
         type: "button",
+        title,
         onClick: async (event) => {
           const button = event.currentTarget;
           button.disabled = true;
@@ -679,12 +741,19 @@ async function build(route, host) {
       "div",
       { class: "workbench__actions" },
       progress,
-      action("分析本章", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析")),
-      action("分析角色文本", async () => {
+      h(
+        "span",
+        { class: "workbench__flow muted" },
+        "流程：① 分析台词 → ② 生成音频 → ③ 导出成品",
+      ),
+      action("分析本章台词", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析"), {
+        title: "只重跑当前这一章的逐句标注（谁说的 + 什么情绪），其他章不动；已人工改过的这一章会被覆盖",
+      }),
+      action("分析多个章节…", async () => {
         // 弹窗多选章节：只分析勾选的章，没勾过的默认勾上"还没分析"的章节
         const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
         const picked = await chapterPickerDialog({
-          title: "分析哪些章节？",
+          title: "分析哪些章节的台词？",
           message:
             "只重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
             "对应成品音频随之失效，需要重新生成。",
@@ -695,22 +764,34 @@ async function build(route, host) {
         if (!picked || !picked.length) return;
         queued(await api.analyzeChapters(bookId, picked), "章节分析");
         await refreshChapters();
+      }, {
+        title: "弹窗勾选章节：重跑逐句标注，并重推角色音色（新称呼会并进角色表）；适合整本重来或返工几章",
       }),
-      action("生成有声书", async () => queued(await api.generateBook(bookId), "合成"), { primary: true }),
-      action("生成本章", async () => queued(await api.generateChapter(bookId, state.index), "本章合成")),
+      action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
+        primary: true,
+        title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
+      }),
+      action("生成本章音频", async () => queued(await api.generateChapter(bookId, state.index), "本章合成"), {
+        title: "只合成当前这一章：逐句 TTS → 拼接出本章音频与字幕，其他章不动",
+      }),
       action(
-        "导出成品",
+        "导出整本成品",
         async () => {
           await api.exportBook(bookId, { mode: "all" });
           toast("已入队整本导出");
         },
+        { title: "把已生成的章节合成整本产物：book.wav、字幕、mkv、播放列表等，写进 output/" },
       ),
-      action("重渲染本章", async () => {
-        await api.renderChapter(bookId, state.index);
-        toast("已入队本章重渲染");
-        await refreshChapters();
-      }),
-      h("a", { class: "btn btn-ghost", href: `#/book/${bookId}/issues` }, "异常"),
+      action(
+        "重新拼接本章",
+        async () => {
+          await api.renderChapter(bookId, state.index);
+          toast("已入队本章重渲染");
+          await refreshChapters();
+        },
+        { title: "不重新跑 TTS：只把本章已有的逐句音频重新拼接、对齐字幕、做响度归一" },
+      ),
+      h("a", { class: "btn btn-ghost", href: `#/book/${bookId}/issues`, title: "降级与失败记录，可按类型批量重试" }, "异常清单"),
     ),
   );
 
@@ -753,8 +834,8 @@ async function build(route, host) {
         h(
           "p",
           { class: "cast__foot muted" },
-          "点「换音色」从悬浮窗挑；改完的章节要重渲染才生效。",
-          h("a", { class: "row", href: "#/voices" }, "去音色库试听 →"),
+          "点推荐音色直接选中，点 ▶ 先试听这段参考音频；换完的章节要重新生成才生效。",
+          h("a", { class: "row", href: "#/voices" }, "去音色库上传 / 停用音色 →"),
         ),
       ),
     ),

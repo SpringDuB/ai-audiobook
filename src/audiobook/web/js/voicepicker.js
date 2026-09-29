@@ -230,6 +230,11 @@ export async function openVoicePicker({ anchor, roleName = "", currentVoiceId = 
     h("div", { class: "picker__search" }, search),
     facetHolder,
     list,
+    h(
+      "div",
+      { class: "picker__foot" },
+      h("a", { href: "#/voices", onClick: closeVoicePicker }, "去音色库上传 / 停用音色 →"),
+    ),
   );
   const backdrop = h("div", {
     class: "picker__backdrop",
