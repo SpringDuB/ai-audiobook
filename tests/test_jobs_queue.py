@@ -119,3 +119,18 @@ def test_payload_survives_progress_updates(conn):
     job = jobs.get_job(conn, job_id)
     assert job.payload == {"chapters": [1]}
     assert job.progress["message"] == "第 1 章"
+
+
+def test_progress_carries_inflight_and_keeps_line_target(conn):
+    """进度里带"此刻在跑哪几行"（前端画沙漏），且不会把单行任务的目标行冲掉。"""
+    job_id = jobs.enqueue_line(conn, "book1", 1, "c0001-s01-l001")
+    jobs.set_progress(conn, job_id, 0, 1, "", extra={"inflight": ["c0001-s01-l001"]})
+    job = jobs.get_job(conn, job_id)
+    assert job.progress["pending_line"] == "c0001-s01-l001"
+    assert job.progress["inflight"] == ["c0001-s01-l001"]
+
+    # 下一次不带 inflight 的更新要把旧标记清掉，免得上一轮的沙漏留在页面上
+    jobs.set_progress(conn, job_id, 1, 1, "c0001-s01-l001")
+    job = jobs.get_job(conn, job_id)
+    assert "inflight" not in job.progress
+    assert job.progress["pending_line"] == "c0001-s01-l001"

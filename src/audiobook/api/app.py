@@ -109,9 +109,12 @@ def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
         # 老数据没有 seq：按行序兜底，别让校对台显示 null
         clip = clips_dir / f"{row['id']}.wav"
         duration = 0.0
+        # 音频版本号（mtime）：单句重生成后 URL 不变，靠它让浏览器别拿旧缓存
+        audio_mtime = None
         if clip.exists():
             try:
                 duration = round(audio.wav_duration(clip), 3)
+                audio_mtime = round(clip.stat().st_mtime, 3)
             except Exception:  # noqa: BLE001 - 半截文件不该让接口 500
                 duration = 0.0
         payload.append(
@@ -126,6 +129,7 @@ def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
                 },
                 "duration_sec": duration,
                 "has_audio": clip.exists(),
+                "audio_mtime": audio_mtime,
                 "audio_url": f"/api/books/{book_id}/lines/{row['id']}/audio",
                 "seq": row.get("seq") or position + 1,
                 "scene_index": row.get("scene_index") or 1,
@@ -243,7 +247,8 @@ def create_app(settings, conn) -> FastAPI:
         for chapter_dir in sorted(store.book_dir(settings, book_id).glob("audio/chapter_*")):
             clip = chapter_dir / f"{line_id}.wav"
             if clip.exists():
-                return FileResponse(clip, media_type="audio/wav")
+                # 同一句重生成后路径不变；不让浏览器拿旧缓存，否则试听听到的还是上一版
+                return FileResponse(clip, media_type="audio/wav", headers={"Cache-Control": "no-store"})
         raise HTTPException(status_code=404, detail="audio not ready")
 
     @app.get("/api/books/{book_id}/issues")

@@ -19,6 +19,7 @@ def handle_synthesize_line(ctx, job) -> None:
     row = next((item for item in rows if item["id"] == line_id), None)
     if row is None:
         raise RuntimeError(f"{line_id} 不在第 {job.chapter_index} 章")
+    ctx.progress(job, 0, 1, "", extra={"inflight": [line_id]})
     try:
         result = synth_line(ctx, job, row)
     except Exception as exc:  # noqa: BLE001 - 单行失败必须可见

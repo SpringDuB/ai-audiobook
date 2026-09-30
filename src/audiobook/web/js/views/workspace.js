@@ -173,25 +173,41 @@ function lineEditor(line, bookId, onSaved, onCancel) {
 
 function lineRow(line, ctx) {
   const body = h("div", { class: "line__body" });
-  const playButton = h(
-    "button",
-    {
-      class: "btn btn-sm",
-      type: "button",
-      disabled: !line.has_audio,
-      title: line.has_audio ? "试听这句" : "这句还没合成",
-      onClick: () => ctx.play(line, playButton),
-    },
-    icon("play", { size: 12 }),
-    line.has_audio ? "试听" : "未合成",
-  );
+  // 正在合成的段落挂沙漏（转圈），排队中的挂灰字；有音频了按钮就地变成「试听」
+  const statusChip = () => {
+    if (!line.pending) return null;
+    const busy = line.pending === "inflight";
+    return h(
+      "span",
+      {
+        class: `line__status${busy ? " line__status--busy" : ""}`,
+        title: busy ? "正在生成这句的音频" : "已排进队列，等 TTS 空闲",
+      },
+      icon(busy ? "hourglass" : "ellipsis", { size: 12 }),
+      busy ? "生成中" : "排队中",
+    );
+  };
   const renderRead = () => {
+    entry.editing = false;
+    const playButton = h(
+      "button",
+      {
+        class: "btn btn-sm",
+        type: "button",
+        disabled: !line.has_audio,
+        title: line.has_audio ? "试听这句" : "这句还没合成",
+        onClick: () => ctx.play(line, playButton),
+      },
+      icon("play", { size: 12 }),
+      line.has_audio ? "试听" : "未合成",
+    );
     body.replaceChildren(
       h("div", { class: "line__meta" }, ...metaChips(line)),
       h("p", { class: "line__text" }, line.text),
       h(
         "div",
         { class: "line__tools" },
+        statusChip(),
         playButton,
         h("button", { class: "btn btn-sm", type: "button", onClick: () => renderEdit() }, icon("pencil", { size: 12 }), "编辑"),
         h(
@@ -218,8 +234,10 @@ function lineRow(line, ctx) {
     );
   };
   const renderEdit = () => {
+    entry.editing = true;
     body.replaceChildren(lineEditor(line, ctx.bookId, () => ctx.onChanged(), () => renderRead()));
   };
+  const entry = { row: null, line, editing: false };
   renderRead();
   const row = h(
     "article",
@@ -228,7 +246,10 @@ function lineRow(line, ctx) {
     h("span", { class: "line__seal" }, seal(line.speaker_name || line.speaker)),
     body,
   );
-  ctx.registry?.push({ row, line, renderEdit, renderRead });
+  entry.row = row;
+  entry.renderEdit = renderEdit;
+  entry.renderRead = renderRead;
+  ctx.registry?.push(entry);
   row.addEventListener("click", (event) => {
     if (event.target.closest("button")) return;
     const position = ctx.registry.findIndex((entry) => entry.row === row);
@@ -462,7 +483,8 @@ async function build(route, host) {
       return;
     }
     audio.dataset.lineId = line.id;
-    audio.src = line.audio_url;
+    // mtime 当版本号：单句重生成后路径不变，带上它才不会放上一版的缓存
+    audio.src = line.audio_mtime ? `${line.audio_url}?v=${line.audio_mtime}` : line.audio_url;
     audio.play().then(() => {
       setPlayLabel(button, true);
     }).catch(() => toast("浏览器拦住了播放，再点一次", "error"));
@@ -571,7 +593,9 @@ async function build(route, host) {
 
   /* --- 中间正文 --- */
 
-  const paintScript = () => {
+  // 标题栏（章节名 + 已合成 x/y）单独抽出来：合成过程中每出一句就更新一次，
+  // 不用整块重建正文，滚动位置和光标都不会跳。
+  const paintScriptHead = () => {
     scriptTabs.replaceChildren(
       ...Object.entries(TAB_LABELS).map(([key, label]) =>
         h(
@@ -590,11 +614,7 @@ async function build(route, host) {
       ),
     );
     const chapter = state.chapter;
-    if (!chapter) {
-      scriptHead.replaceChildren();
-      scriptBody.replaceChildren(h("p", { class: "muted" }, "读取中…"));
-      return;
-    }
+    if (!chapter) return scriptHead.replaceChildren();
     const ready = currentLines.filter((line) => line.has_audio).length;
     const total = currentLines.reduce((sum, line) => sum + (line.duration_sec || 0), 0);
     scriptHead.replaceChildren(
@@ -613,7 +633,17 @@ async function build(route, host) {
       ),
       h("div", { class: "script__tools" }, scriptTabs),
     );
+  };
+
+  const paintScript = () => {
+    paintScriptHead();
+    const chapter = state.chapter;
+    if (!chapter) {
+      scriptBody.replaceChildren(h("p", { class: "muted" }, "读取中…"));
+      return;
+    }
     if (state.tab === "text") {
+      registry = [];        // 原文页签没有行句柄，别把旧句柄留在列表里
       scriptBody.replaceChildren(
         ...(paragraphs(chapter.content).map((text) => h("p", { class: "raw-text" }, text)) || []),
       );
@@ -711,6 +741,81 @@ async function build(route, host) {
     if (!payload) return;
     state.chapters = payload.chapters || [];
     paintChapterList();
+  };
+
+  /* --- 逐句实时进度：正在生成的那句转沙漏，出音频就地亮起来 --- */
+
+  const SYNTH_KINDS = new Set(["synthesize", "synthesize_line"]);
+
+  const pendingForChapter = (jobs) => {
+    const pending = new Map();
+    for (const job of jobs) {
+      if (job.chapter_index !== state.index) continue;
+      if (job.kind === "synthesize_line") {
+        const lineId = (job.progress && job.progress.pending_line) || null;
+        if (lineId) pending.set(lineId, "inflight");
+        continue;
+      }
+      const inflight = new Set((job.progress && job.progress.inflight) || []);
+      for (const line of currentLines) {
+        if (line.has_audio) continue;
+        pending.set(line.id, inflight.has(line.id) ? "inflight" : "queued");
+      }
+    }
+    return pending;
+  };
+
+  const paintPending = (pending) => {
+    for (const entry of registry) {
+      const next = pending.get(entry.line.id) || null;
+      if (entry.line.pending === next) continue;
+      entry.line.pending = next;
+      if (!entry.editing) entry.renderRead();
+    }
+  };
+
+  // 把最新一份 lines 合并进当前行：只有"有没有音频/音频版本"变了才重画那一行，
+  // 编辑中的行不碰（别把用户正在改的内容冲掉）。
+  const mergeLines = (fresh) => {
+    if (fresh.length !== registry.length) {
+      currentLines = fresh;
+      paintScript();
+      return;
+    }
+    const byId = new Map(fresh.map((line) => [line.id, line]));
+    let audioChanged = false;
+    for (const entry of registry) {
+      const next = byId.get(entry.line.id);
+      if (!next) continue;
+      const before = `${entry.line.has_audio}|${entry.line.audio_mtime}`;
+      Object.assign(entry.line, next);
+      if (`${entry.line.has_audio}|${entry.line.audio_mtime}` !== before) {
+        audioChanged = true;
+        if (!entry.editing) entry.renderRead();
+      }
+    }
+    currentLines = fresh;
+    if (audioChanged) paintScriptHead();
+  };
+
+  const pullLines = async (index) => {
+    const payload = await api.lines(bookId, index).catch(() => null);
+    if (!payload || index !== state.index) return;
+    mergeLines(payload.lines || []);
+  };
+
+  let linePollAt = 0;
+  let linePolling = false;
+  const syncSynthProgress = (jobs, { force = false } = {}) => {
+    const active = jobs.filter((job) => SYNTH_KINDS.has(job.kind) && job.status === "running");
+    paintPending(pendingForChapter(active));
+    if (!active.length) return;
+    if (!force && (linePolling || Date.now() - linePollAt < 1000)) return;
+    linePollAt = Date.now();
+    linePolling = true;
+    pullLines(state.index).finally(() => {
+      linePolling = false;
+    });
   };
 
   const paintChapterList = () => {
@@ -955,6 +1060,8 @@ async function build(route, host) {
       return;
     }
     const mine = current.jobs.filter((job) => job.book_id === bookId);
+    // 正在合成的章节：每秒拉一次逐句状态，句子一完成立刻能试听，不用刷新页面
+    syncSynthProgress(mine);
     // 整本导出跑完：亮起「打开成果文件夹」，并提示一声
     const exportsDone = mine.filter((job) => job.kind === "book_export" && job.status === "done");
     if (exportBaseline === null) {

@@ -154,6 +154,32 @@ class TtsPool:
         finally:
             state.inflight -= 1
 
+    def synthesize_batch(self, items, voice_id, out_paths):
+        """同音色多条一次解码：走和单条一样的端点选择 / 降档 / 熔断逻辑。"""
+        state = self._acquire()
+        state.inflight += 1
+        try:
+            results = state.engine.synthesize_batch(items, voice_id, out_paths)
+        except TtsOom as exc:
+            self._downgrade(state, factor=0.5, cooldown=self.settings.tts_breaker_seconds, reason=str(exc))
+            raise
+        except TtsBusy as exc:
+            self._downgrade(state, factor=None, cooldown=BUSY_COOLDOWN_SECONDS, reason=str(exc))
+            raise
+        except (TtsVoiceMissing, TtsBadRef, TtsBadRequest):
+            raise
+        except Exception as exc:  # 连接失败/协议错：该端点标记不可用并冷却
+            state.ok = False
+            state.last_error = f"{type(exc).__name__}: {exc}"
+            state.breaker_until = self._clock() + self.settings.tts_breaker_seconds
+            raise
+        else:
+            state.served += 1
+            self._restore(state)
+            return results
+        finally:
+            state.inflight -= 1
+
     def _acquire(self, timeout: float | None = None) -> EndpointState:
         self.refresh()
         deadline = self._clock() + (timeout or self.settings.tts_timeout_seconds)

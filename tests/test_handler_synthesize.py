@@ -1,8 +1,12 @@
+import threading
+import time
+from dataclasses import replace
+
 from audiobook import jobs, store
 from fake_engine import FakeEngine
 from audiobook.engines.errors import TtsVoiceMissing
 from audiobook.handlers import synthesize  # noqa: F401  导入即注册
-from audiobook.handlers.synthesize import effective_concurrency
+from audiobook.handlers.synthesize import effective_concurrency, group_batches
 from audiobook.worker import WorkerContext, run_once
 
 
@@ -47,6 +51,43 @@ class MissingRefEngine(FakeEngine):
         if "第二句" in text:
             raise TtsVoiceMissing("缺少参考音频: data/voices/v_missing/ref.wav")
         return super().synthesize(text, voice_id, params, out_path)
+
+
+class GatedEngine(FakeEngine):
+    """第二句卡住不返回：用来观察"另一行还在跑"时任务进度里的 inflight。"""
+
+    def __init__(self):
+        super().__init__(ms_per_char=1.0)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def synthesize(self, text, voice_id, params, out_path):
+        if "第二句" in text:
+            self.entered.set()
+            self.release.wait(timeout=15.0)
+        return super().synthesize(text, voice_id, params, out_path)
+
+
+class BatchEngine(FakeEngine):
+    """支持批量合成的假引擎：记录每包几条，失败可注入（用来测退回逐行）。"""
+
+    def __init__(self, batch_limit: int = 4, fail_batch: bool = False, **kwargs):
+        super().__init__(**kwargs)
+        self.batch_limit = batch_limit
+        self.fail_batch = fail_batch
+        self.batches: list[int] = []
+
+    def capabilities(self):
+        return replace(super().capabilities(), batch=True, max_batch_items=self.batch_limit)
+
+    def synthesize_batch(self, items, voice_id, out_paths):
+        self.batches.append(len(items))
+        if self.fail_batch:
+            raise RuntimeError("批量注入失败")
+        results = []
+        for (text, params), path in zip(items, out_paths):
+            results.append(super().synthesize(text, voice_id, params, path))
+        return results
 
 
 def _prepare_book(narrator_lines, settings, book_id="b1", chapter=1, text="第一句。第二句。"):
@@ -150,3 +191,76 @@ def test_line_failure_is_recorded_with_tts_issue_kind(conn, settings, narrator_l
     assert [issue["kind"] for issue in issues] == ["tts_ref_missing"]
     assert issues[0]["line"] == "c0001-s01-l002"
     assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.wav").exists()
+
+
+def test_progress_reports_which_lines_are_running(conn, settings, narrator_lines):
+    """整章合成要能把"此刻在跑哪几行"报出来（前端靠它画沙漏、实时点亮试听）。"""
+    engine = GatedEngine()
+    _prepare_book(narrator_lines, settings)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+    job_id = jobs.enqueue(conn, "synthesize", "b1", 1)
+
+    worker = threading.Thread(target=lambda: run_once(ctx), daemon=True)
+    worker.start()
+    try:
+        assert engine.entered.wait(timeout=15.0), "第二句没跑到引擎"
+        inflight = []
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            progress = jobs.get_job(conn, job_id).progress or {}
+            if progress.get("done", 0) >= 1:
+                inflight = list(progress.get("inflight") or [])
+                break
+            time.sleep(0.05)
+        # 第一句已完成、第二句还卡在引擎里 → 只有它还该被标成"生成中"
+        assert inflight == ["c0001-s01-l002"]
+    finally:
+        engine.release.set()
+        worker.join(timeout=20.0)
+
+    assert jobs.get_job(conn, job_id).status == "done"
+    assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l002.wav").exists()
+
+
+def test_group_batches_packs_same_voice_and_keeps_long_text_alone():
+    """同音色的短句要打进同一包；太长的文本（客户端本来要分块）单独一包。"""
+    rows = [
+        {"id": "a", "text": "短句。"},
+        {"id": "b", "text": "很长" * 200},
+        {"id": "c", "text": "另一句。"},
+        {"id": "d", "text": "第三句。"},
+    ]
+    targets = {row["id"]: {"voice_id": "v1"} for row in rows}
+    groups = group_batches(rows, targets, 4, 300)
+    assert [[row["id"] for row in group] for group in groups] == [["b"], ["a", "c", "d"]]
+
+
+def test_synthesize_packs_same_voice_into_one_batch(conn, settings, narrator_lines):
+    """整章合成时同音色的行要打包成一次批量解码（不再一行一个请求）。"""
+    engine = BatchEngine()
+    _prepare_book(narrator_lines, settings)
+    settings = settings.model_copy(update={"synth_batch_size": 2, "synth_batch_workers": 1})
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+
+    assert run_once(ctx) is True
+    assert engine.batches == [2]                    # 两句一包，一次解码
+    clips = sorted(store.audio_dir(settings, "b1", 1).glob("*.wav"))
+    assert [clip.name for clip in clips] == ["c0001-s01-l001.wav", "c0001-s01-l002.wav"]
+    meta = store.read_json(clips[0].with_suffix(".meta.json"))
+    assert meta["duration"] > 0 and meta["engine"] == "fake"
+
+
+def test_batch_failure_falls_back_to_per_line(conn, settings, narrator_lines):
+    """批量失败不能把整章拖垮：自动退回逐行，音频照样产出。"""
+    engine = BatchEngine(fail_batch=True)
+    _prepare_book(narrator_lines, settings)
+    settings = settings.model_copy(update={"synth_batch_size": 2, "synth_batch_workers": 1})
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+    jobs.enqueue(conn, "synthesize", "b1", 1)
+
+    assert run_once(ctx) is True
+    assert engine.batches == [2]                    # 试过一次批量，失败了
+    assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.wav").exists()
+    assert (store.audio_dir(settings, "b1", 1) / "c0001-s01-l002.wav").exists()
+    assert store.read_jsonl(store.issues_path(settings, "b1")) == []

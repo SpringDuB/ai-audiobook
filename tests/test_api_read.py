@@ -83,6 +83,7 @@ def test_lines_endpoint_exposes_audio_url_and_emotion(settings, narrator_lines):
     assert lines[0]["speaker_name"] == "旁白"
     assert lines[0]["emotion"]["dominant"] == "平静"      # 夹具不注入场景基调 → source=none
     assert lines[0]["has_audio"] is False and lines[0]["duration_sec"] == 0.0
+    assert lines[0]["audio_mtime"] is None
     assert lines[0]["audio_url"] == f"/api/books/{book_id}/lines/c0000-s01-l001/audio"
     assert client.get(lines[0]["audio_url"]).status_code == 404
 
@@ -96,6 +97,11 @@ def test_line_audio_serves_wav_when_present(settings, narrator_lines):
     FakeEngine(ms_per_char=10.0).synthesize("第一句。", "default", None, clip)
     lines = client.get(f"/api/books/{book_id}/chapters/0/lines").json()["lines"]
     assert lines[0]["has_audio"] is True and lines[0]["duration_sec"] > 0
+    assert lines[0]["audio_mtime"] and lines[0]["audio_mtime"] > 0
+    # 同一句重生成后路径不变，必须禁止浏览器拿旧缓存
+    response = client.get(lines[0]["audio_url"])
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     response = client.get(lines[0]["audio_url"])
     assert response.status_code == 200 and response.headers["content-type"] == "audio/wav"
 

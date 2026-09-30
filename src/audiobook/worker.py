@@ -50,8 +50,8 @@ class WorkerContext:
     engine_factory: Callable[[Settings], object] | None = None
     llm_factory: Callable[[Settings], object] | None = None
 
-    def progress(self, job, done: int, total: int, message: str = "") -> None:
-        jobs.set_progress(self.conn, job.id, done, total, message)
+    def progress(self, job, done: int, total: int, message: str = "", extra: dict | None = None) -> None:
+        jobs.set_progress(self.conn, job.id, done, total, message, extra=extra)
 
     def refresh(self) -> bool:
         """每轮任务前重读设置：改并发/端点/引擎、点了一键启动 TTS，都不用重启 worker。"""

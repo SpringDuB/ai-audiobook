@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     llm_line_window_chars: int = 1600
     llm_line_window_sentences: int = 80
     synth_concurrency: int = 4
+    # 同音色一次解码几条（批量合成）：1 = 关掉；服务端不支持批量时自动退回 1
+    synth_batch_size: int = 4
+    # 同时跑几个批量请求（一个批量请求内部已经是 N 条并行，别再叠 GPU 压力）
+    synth_batch_workers: int = 1
     engine: str = "http"  # 只有 http：合成必须走独立 TTS 服务
     tts_timeout_seconds: float = 180.0
     tts_connect_timeout_seconds: float = 5.0

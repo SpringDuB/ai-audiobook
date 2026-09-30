@@ -52,6 +52,11 @@ def test_static_assets_are_offline_only(settings):
     assert "fetch(" not in icons and "url(" not in icons and "<img" not in icons
     assert "createElementNS" in icons and "currentColor" in icons and "viewBox" in icons
     assert "Lucide" in icons                     # 保留上游版权声明
+    assert "hourglass" in icons                  # 逐句合成中的沙漏
+
+    app_css = client.get("/static/app.css").text
+    assert "aiab-spin" in app_css                # 沙漏转圈动画
+    assert "prefers-reduced-motion" in app_css    # 动效可关
 
 
 def test_view_modules_are_served(settings):

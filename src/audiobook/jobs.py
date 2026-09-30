@@ -182,10 +182,31 @@ def reap_expired(conn, now=None) -> int:
     return len(rows)
 
 
-def set_progress(conn, job_id, done, total, message="", now=None) -> None:
+def set_progress(conn, job_id, done, total, message="", extra=None, now=None) -> None:
+    """更新任务进度。
+
+    ``extra`` 用来带执行细节（比如整章合成时"此刻在跑哪几行"），前端靠它把
+    正在生成的段落画上沙漏动画。老键值会保留（``pending_line`` 这类任务参数
+    就存在 progress 里，覆盖掉的话单行重合成失败重试会找不到行），但
+    ``inflight`` 每次调用都重算，免得上一轮的标记残留。
+    """
     ts = now_ms(now)
-    payload = json.dumps({"done": done, "total": total, "message": message}, ensure_ascii=False)
-    conn.execute("UPDATE jobs SET progress=?, updated_at=? WHERE id=?", (payload, ts, job_id))
+    row = conn.execute("SELECT progress FROM jobs WHERE id=?", (job_id,)).fetchone()
+    payload: dict = {}
+    raw = row["progress"] if row is not None else None
+    if raw:
+        try:
+            payload = json.loads(raw) or {}
+        except (TypeError, ValueError):
+            payload = {}
+    payload.update({"done": done, "total": total, "message": message})
+    payload.pop("inflight", None)
+    if extra:
+        payload.update(extra)
+    conn.execute(
+        "UPDATE jobs SET progress=?, updated_at=? WHERE id=?",
+        (json.dumps(payload, ensure_ascii=False), ts, job_id),
+    )
 
 
 def request_cancel(conn, job_id, now=None) -> None:

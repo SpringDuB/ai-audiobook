@@ -386,6 +386,23 @@
 .line[data-hue="narrator"] .line__who { background: var(--inset); color: var(--text-faint); font-weight: 400; }
 .line__text { font-family: var(--font-serif); font-size: var(--text-base); line-height: 1.9; margin: var(--space-1) 0 var(--space-2); }
 .line__tools { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
+/* 逐句合成状态：排队是灰的，正在生成会转沙漏 */
+.line__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--inset);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.line__status--busy { color: var(--accent); }
+.line__status--busy .icon { animation: aiab-spin 1.8s linear infinite; }
+@keyframes aiab-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .line__status--busy .icon { animation: none; }
+}
 .line__edit { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
 
 .cast__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }

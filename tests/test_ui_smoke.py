@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import uvicorn
 
-from audiobook import store
+from audiobook import jobs, store
 from audiobook.api.app import create_app
 from audiobook.db import connect, init_db
 from helpers import wav_bytes
@@ -453,3 +453,81 @@ def test_open_output_folder_button_follows_export(served, settings, narrator_lin
     assert after["consoleErrors"] == []
     on = json.loads(next(value for key, value in after.items() if key.startswith("eval:")))
     assert on["disabled"] is False
+
+
+def _seed_synth_job(settings, book_id, *, chapter=0, done=1, total=2, inflight=("c0000-s01-l002",)):
+    """插一条 running 的整章合成任务：progress 里点名"此刻在跑哪几行"。"""
+    conn = connect(settings.db_path)
+    init_db(conn)
+    job_id = jobs.enqueue(conn, "synthesize", book_id, chapter)
+    assert jobs.claim(conn, "smoke") is not None
+    jobs.set_progress(conn, job_id, done, total, "c0000-s01-l001", extra={"inflight": list(inflight)})
+    return job_id
+
+
+_LINES_STATE = (
+    "--eval=JSON.stringify({"
+    " busy: document.querySelectorAll('.line__status--busy').length,"
+    " statuses: [...document.querySelectorAll('.line__status')].map((node) => node.textContent.trim()),"
+    " labels: [...document.querySelectorAll('.line')].map((row) =>"
+    " (row.querySelector('.line__tools .btn') || {}).textContent.trim()),"
+    " disabled: [...document.querySelectorAll('.line')].map((row) =>"
+    " Boolean(row.querySelector('.line__tools .btn').disabled)),"
+    " head: (document.querySelector('.script__meta') || {}).textContent || '',"
+    " })"
+)
+
+
+def _seed_first_clip(settings, book_id, chapter=0):
+    clip = store.audio_dir(settings, book_id, chapter) / "c0000-s01-l001.wav"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(wav_bytes())
+    return clip
+
+
+def test_workspace_marks_generating_line_with_hourglass(served, settings, narrator_lines, tmp_path):
+    """正在生成的句子要挂转圈沙漏；还没轮到的是"排队中"，已完成的是可点的「试听」。"""
+    book_id = _seed_book(settings, narrator_lines)
+    _seed_voice(settings)
+    _seed_first_clip(settings, book_id)
+    _seed_synth_job(settings, book_id)
+
+    page = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "hourglass",
+        extra=("--click=.script__tools .tab:nth-child(2)", _LINES_STATE),
+    )
+    assert page["consoleErrors"] == []
+    state = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert state["busy"] == 1
+    assert state["statuses"] == ["生成中"]
+    assert state["labels"][:2] == ["试听", "未合成"]
+    assert state["disabled"][:2] == [False, True]
+    assert "已合成 1/2" in state["head"]
+
+
+def test_workspace_picks_up_fresh_audio_without_reload(served, settings, narrator_lines, tmp_path):
+    """第二句音频在页面打开后才落盘：角色文本要自己亮起来，不能等用户刷新。"""
+    book_id = _seed_book(settings, narrator_lines)
+    _seed_voice(settings)
+    _seed_first_clip(settings, book_id)
+    _seed_synth_job(settings, book_id)
+
+    late = store.audio_dir(settings, book_id, 0) / "c0000-s01-l002.wav"
+
+    def finish_later():
+        time.sleep(2.0)
+        late.write_bytes(wav_bytes())
+
+    threading.Thread(target=finish_later, daemon=True).start()
+    page = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "live-flip",
+        extra=("--click=.script__tools .tab:nth-child(2)", _LINES_STATE),
+    )
+    assert page["consoleErrors"] == []
+    state = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert state["busy"] == 0 and state["statuses"] == []     # 沙漏收了
+    assert state["labels"][:2] == ["试听", "试听"]             # 新音频直接可点
+    assert state["disabled"][:2] == [False, False]
+    assert "已合成 2/2" in state["head"]

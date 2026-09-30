@@ -38,6 +38,9 @@ class EngineCapabilities:
     max_text_chars: int = 300
     # 服务端是否支持"用一句话描述情绪"（需要它加载了 QwenEmotion）
     emotion_text: bool = False
+    # 服务端是否支持批量合成（同一个音色多条文本一次解码）
+    batch: bool = False
+    max_batch_items: int = 1
 
 
 @dataclass(frozen=True)

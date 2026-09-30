@@ -1,5 +1,8 @@
 import logging
 import os
+import shutil
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -74,8 +77,78 @@ class HttpTtsEngine:
                 pronunciation=bool(data.get("pronunciation")),
                 sample_rate=int(data.get("sampleRate") or 22050),
                 max_text_chars=int(data.get("maxTextChars") or 300),
+                batch=bool(data.get("batch")),
+                max_batch_items=max(1, int(data.get("maxBatchItems") or 1)),
             )
         return self._caps
+
+    def synthesize_batch(
+        self, items: list[tuple[str, SynthParams]], voice_id: str, out_paths: list[Path]
+    ) -> list[AudioResult]:
+        """同一个音色的多条文本一次解码（服务端批量接口），返回每条的结果。
+
+        调用方要保证：items 与 out_paths 一一对应、同一个音色、每条都不需要客户端分块
+        （太长的文本请走 ``synthesize``，分块的时序逻辑在那边）。
+        """
+        caps = self.capabilities()
+        if not caps.batch:
+            raise TtsError("服务端不支持批量合成")
+        if not items or len(items) != len(out_paths):
+            raise TtsError("批量合成的 items 与 out_paths 数量不一致")
+        payload_items = []
+        for text, params in items:
+            params = params or SynthParams()
+            entry: dict = {"text": text, "rate": params.rate}
+            if params.emotion_text and caps.emotion_text:
+                entry["emoText"] = params.emotion_text
+            elif params.emo_vector:
+                entry["emoVector"] = list(params.emo_vector)
+            if params.pronunciation:
+                entry["pronunciation"] = params.pronunciation
+            payload_items.append(entry)
+        payload = {
+            "refId": self._ref_id(voice_id),
+            "lang": (items[0][1].lang if items[0][1] else None) or "ZH",
+            "items": payload_items,
+        }
+        try:
+            response = self._post_batch(payload)
+        except TtsBadRef:
+            self._refs.drop(self._ref_key(voice_id))
+            payload["refId"] = self._ref_id(voice_id)
+            response = self._post_batch(payload)
+        durations = [
+            float(value)
+            for value in (response.headers.get("X-Item-Durations") or "").split(",")
+            if value.strip()
+        ]
+        results: list[AudioResult] = []
+        with zipfile.ZipFile(BytesIO(response.content)) as archive:
+            for index, out_path in enumerate(out_paths):
+                out_path = Path(out_path)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = out_path.with_name(out_path.name + ".tmp")
+                with archive.open(f"{index:03d}.wav") as source, open(tmp, "wb") as handle:
+                    shutil.copyfileobj(source, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, out_path)
+                duration = durations[index] if index < len(durations) else audio.wav_duration(out_path)
+                results.append(
+                    AudioResult(path=out_path, duration=duration, sample_rate=caps.sample_rate)
+                )
+        return results
+
+    def _post_batch(self, payload: dict) -> httpx.Response:
+        try:
+            response = self._client.post("v1/synthesize_batch", json=payload)
+        except httpx.TimeoutException as exc:
+            raise TtsError(f"批量合成超时: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise TtsError(f"批量合成请求失败: {exc}") from exc
+        if response.status_code >= 400:
+            raise self._error(response)
+        return response
 
     def synthesize(self, text: str, voice_id: str, params: SynthParams | None, out_path: Path) -> AudioResult:
         out_path = Path(out_path)

@@ -1,4 +1,6 @@
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -217,3 +219,41 @@ def test_duration_falls_back_to_wav_header(settings):
     result = engine.synthesize("第一句。", "v_test", SynthParams(), Path(settings.data_dir) / "a.wav")
     assert result.duration == pytest.approx(0.5, abs=1e-3)
     assert result.sample_rate == 22050
+
+
+def test_synthesize_batch_unzips_and_reports_durations(settings):
+    """批量接口：一次请求拿回多条 wav（zip），时长以响应头为准。"""
+    make_voice(settings)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/capabilities":
+            return httpx.Response(200, json={**CAPS, "batch": True, "maxBatchItems": 4})
+        if request.url.path == "/v1/refs":
+            return httpx.Response(200, json={"refId": "ref_1"})
+        seen["payload"] = json.loads(request.content)
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("000.wav", wav_bytes(seconds=0.2))
+            archive.writestr("001.wav", wav_bytes(seconds=0.3))
+        return httpx.Response(
+            200, content=stream.getvalue(), headers={"X-Item-Durations": "0.2,0.3"}
+        )
+
+    engine = engine_with(handler, settings)
+    paths = [settings.data_dir / "a.wav", settings.data_dir / "b.wav"]
+    results = engine.synthesize_batch(
+        [("第一句。", SynthParams(emo_vector=(0.1,) * 8)), ("第二句。", None)], "v_test", paths
+    )
+    assert [round(item.duration, 3) for item in results] == [0.2, 0.3]
+    assert seen["payload"]["items"][0]["emoVector"] == [0.1] * 8
+    assert seen["payload"]["items"][1]["text"] == "第二句。"
+    assert all(path.exists() and path.stat().st_size > 0 for path in paths)
+
+
+def test_synthesize_batch_rejects_endpoint_without_support(settings):
+    make_voice(settings)
+    engine = engine_with(with_caps(lambda request: httpx.Response(500, text="boom")), settings)
+    with pytest.raises(Exception) as info:
+        engine.synthesize_batch([("第一句。", None)], "v_test", [settings.data_dir / "a.wav"])
+    assert "批量" in str(info.value)
