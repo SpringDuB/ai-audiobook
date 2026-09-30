@@ -1,11 +1,13 @@
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
 from . import jobs
 from .config import Settings
+from .db import connect
 
 logger = logging.getLogger(__name__)
 
@@ -126,22 +128,34 @@ def register(kind: str):
 
 def _heartbeat_loop(ctx: WorkerContext, job_id: int, lease_seconds: int, stop: threading.Event) -> None:
     interval = max(1.0, lease_seconds / 3.0)
-    while not stop.wait(interval):
-        if not jobs.heartbeat(ctx.conn, job_id, ctx.worker_id, lease_seconds):
-            logger.warning("心跳失败，任务 %s 可能已被回收", job_id)
-            return
+    # 心跳线程自己一条连接：不跟正在跑 handler 的那条连接抢事务
+    conn = connect(ctx.settings.db_path)
+    try:
+        while not stop.wait(interval):
+            try:
+                alive = jobs.heartbeat(conn, job_id, ctx.worker_id, lease_seconds)
+            except Exception as exc:  # noqa: BLE001 - 一次心跳失败不致命
+                logger.warning("任务 %s 心跳异常：%s", job_id, exc)
+                continue
+            if not alive:
+                logger.warning("心跳失败，任务 %s 可能已被回收", job_id)
+                return
+    finally:
+        conn.close()
 
 
-def run_once(ctx: WorkerContext, lease_seconds: int | None = None) -> bool:
-    ctx.refresh()
+def run_job(ctx: WorkerContext, job, *, lease_seconds: int | None = None, gate=None) -> None:
+    """跑一个已领取的任务：心跳 + handler + 落库（完成 / 取消 / 失败）。
+
+    ``gate`` 是可选的并发闸门（比如吃 GPU 的合成任务），拿不到就排队等着，
+    期间心跳继续续租，任务不会被别的 worker 抢走。
+    """
     lease = lease_seconds or ctx.settings.lease_seconds
-    jobs.reap_expired(ctx.conn)
-    job = jobs.claim(ctx.conn, ctx.worker_id, lease)
-    if job is None:
-        return False
     stop = threading.Event()
     hb = threading.Thread(target=_heartbeat_loop, args=(ctx, job.id, lease, stop), daemon=True)
     hb.start()
+    if gate is not None:
+        gate.acquire()
     try:
         handler = HANDLERS.get(job.kind)
         if handler is None:
@@ -161,8 +175,20 @@ def run_once(ctx: WorkerContext, lease_seconds: int | None = None) -> bool:
         else:
             jobs.complete(ctx.conn, job.id, ctx.worker_id)
     finally:
+        if gate is not None:
+            gate.release()
         stop.set()
         hb.join(timeout=1.0)
+
+
+def run_once(ctx: WorkerContext, lease_seconds: int | None = None) -> bool:
+    ctx.refresh()
+    lease = lease_seconds or ctx.settings.lease_seconds
+    jobs.reap_expired(ctx.conn)
+    job = jobs.claim(ctx.conn, ctx.worker_id, lease)
+    if job is None:
+        return False
+    run_job(ctx, job, lease_seconds=lease)
     return True
 
 
@@ -172,17 +198,66 @@ def run_forever(
     stop_event=None,
     max_jobs: int | None = None,
 ) -> int:
+    """worker 主循环：同时跑 ``worker_concurrency`` 个任务。
+
+    并发规则：
+    - 不同书的任务可以并行（各占一个槽位）；
+    - 同一本书同时只跑一个任务（jobs.claim 里按 book_id 排他），保证
+      分析 → 选角 → 合成 → 渲染 → 合本 的依赖顺序；
+    - ``worker_tts_jobs`` 控制"吃 TTS/GPU"的合成任务同时跑几个，默认 1，
+      免得两个任务互相抢显存；
+    - 只有全部槽位空闲时才重读设置：重建引擎 / LLM 客户端不能打断在跑的任务。
+    """
     interval = poll_seconds or ctx.settings.worker_poll_seconds
+    slots = max(1, int(getattr(ctx.settings, "worker_concurrency", 1) or 1))
+    tts_jobs = max(1, int(getattr(ctx.settings, "worker_tts_jobs", 1) or 1))
+    tts_gate = threading.Semaphore(tts_jobs)
     executed = 0
-    while True:
-        if stop_event is not None and stop_event.is_set():
-            break
-        if run_once(ctx):
-            executed += 1
-            if max_jobs is not None and executed >= max_jobs:
+    running: dict = {}
+
+    def work(job) -> None:
+        # 每个任务一条 sqlite 连接：跨线程共用一条连接会把事务/BEGIN 交错在一起
+        conn = connect(ctx.settings.db_path)
+        try:
+            job_ctx = replace(ctx, conn=conn)
+            gate = tts_gate if job.kind == "synthesize" else None
+            run_job(job_ctx, job, lease_seconds=ctx.settings.lease_seconds, gate=gate)
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=slots, thread_name_prefix="job") as pool:
+        while True:
+            if stop_event is not None and stop_event.is_set():
                 break
-            continue
-        if max_jobs is not None:
-            break
-        time.sleep(interval)
+            # 回收死掉的 worker 留下的租约（含"点过取消"的：直接落成 canceled）
+            try:
+                jobs.reap_expired(ctx.conn)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("回收过期租约失败：%s", exc)
+            while len(running) < slots:
+                if not running:
+                    ctx.refresh()
+                try:
+                    job = jobs.claim(ctx.conn, ctx.worker_id, ctx.settings.lease_seconds)
+                except Exception as exc:  # noqa: BLE001 - 领任务偶发失败不该让 worker 退出
+                    logger.warning("领取任务失败：%s", exc)
+                    break
+                if job is None:
+                    break
+                running[pool.submit(work, job)] = job.id
+            if running:
+                done, _ = wait(list(running), timeout=interval, return_when=FIRST_COMPLETED)
+                for future in done:
+                    job_id = running.pop(future, None)
+                    executed += 1
+                    try:
+                        future.result()
+                    except Exception as exc:  # noqa: BLE001 - 线程里崩了也要能继续跑下一个
+                        logger.exception("任务 %s 的执行线程异常：%s", job_id, exc)
+                if max_jobs is not None and executed >= max_jobs:
+                    break
+                continue
+            if max_jobs is not None:
+                break
+            time.sleep(interval)
     return executed

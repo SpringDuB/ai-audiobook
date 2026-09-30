@@ -568,6 +568,9 @@ def create_app(settings, conn) -> FastAPI:
     def analyze_chapters(book_id: str, payload: dict | None = None):
         """只重跑勾选章节的分析：默认跳过已经分析好的章，force=true 才覆盖重跑。
 
+        force 也不会预先删掉提取结果：批量任务轮到哪一章才覆盖哪一章，
+        中途取消的话，没轮到的章还留着旧结果（不会白丢已分析好的内容）。
+
         勾选全部章节时走整书 characters 任务（跨章合并同人异名更准，跑完会自动
         为每章排队 lines）；勾选一部分时走一个 chapters 批量任务：job 内部按大模型
         并发同时提这几章（和 characters 同一模式），新称呼并进现有角色表。
@@ -588,9 +591,6 @@ def create_app(settings, conn) -> FastAPI:
         if unknown:
             raise HTTPException(status_code=400, detail=f"不存在的章节：{unknown}")
         if len(picked) == len(known):
-            if force:
-                for index in picked:
-                    store.extract_path(settings, book_id, index).unlink(missing_ok=True)
             job_id = jobs.enqueue(conn, "characters", book_id)
             if force:
                 jobs.set_payload(conn, job_id, {"force": True})
@@ -602,9 +602,6 @@ def create_app(settings, conn) -> FastAPI:
             # lines（各章一个 job），保证不会静默丢单。它已覆盖的章交给它自己跑。
             covered = {int(item) for item in ((active.payload or {}).get("chapters") or [])}
             extra = [index for index in picked if index not in covered]
-            if force:
-                for index in extra:
-                    store.extract_path(settings, book_id, index).unlink(missing_ok=True)
             plan = [("lines", index) for index in extra]
             job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
             return {
@@ -615,9 +612,6 @@ def create_app(settings, conn) -> FastAPI:
                 "running_job_id": active.id,
             }
 
-        if force:
-            for index in picked:
-                store.extract_path(settings, book_id, index).unlink(missing_ok=True)
         if active is not None:
             # 还没开跑：把这次勾选并进同一条批量任务，避免两次点击各跑一批
             merged = sorted({int(item) for item in ((active.payload or {}).get("chapters") or [])} | set(picked))

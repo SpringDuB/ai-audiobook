@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     tts_max_line_chunk_chars: int = 0
     tts_endpoints: list[str] = []
     worker_poll_seconds: float = 1.0
+    # worker 一次能同时跑几个任务：不同书之间可以并行；同一本书的任务按队列顺序串行
+    # （分析 → 选角 → 合成 → 渲染 → 合本 之间有文件依赖，并行会互相踩）
+    worker_concurrency: int = 2
+    # 同时跑几个"吃 TTS/GPU"的合成任务：TTS 服务端本来就有并发闸门，
+    # 多个合成任务并排只会互相抢显存，默认 1
+    worker_tts_jobs: int = 1
     lease_seconds: int = 30
 
     # 一键启动的本机 TTS 服务（tts/ 子项目）的启动参数

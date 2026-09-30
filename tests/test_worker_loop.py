@@ -1,7 +1,8 @@
+import threading
 import time
 
 from audiobook import jobs
-from audiobook.worker import HANDLERS, WorkerContext, register, run_once
+from audiobook.worker import HANDLERS, WorkerContext, register, run_forever, run_once
 
 
 def make_ctx(conn, settings, engine=None) -> WorkerContext:
@@ -152,3 +153,74 @@ def test_run_once_reloads_settings_before_claiming(conn, settings):
     )
     assert run_once(ctx) is False
     assert calls == [1]
+
+
+def _parallel_probe():
+    """记录同时在跑的任务数（全局 + 按书），给下面的并发用例用。"""
+    lock = threading.Lock()
+    state = {"inflight": 0, "peak": 0, "books": {}, "book_peak": 0}
+
+    def enter(book_id: str) -> None:
+        with lock:
+            state["inflight"] += 1
+            state["peak"] = max(state["peak"], state["inflight"])
+            state["books"][book_id] = state["books"].get(book_id, 0) + 1
+            state["book_peak"] = max(state["book_peak"], state["books"][book_id])
+
+    def leave(book_id: str) -> None:
+        with lock:
+            state["inflight"] -= 1
+            state["books"][book_id] -= 1
+
+    return state, lock, enter, leave
+
+
+def test_run_forever_runs_different_books_in_parallel(conn, settings):
+    state, _lock, enter, leave = _parallel_probe()
+
+    @register("unit_parallel")
+    def _handler(ctx, job):
+        enter(job.book_id)
+        try:
+            time.sleep(0.3)
+        finally:
+            leave(job.book_id)
+
+    try:
+        jobs.enqueue(conn, "unit_parallel", "b1", 1)
+        jobs.enqueue(conn, "unit_parallel", "b2", 1)
+        ctx = WorkerContext(
+            settings=settings.model_copy(update={"worker_concurrency": 2}),
+            conn=conn,
+            worker_id="w-test",
+        )
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
+        assert state["peak"] >= 2          # 两本书真的同时在跑
+        assert state["book_peak"] == 1     # 每本书自己只有一个任务
+    finally:
+        HANDLERS.pop("unit_parallel", None)
+
+
+def test_run_forever_serializes_jobs_of_the_same_book(conn, settings):
+    state, _lock, enter, leave = _parallel_probe()
+
+    @register("unit_same_book")
+    def _handler(ctx, job):
+        enter(job.book_id)
+        try:
+            time.sleep(0.2)
+        finally:
+            leave(job.book_id)
+
+    try:
+        jobs.enqueue(conn, "unit_same_book", "b1", 1)
+        jobs.enqueue(conn, "unit_same_book", "b1", 2)
+        ctx = WorkerContext(
+            settings=settings.model_copy(update={"worker_concurrency": 2}),
+            conn=conn,
+            worker_id="w-test",
+        )
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
+        assert state["book_peak"] == 1     # 同一本书的两个任务不会重叠
+    finally:
+        HANDLERS.pop("unit_same_book", None)

@@ -99,15 +99,24 @@ def set_payload(conn, job_id: int, payload: dict | None, now=None) -> None:
     conn.execute("UPDATE jobs SET payload=?, updated_at=? WHERE id=?", (raw, ts, job_id))
 
 
-def claim(conn, worker_id, lease_seconds=30, now=None) -> Job | None:
+def claim(conn, worker_id, lease_seconds=30, now=None, one_job_per_book: bool = True) -> Job | None:
+    """领取一个排队任务。
+
+    ``one_job_per_book=True``（默认）：同一本书同时只跑一个任务 —— 分析 / 选角 /
+    合成 / 渲染 / 合本之间有文件依赖，并行会互相踩（比如合成读到刚被改写的角色表）。
+    不同书之间不受影响，配合 worker 的多槽位就是跨书并行。
+    """
     ts = now_ms(now)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        row = conn.execute(
+        sql = (
             "SELECT id FROM jobs WHERE status='queued' AND cancel_requested=0"
-            " AND (not_before IS NULL OR not_before<=?) ORDER BY priority, id LIMIT 1",
-            (ts,),
-        ).fetchone()
+            " AND (not_before IS NULL OR not_before<=?)"
+        )
+        if one_job_per_book:
+            sql += " AND book_id NOT IN (SELECT book_id FROM jobs WHERE status='running')"
+        sql += " ORDER BY priority, id LIMIT 1"
+        row = conn.execute(sql, (ts,)).fetchone()
         if row is None:
             conn.execute("COMMIT")
             return None

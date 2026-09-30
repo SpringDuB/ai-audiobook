@@ -91,8 +91,8 @@ def test_analyze_chapters_queues_one_batch_job_for_picked_chapters(settings, nar
     assert job.payload == {"chapters": [1, 2]}
 
 
-def test_analyze_chapters_force_deletes_extracts_for_real_rerun(settings, narrator_lines):
-    """弹窗勾「覆盖重跑」→ force=true：删掉勾选章的提取结果，整章重提。"""
+def test_analyze_chapters_force_keeps_old_extracts_until_rerun(settings, narrator_lines):
+    """弹窗勾「覆盖重跑」→ force=true：不预删旧结果，轮到该章时才覆盖（中途取消不丢数据）。"""
     client = _client(settings)
     book_id = _seed_three_chapters(settings, narrator_lines)
     store.atomic_replace_json(store.extract_path(settings, book_id, 1), {"windows": 1, "lines": []})
@@ -100,7 +100,7 @@ def test_analyze_chapters_force_deletes_extracts_for_real_rerun(settings, narrat
         f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1], "force": True}
     ).json()
     assert body["plan"] == [["chapters", None]]
-    assert not store.extract_path(settings, book_id, 1).exists()
+    assert store.extract_path(settings, book_id, 1).exists()
     job = jobs.get_job(_conn(settings), body["job_ids"][0])
     assert job.payload == {"chapters": [1], "force": True}
 
@@ -113,7 +113,7 @@ def test_analyze_all_chapters_force_passes_flag_to_characters_job(settings, narr
         f"/api/books/{book_id}/analyze/chapters", json={"chapters": [0, 1, 2], "force": True}
     ).json()
     assert body["plan"] == [["characters", None]]
-    assert not store.extract_path(settings, book_id, 0).exists()
+    assert store.extract_path(settings, book_id, 0).exists()
     assert jobs.get_job(_conn(settings), body["job_ids"][0]).payload == {"force": True}
 
 

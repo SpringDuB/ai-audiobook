@@ -57,6 +57,21 @@ def test_claim_respects_not_before(conn):
     assert jobs.claim(conn, "w2", now=61_001).id == job_id
 
 
+def test_claim_skips_books_that_already_have_a_running_job(conn):
+    """同一本书同时只跑一个任务（分析→选角→合成→渲染→合本 有文件依赖）。"""
+    first = jobs.enqueue(conn, "synthesize", "b1", 1)
+    second = jobs.enqueue(conn, "post", "b1", 2)
+    other = jobs.enqueue(conn, "synthesize", "b2", 1)
+
+    assert jobs.claim(conn, "w1").id == first
+    # b1 还有任务在跑 → 跳过 b1 的第二条，先跑别的书
+    assert jobs.claim(conn, "w1").id == other
+    assert jobs.claim(conn, "w1") is None
+
+    jobs.complete(conn, first, "w1")
+    assert jobs.claim(conn, "w1").id == second
+
+
 def test_fail_after_max_attempts_marks_failed(conn):
     job_id = jobs.enqueue(conn, "synthesize", "book1", 1, max_attempts=2)
     jobs.claim(conn, "w1")

@@ -1028,7 +1028,9 @@ async function build(route, host) {
       }),
       action("生成本章音频", async () => queued(await api.generateChapter(bookId, state.index), "本章合成"), {
         glyph: "file-audio",
-        title: "只合成当前这一章：逐句 TTS → 拼接出本章音频与字幕，其他章不动",
+        title:
+          "只合成当前这一章：逐句 TTS → 拼接出本章音频与字幕，其他章不动；" +
+          "已经有音频的句子直接复用，只有换过音色的句子才重合成",
       }),
       action(
         "分析全本台词",
@@ -1039,10 +1041,11 @@ async function build(route, host) {
             title: "分析哪些章节的台词？",
             message:
               "默认只补还没分析过的章节：已经分析好的会直接跳过，不重复花大模型调用。" +
-              "要重算已完成的章节（含人工修改），勾上最下面的「覆盖重跑」。",
+              "要重算已完成的章节（含人工修改），勾上最下面的「覆盖重跑」——" +
+              "它会轮到哪一章才覆盖哪一章，没轮到的旧结果还在，中途取消不丢。",
             chapters: state.chapters,
             confirmLabel: "开始分析",
-            rerunLabel: "覆盖重跑：勾选章节里已分析好的部分也重新分析",
+            rerunLabel: "覆盖重跑：勾选章节里已分析好的部分也重新分析（覆盖旧标注）",
             selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
           });
           if (!choice || !choice.picked.length) return;
@@ -1057,7 +1060,9 @@ async function build(route, host) {
       action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
         primary: true,
         glyph: "headphones",
-        title: "全书逐句合成 + 拼接成整本成品；还没分析过的章节会自动先补分析",
+        title:
+          "只生成已经分析好的章节：逐句合成 → 拼接成整本成品；没分析的章自动跳过，" +
+          "已经有音频的句子不重跑，只有换过音色的句子才重合成",
       }),
       more,
     ),

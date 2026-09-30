@@ -151,6 +151,39 @@ def test_changed_text_regenerates_only_that_line(conn, settings, narrator_lines)
     assert engine.calls == before + 1
 
 
+def test_voice_change_regenerates_only_that_role(conn, settings, narrator_lines):
+    """换某个角色的音色：只重合成它用旧音色生成的句子，别的句子继续走缓存。"""
+    rows = narrator_lines(1, "第一句。第二句。")
+    rows[1]["speaker"] = "role_0001"
+    rows[1]["speaker_name"] = "小鹿"
+    _prepare_book(narrator_lines, settings)
+    store.write_jsonl_atomic(store.lines_path(settings, "b1", 1), rows)
+    store.atomic_replace_json(
+        store.casting_path(settings, "b1"),
+        {"roles": {"role_0001": {"voice_id": "v_old"}}, "names": {"小鹿": "role_0001"}},
+    )
+    engine = CountingEngine()
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
+
+    _run_synthesize(conn, ctx)
+    assert engine.calls == 2
+
+    # 小鹿换音色 → 只重跑小鹿那一句；旁白那句已经有音频，不再找引擎
+    store.atomic_replace_json(
+        store.casting_path(settings, "b1"),
+        {"roles": {"role_0001": {"voice_id": "v_new"}}, "names": {"小鹿": "role_0001"}},
+    )
+    before = engine.calls
+    _run_synthesize(conn, ctx)
+    assert engine.calls == before + 1
+    meta = store.read_json(store.audio_dir(settings, "b1", 1) / "c0001-s01-l002.meta.json")
+    assert meta["voice_id"] == "v_new"
+
+    # 已经按新音色合成过：再点一次一个字都不重跑
+    _run_synthesize(conn, ctx)
+    assert engine.calls == before + 1
+
+
 def test_failed_line_is_recorded_and_others_continue(conn, settings, narrator_lines):
     engine = CountingEngine(fail_on={"第二句"})
     _prepare_book(narrator_lines, settings)

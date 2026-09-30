@@ -10,14 +10,18 @@ PHASE_KINDS = {"analysis": ANALYSIS_KINDS, "audio": AUDIO_KINDS}
 
 def plan_book(settings, conn, book_id: str, phase: str = "all", force: bool = False) -> list[tuple[str, int | None]]:
     """按"文件即断点"决定下一步该入队哪些任务。force=True 时不看断点，整本重跑分析链。"""
-    plan = _plan_all(settings, book_id, force=force)
-    allowed = PHASE_KINDS.get(phase)
-    if allowed is None:
-        return plan
-    return [item for item in plan if item[0] in allowed]
+    if phase == "analysis":
+        return _plan_analysis(settings, book_id, force=force)
+    if phase == "audio":
+        return _plan_audio(settings, book_id)
+    # 一键跑全流程：分析链没跑完先补分析，跑完了才推合成链
+    analysis = _plan_analysis(settings, book_id, force=force)
+    if analysis:
+        return analysis
+    return _plan_audio(settings, book_id)
 
 
-def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, int | None]]:
+def _plan_analysis(settings, book_id: str, force: bool = False) -> list[tuple[str, int | None]]:
     chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
     if not chapters:
         return [("chapter_split", None)]
@@ -36,12 +40,35 @@ def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, in
         return plan
     if not store.casting_path(settings, book_id).exists():
         return [("casting", None)]
+    return []
 
+
+def _plan_audio(settings, book_id: str) -> list[tuple[str, int | None]]:
+    """合成链的断点：只处理已经分析好的章节，没分析的直接跳过。
+
+    逐行合成本身还有缓存键（文本 + 音色 + 参数 + 引擎）：某一行换了音色才重合成，
+    没变的行、以及已经按新音色合成过的行都不会重跑。
+    """
+    chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+    if not chapters:
+        return []
+    analyzed = [
+        chapter
+        for chapter in chapters
+        if store.read_jsonl(store.lines_path(settings, book_id, int(chapter["index"])))
+    ]
+    if not analyzed:
+        return []  # 一章都没分析：不在这里补分析，等用户点「分析全本台词」
+
+    plan: list[tuple[str, int | None]] = []
     casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
+    if not store.casting_path(settings, book_id).exists():
+        # 还没有角色音色表：先补一轮选角，别拿 default 硬合
+        plan.append(("casting", None))
     missing: list[tuple[str, int | None]] = []
     stale: list[tuple[str, int | None]] = []
-    for chapter in chapters:
-        index = chapter["index"]
+    for chapter in analyzed:
+        index = int(chapter["index"])
         if not store.chapter_wav_path(settings, book_id, index).exists():
             missing.append(("synthesize", index))
         elif _voice_stale(settings, book_id, index, casting):
@@ -50,14 +77,13 @@ def _plan_all(settings, book_id: str, force: bool = False) -> list[tuple[str, in
         elif not _render_current(settings, book_id, index):
             # 音频在但没有按当前渲染版本出过成品（例如删停顿前的旧产物）→ 用 post 补渲染
             stale.append(("post", index))
-    if missing:
-        return missing
-    if stale:
-        return stale
-    # 全部章节都有成品音频 → 收尾出整本
+    plan.extend(missing or stale)
+    if plan:
+        return plan
+    # 已分析的章节都有成品 → 收尾出整本（未分析的章不参与，导出的是已完成的部分）
     if not store.book_wav_path(settings, book_id).exists():
-        return [("book_export", None)]
-    return []
+        plan.append(("book_export", None))
+    return plan
 
 
 def _voice_stale(settings, book_id: str, index: int, casting: dict) -> bool:

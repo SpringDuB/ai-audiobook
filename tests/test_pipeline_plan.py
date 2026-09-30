@@ -167,3 +167,33 @@ def test_phase_audio_only_queues_the_synthesis_chain(settings, conn):
     for index in (1, 2):
         _lines(settings, "b1", index)
     assert resume_book(settings, conn, "b1", phase="audio") == [("synthesize", 1), ("synthesize", 2)]
+
+
+def test_phase_audio_skips_chapters_that_are_not_analyzed(settings, conn):
+    """生成整本音频：只生成已经分析好的章节，没分析的章直接跳过（不补分析）。"""
+    _chapters(settings, "b1", indexes=(1, 2, 3))
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    store.atomic_replace_json(store.casting_path(settings, "b1"), {"roles": {}})
+    _lines(settings, "b1", 1)
+    _lines(settings, "b1", 3)
+
+    plan = resume_book(settings, conn, "b1", phase="audio")
+    assert plan == [("synthesize", 1), ("synthesize", 3)]   # 第 2 章没分析 → 跳过
+    # 也不该顺手把「补分析」的任务排进来
+    kinds = [row["kind"] for row in conn.execute("SELECT kind FROM jobs WHERE book_id='b1'")]
+    assert kinds == ["synthesize", "synthesize"]
+
+    # 已分析的章都有成品 → 收尾合本；没分析的章不参与
+    for index in (1, 3):
+        store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", index), b"RIFF")
+        store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", index), b"1\n")
+        _render_meta(settings, index)
+    assert plan_book(settings, conn, "b1", phase="audio") == [("book_export", None)]
+
+
+def test_phase_audio_adds_casting_when_missing(settings, conn):
+    """有逐句标注但还没有音色表：先补一轮选角，再合成（别拿 default 硬合）。"""
+    _chapters(settings, "b1", indexes=(1,))
+    store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
+    _lines(settings, "b1", 1)
+    assert plan_book(settings, conn, "b1", phase="audio") == [("casting", None), ("synthesize", 1)]
