@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 import re
 import sys
@@ -112,8 +113,12 @@ class IndexTtsBackend:
 
         from ..indextts_compat import (
             apply_bf16_modules,
+            apply_cfm_speed,
+            effective_tuning,
             fast_model_loading,
+            make_conditioning_cache_per_voice,
             make_gpt_inference_thread_safe,
+            upstream_supports_speed_patch,
         )
 
         # 加载期优化：权重 mmap 直读 + 大模型直接在显存上构造（不再"CPU 一份 + 显存一份"）
@@ -128,8 +133,21 @@ class IndexTtsBackend:
         self._thread_safe = make_gpt_inference_thread_safe()
         if not self._thread_safe:
             logger.warning("并发补丁没打上：IndexTTS 的条件嵌入槽位仍是实例级，服务退回单并发")
+        # 速度旋钮：CFM 迭代步数 / CFG 强度（GPT 束宽在请求里传）
+        native_speed = upstream_supports_speed_patch()
+        if native_speed:
+            # 上游副本已内置：先打标记，别让运行时补丁再套一层
+            self._tts._aiab_voice_cache_native = True
+            self._tts._aiab_cfm_speed_native = True
+        # 参考音频条件按音色缓存：多角色书不必每句重算参考，也不会反复清显存池
+        make_conditioning_cache_per_voice(self._tts)
         # 大模块降 bf16（默认只降 w2v-bert）：显存省一半，并发更稳
         apply_bf16_modules(self._tts, self.settings.use_bf16)
+        if native_speed:
+            self._sync_native_tuning()
+        apply_cfm_speed(self._tts, self.tuning)
+        # 加载完自检一次：权重该在显存，主机内存只留运行时（见 /debug/memory）
+        logger.info("内存自检：%s", json.dumps(self.memory_report(), ensure_ascii=False))
         logger.info(
             "IndexTTS-2.5 已加载：%s（情绪通道：%s）",
             model_dir,
@@ -142,6 +160,26 @@ class IndexTtsBackend:
 
         _release_gpu_memory()
 
+    def memory_report(self) -> dict:
+        """权重分布 + 进程内存快照：cpuResidentMB 应当是 0。"""
+        from ..indextts_compat import host_memory_report, model_memory_report
+
+        report: dict = {"backend": self.name, "loaded": self.is_loaded(), "host": host_memory_report()}
+        if self._tts is not None:
+            report["model"] = model_memory_report(self._tts)
+        return report
+
+    def tuning(self) -> dict:
+        from ..indextts_compat import effective_tuning
+
+        return effective_tuning(self.settings)
+
+    def _sync_native_tuning(self) -> None:
+        """上游副本已内置可调步数：把当前旋钮写进实例属性。"""
+        tuning = self.tuning()
+        self._tts.diffusion_steps = int(tuning["diffusionSteps"])
+        self._tts.inference_cfg_rate = float(tuning["cfgRate"])
+
     def recommended_concurrency(self) -> int:
         """并发上限：默认 3，可用 AIAB_TTS_MAX_CONCURRENCY 调。
 
@@ -153,6 +191,9 @@ class IndexTtsBackend:
         return max(1, int(self.settings.max_concurrency or self.DEFAULT_CONCURRENCY))
 
     def capabilities(self) -> dict:
+        from ..indextts_compat import upstream_supports_batch
+
+        batch_ok = upstream_supports_batch()
         return {
             "engine": self.name,
             "engineVersion": self.version,
@@ -166,6 +207,10 @@ class IndexTtsBackend:
             "languages": ["ZH", "EN", "JP", "ES", "AR"],
             "sampleRate": 22050,
             "maxTextChars": self.settings.max_text_chars,
+            # 批量合成：客户端可把同音色的连续几句打包成一次请求（GPT 只解码一遍）。
+            # 只有装着的上游真带 infer_batch 才声明支持，否则客户端会白撞一次批量接口。
+            "batch": batch_ok,
+            "maxBatchItems": int(self.settings.max_batch_items) if batch_ok else 1,
             # 传 seed 时后端会先给 torch 播种再推理：同一 seed + 同一输入可复现（A/B 对比用）
             "supportsSeed": True,
             "supportsWarmup": True,
@@ -187,6 +232,9 @@ class IndexTtsBackend:
                 torch.cuda.manual_seed_all(int(request.seed))
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "out.wav"
+            tuning = self.tuning()
+            if getattr(self._tts, "_aiab_cfm_speed_native", False):
+                self._sync_native_tuning()
             self._tts.infer(
                 spk_audio_prompt=str(request.ref_path),
                 text=text,
@@ -196,6 +244,8 @@ class IndexTtsBackend:
                 use_emo_text=use_text,
                 emo_text=request.emotion_text if use_text else None,
                 duration_factor=duration_factor,
+                # 束宽 1 = 纯采样：GPT 解码开销直接降到 1/num_beams
+                num_beams=int(tuning["numBeams"]),
             )
             audio = out_path.read_bytes()
         return SynthesisResult(
@@ -206,3 +256,40 @@ class IndexTtsBackend:
             engine_version=self.version,
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
+
+    def synthesize_batch(self, requests: list[SynthesisRequest], out_paths: list[Path]) -> list[float]:
+        """同一个音色的多条文本一次解码（批量）。返回每条音频的时长。
+
+        GPT 自回归解码是显存带宽瓶颈（每步读一遍权重），一批 N 条只读一次 → GPT 段耗时
+        几乎不随 N 增长。s2mel / 声码器仍逐条跑，所以整体大约快 1.5~2x。
+        """
+        if not requests:
+            return []
+        if len(out_paths) != len(requests):
+            raise ValueError("requests 与 out_paths 数量不一致")
+        if self._tts is None:
+            self.load()
+        if not hasattr(self._tts, "infer_batch"):
+            raise RuntimeError("上游缺少 infer_batch（tts/index-tts 未打 AIAB 补丁）")
+        first = requests[0]
+        if any(item.ref_path != first.ref_path for item in requests):
+            raise ValueError("批量合成要求同一个 refId（同一音色）")
+        tuning = self.tuning()
+        # 采样种子是进程级状态，批量里只认第一条的种子（批量解码本身也会改变采样结果）
+        first_seed = next((item.seed for item in requests if item.seed is not None), None)
+        if first_seed is not None:
+            import torch
+
+            torch.manual_seed(int(first_seed))
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(int(first_seed))
+        durations = self._tts.infer_batch(
+            spk_audio_prompt=str(first.ref_path),
+            texts=[apply_pronunciation(item.text, item.pronunciation) for item in requests],
+            output_paths=[str(path) for path in out_paths],
+            lang=first.lang,
+            emo_vectors=[list(item.emo_vector) if item.emo_vector else None for item in requests],
+            duration_factors=[1.0 / (item.rate or 1.0) for item in requests],
+            num_beams=int(tuning["numBeams"]),
+        )
+        return [float(value) for value in durations]

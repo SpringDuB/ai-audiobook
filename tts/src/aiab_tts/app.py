@@ -37,6 +37,24 @@ def create_app(settings: TtsSettings, state: ServiceState | None = None) -> Fast
     def capabilities():
         return service.capabilities()
 
+    @app.get("/debug/memory")
+    def debug_memory():
+        """权重在显存还是内存：看 model.cpuResidentMB（正常是 0）与 host 快照。"""
+        return service.memory_report()
+
+    @app.get("/debug/tuning")
+    def debug_tuning():
+        """当前生效的速度旋钮（GPT 束宽 / CFM 步数 / CFG 强度）。"""
+        return service.tuning()
+
+    @app.post("/debug/tuning")
+    def debug_tuning_update(payload: dict):
+        """临时改旋钮、不重载模型：方便挑"多快还能听"的档位。传 null 恢复配置默认。"""
+        try:
+            return service.set_tuning(payload or {})
+        except ValueError as exc:
+            raise ServiceError("bad_request", str(exc), 400) from exc
+
     @app.post("/v1/refs")
     async def upload_ref(file: UploadFile = File(...), refText: str = Form("")):
         content = await file.read()
@@ -56,6 +74,20 @@ def create_app(settings: TtsSettings, state: ServiceState | None = None) -> Fast
                 "X-Duration-Sec": f"{result.duration_sec:.3f}",
                 "X-Sample-Rate": str(result.sample_rate),
                 "X-Elapsed-Ms": str(result.elapsed_ms),
+            },
+        )
+
+    @app.post("/v1/synthesize_batch")
+    def synthesize_batch(payload: dict):
+        """同音色多条一次解码：返回 zip（000.wav… + manifest.json）。"""
+        content, durations, elapsed_ms = service.synthesize_batch(payload)
+        return Response(
+            content=content,
+            media_type="application/zip",
+            headers={
+                "X-Item-Count": str(len(durations)),
+                "X-Item-Durations": ",".join(f"{value:.3f}" for value in durations),
+                "X-Elapsed-Ms": str(elapsed_ms),
             },
         )
 

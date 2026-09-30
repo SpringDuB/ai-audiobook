@@ -1,21 +1,18 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class SynthPayload(BaseModel):
-    """POST /v1/synthesize 的请求体（字段名与冻结契约一致）。"""
+class SynthItem(BaseModel):
+    """一条待合成文本的参数（批量接口里的一项；单条接口的字段是它的超集）。"""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     text: str
-    refId: str  # noqa: N815 - 线上字段名固定为驼峰
-    lang: str = "ZH"
     emoVector: list[float] | None = None  # noqa: N815
     # 两条情绪通道二选一：emoText（文本描述，需服务端 use_qwen_emo）优先于 emoVector
     emoText: str | None = None  # noqa: N815
     rate: float = 1.0
     pronunciation: dict[str, str] = Field(default_factory=dict)
     seed: int | None = None
-    format: str = "wav"
 
     @field_validator("text")
     @classmethod
@@ -50,6 +47,19 @@ class SynthPayload(BaseModel):
             raise ValueError("emoVector 必须是 8 维")
         return value
 
+    @field_validator("pronunciation", mode="before")
+    @classmethod
+    def _pronunciation_none(cls, value):
+        return {} if value is None else value
+
+
+class SynthPayload(SynthItem):
+    """POST /v1/synthesize 的请求体（字段名与冻结契约一致）。"""
+
+    refId: str  # noqa: N815 - 线上字段名固定为驼峰
+    lang: str = "ZH"
+    format: str = "wav"
+
     @field_validator("format")
     @classmethod
     def _format_supported(cls, value: str) -> str:
@@ -57,7 +67,20 @@ class SynthPayload(BaseModel):
             raise ValueError("目前只支持 wav")
         return value
 
-    @field_validator("pronunciation", mode="before")
+class BatchSynthPayload(BaseModel):
+    """POST /v1/synthesize_batch 的请求体：同一个音色的多条文本一起解码。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    refId: str  # noqa: N815
+    lang: str = "ZH"
+    items: list[SynthItem]
+
+    @field_validator("items")
     @classmethod
-    def _pronunciation_none(cls, value):
-        return {} if value is None else value
+    def _items_present(cls, value: list[SynthItem]) -> list[SynthItem]:
+        if not value:
+            raise ValueError("items 不能为空")
+        if len(value) > 16:
+            raise ValueError("一次最多 16 条（再多显存吃不住）")
+        return value

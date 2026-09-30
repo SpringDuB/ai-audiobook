@@ -258,3 +258,202 @@ def test_apply_bf16_modules_respects_flags(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert apply_bf16_modules(holder, use_bf16=True) == []
     assert next(holder.semantic_model.parameters()).dtype is torch.float32
+
+
+def test_host_memory_report_reads_process_counters():
+    from aiab_tts.indextts_compat import host_memory_report
+
+    report = host_memory_report()
+    assert report["workingSetMB"] > 0
+    assert report["commitMB"] > 0
+
+
+def test_model_memory_report_flags_weights_left_in_host_memory():
+    """自检的核心指标：权重在 CPU 上时 cpuResidentMB 必须报出来（正常应为 0）。"""
+    import torch
+
+    from aiab_tts.indextts_compat import model_memory_report
+
+    class Holder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.semantic_model = torch.nn.Linear(1024, 1024)   # 4MB 权重：够被量化到 MB
+
+    report = model_memory_report(Holder())
+    w2v = next(item for item in report["modules"] if item["name"] == "w2v")
+    assert w2v["device"] == "cpu" and w2v["dtype"] == "float32"
+    assert report["cpuResidentMB"] > 1
+    assert report["totalMB"] > 1
+
+
+def test_model_memory_report_is_zero_when_nothing_is_on_cpu():
+    """权重都搬走（这里用 meta 模拟"不在主机内存"）时 cpuResidentMB 归零。"""
+    import torch
+
+    from aiab_tts.indextts_compat import model_memory_report
+
+    holder = type("H", (), {"semantic_model": torch.nn.Linear(8, 8, device="meta")})()
+    report = model_memory_report(holder)
+    assert report["cpuResidentMB"] == 0.0
+    assert report["modules"][0]["device"] == "meta"
+
+
+def test_apply_cfm_speed_overrides_steps_and_cfg():
+    """CFM 步数/CFG 是上游写死的：要能在调用时被替换掉。"""
+    from aiab_tts.indextts_compat import _wrap_cfm_inference
+
+    seen: list[tuple[int, float]] = []
+
+    class Cfm:
+        def inference(self, mu, x_lens, prompt, style, f0, n_timesteps, temperature=1.0, inference_cfg_rate=0.5):
+            seen.append((n_timesteps, inference_cfg_rate))
+            return "ok"
+
+    model = type("M", (), {"s2mel": type("S", (), {"models": {"cfm": Cfm()}})()})()
+    assert _wrap_cfm_inference(model, lambda: {"diffusionSteps": 12, "cfgRate": 0.6}) is True
+    out = model.s2mel.models["cfm"].inference("mu", "lens", "prompt", "style", None, 25, inference_cfg_rate=0.7)
+    assert out == "ok"
+    assert seen == [(12, 0.6)]
+    # 幂等：同一个方法不会被套两层
+    assert _wrap_cfm_inference(model, lambda: {"diffusionSteps": 8}) is True
+    model.s2mel.models["cfm"].inference("mu", "lens", "prompt", "style", None, 25)
+    assert seen[-1] == (12, 0.6)
+
+
+def test_cfm_speed_skips_when_upstream_already_patched(monkeypatch):
+    """上游副本自带可调步数时不要再套一层运行时补丁。"""
+    from aiab_tts import indextts_compat as compat
+
+    monkeypatch.setattr(compat, "upstream_supports_speed_patch", lambda: True)
+    model = type("M", (), {"s2mel": type("S", (), {"models": {"cfm": object()}})()})()
+    assert compat.apply_cfm_speed(model, lambda: {}) is True
+    assert not hasattr(model.s2mel.models["cfm"], "inference")
+
+
+def test_upstream_speed_patch_detection_reads_marker(monkeypatch):
+    import sys
+    import types
+
+    from aiab_tts import indextts_compat as compat
+
+    fake = types.ModuleType("indextts.infer_v2_5")
+    fake.AIAB_PATCHED = True
+    package = types.ModuleType("indextts")
+    package.infer_v2_5 = fake
+    monkeypatch.setitem(sys.modules, "indextts", package)
+    monkeypatch.setitem(sys.modules, "indextts.infer_v2_5", fake)
+    assert compat.upstream_supports_speed_patch() is True
+    fake.AIAB_PATCHED = False
+    assert compat.upstream_supports_speed_patch() is False
+
+
+def test_speed_tuning_overrides_and_validation(monkeypatch):
+    import pytest
+
+    from aiab_tts.config import TtsSettings
+    from aiab_tts.indextts_compat import SPEED_TUNING, effective_tuning, set_speed_tuning
+
+    before = dict(SPEED_TUNING)
+    try:
+        SPEED_TUNING.update({"numBeams": None, "diffusionSteps": None, "cfgRate": None})
+        settings = TtsSettings()
+        assert effective_tuning(settings) == {"numBeams": 1, "diffusionSteps": 16, "cfgRate": 0.7}
+        set_speed_tuning({"numBeams": 3, "diffusionSteps": 25})
+        assert effective_tuning(settings)["numBeams"] == 3
+        assert effective_tuning(settings)["diffusionSteps"] == 25
+        set_speed_tuning({"numBeams": None})
+        assert effective_tuning(settings)["numBeams"] == 1
+        with pytest.raises(ValueError):
+            set_speed_tuning({"numBeams": 0})
+        with pytest.raises(ValueError):
+            set_speed_tuning({"diffusionSteps": 500})
+    finally:
+        SPEED_TUNING.update(before)
+
+
+class _FakeVoiceModel:
+    """最小可用的假 IndexTTS2：复刻上游"实例单槽位条件缓存"的读写方式。"""
+
+    def __init__(self, read_delay: float = 0.0):
+        self.cache_spk_cond = None
+        self.cache_s2mel_style = None
+        self.cache_s2mel_prompt = None
+        self.cache_spk_audio_prompt = None
+        self.cache_mel = None
+        self.cache_emo_cond = None
+        self.cache_emo_audio_prompt = None
+        self.computed: list[str] = []
+        self.hits: list[str] = []
+        self.mixed = 0
+        self.empty_cache_calls = 0
+        self.read_delay = read_delay
+
+    def _set_gr_progress(self, value, message=""):
+        pass
+
+    def infer_generator(self, spk_audio_prompt, *args, **kwargs):
+        import time
+
+        if self.cache_spk_cond is None or self.cache_spk_audio_prompt != spk_audio_prompt:
+            if self.cache_spk_cond is not None:
+                self.cache_spk_cond = None
+                self.empty_cache_calls += 1      # 上游这里真的会调 torch.cuda.empty_cache()
+            self.computed.append(spk_audio_prompt)
+            self.cache_spk_cond = f"cond:{spk_audio_prompt}"
+            self.cache_s2mel_style = f"style:{spk_audio_prompt}"
+            self.cache_s2mel_prompt = f"prompt:{spk_audio_prompt}"
+            self.cache_mel = f"mel:{spk_audio_prompt}"
+            self.cache_spk_audio_prompt = spk_audio_prompt
+            self.cache_emo_cond = f"emo:{spk_audio_prompt}"
+            self.cache_emo_audio_prompt = spk_audio_prompt
+        else:
+            self.hits.append(spk_audio_prompt)
+        if self.read_delay:
+            time.sleep(self.read_delay)
+        # 上游紧接着把这些字段抄进局部变量；抄到别人的条件就是串音色
+        if self.cache_spk_audio_prompt != spk_audio_prompt:
+            self.mixed += 1
+            value = "MIXED"
+        else:
+            value = self.cache_spk_cond
+        self._set_gr_progress(0.1, "text processing...")
+        yield value
+
+
+def test_conditioning_cache_is_per_voice():
+    from aiab_tts.indextts_compat import make_conditioning_cache_per_voice
+
+    model = _FakeVoiceModel()
+    assert make_conditioning_cache_per_voice(model) is True
+    assert list(model.infer_generator("voiceA.wav")) == ["cond:voiceA.wav"]
+    assert list(model.infer_generator("voiceB.wav")) == ["cond:voiceB.wav"]
+    assert list(model.infer_generator("voiceA.wav")) == ["cond:voiceA.wav"]   # 换回来仍然命中
+    assert model.computed == ["voiceA.wav", "voiceB.wav"]
+    assert model.hits == ["voiceA.wav"]
+    assert model.empty_cache_calls == 0        # 不再反复清显存池
+
+
+def test_conditioning_cache_shim_skips_when_upstream_has_it():
+    from aiab_tts.indextts_compat import make_conditioning_cache_per_voice
+
+    model = _FakeVoiceModel()
+    model._aiab_voice_cache_native = True
+    original = model.infer_generator
+    assert make_conditioning_cache_per_voice(model) is True
+    # 上游已内置时不再包一层（绑方法每次都是新对象，比的是底层函数有没有被换掉）
+    assert model.infer_generator.__func__ is original.__func__
+
+
+def test_conditioning_cache_does_not_mix_voices_across_threads():
+    """并发时 A 在读条件、B 又进来装缓存：老实现会把 B 的条件给 A，串音色。"""
+    import concurrent.futures
+
+    from aiab_tts.indextts_compat import make_conditioning_cache_per_voice
+
+    model = _FakeVoiceModel(read_delay=0.05)
+    assert make_conditioning_cache_per_voice(model) is True
+    voices = ["a.wav", "b.wav", "c.wav", "a.wav", "b.wav", "c.wav"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(lambda voice: list(model.infer_generator(voice)), voices))
+    assert model.mixed == 0
+    assert results == [[f"cond:{voice}"] for voice in voices]

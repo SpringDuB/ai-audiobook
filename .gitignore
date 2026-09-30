@@ -9,7 +9,8 @@ __pycache__/
 tts/checkpoints/
 tts/data/
 tts/.env
-tts/index-tts/
+# 上游 index-tts 的 .git 目录（迁移时备份到仓库外，不提交）
+.upstream-backup/
 third_party/
 .ruff_cache/
 build/

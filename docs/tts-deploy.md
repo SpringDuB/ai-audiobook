@@ -14,10 +14,13 @@ Python 版本：**我们这侧不设门槛**（`tts/pyproject.toml` 只写 `>=3.
 cd tts
 uv sync --python 3.11 --extra indextts --extra download   # 推理栈 + 下载客户端（版本按 index-tts 对齐）
 
-# IndexTTS 不在 PyPI 上：克隆官方仓库并装进本项目的 venv
-git clone https://github.com/index-tts/index-tts.git index-tts
+# IndexTTS 不在 PyPI 上：仓库自带 tts/index-tts（上游副本 + 我们的改动），直接装进 venv
 uv pip install --python .venv -e index-tts
 ```
+
+`tts/index-tts/` 已经**随仓库一起管理**（不再 gitignore，也不需要自己 clone）。我们的改动集中在
+`indextts/infer_v2_5.py`，全部带 `[AIAB 改动]` 注释：按音色条件缓存、批量解码 `infer_batch`、
+可调 CFM 步数。要和上游对版本时，clone 官方仓库到临时目录和它 diff 即可。
 
 `indextts` extra = `torch==2.8.* / torchaudio / transformers==4.52.1 / librosa / soundfile / numpy / sentencepiece`
 等推理栈（版本按 index-tts 的 pin 对齐，权威来源仍是它的 `pyproject.toml`）；
@@ -124,6 +127,52 @@ uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 `emoVector` 会静默变成 `null`（历史上就踩过这个坑，回归测试在 `tests/test_cache_key.py`）。
 
 服务端并发门 = `min(AIAB_TTS_MAX_CONCURRENCY, 后端安全上限)`：配置只能往下调，顶不过后端自报值。
+
+### 速度：为什么"加并发"没用，该动哪三个旋钮
+
+实测（8G 4060 Laptop）一句话 7.9s 音频、单路 RTF **0.54**；把并发提到 3 路，同三句话的
+总耗时与串行**完全一样**——GPT 解码每步都要读 1.5GB 权重（300 步 ≈ 1.8s），单路就把显存带宽
+吃满了，再加并发只是互相争。所以提速要减少"每秒音频的计算量"：
+
+| 旋钮 | 默认 | 说明 |
+|---|---|---|
+| `AIAB_TTS_NUM_BEAMS` | `1` | GPT 采样束宽。上游写死 3（解码 ×3），1 = 纯采样 |
+| `AIAB_TTS_DIFFUSION_STEPS` | `16` | CFM 迭代步数。上游写死 25；16 比 25 快 ~29%，12 更快 |
+| `AIAB_TTS_INFERENCE_CFG_RATE` | `0.7` | CFM 的 CFG 强度。降到 0 省一半 CFM 计算，但语气会变平 |
+| `AIAB_TTS_VOICE_CACHE` | `8` | 参考音频条件按音色缓存的数量（多角色书必备） |
+
+运行中对比不同档位：`GET /debug/tuning` 看当前值，`POST /debug/tuning {"diffusionSteps": 12}`
+临时改（不用重载模型，传 `null` 恢复默认）。听感对比页：`data/ab_samples/speed_compare.html`。
+
+另外上游把参考音频条件存成**单槽位**，多角色书每换一个音色就重算参考、还会
+`torch.cuda.empty_cache()`；本项目已改为按音色缓存（见 `tts/README.md`），这是 1.23x → 1.78x 的主要来源。
+
+### 批量解码：`POST /v1/synthesize_batch`
+
+进一步的大头是**批量解码**：GPT 每步都要读一遍权重，一批 N 条只读一次。客户端（worker）
+会把同一个音色的连续几句打包（默认 4 条一包）发过来，服务端一次解码后返回 zip
+（`000.wav`… + `manifest.json`，时长也在 `X-Item-Durations` 响应头里）。
+
+| 方式 | 吞吐（实时倍数） |
+|---|---|
+| 逐行 3 路并发 | 1.49x |
+| 批量 4 条一包 | **3.82x** |
+| 批量 4 条一包（40 字/句） | **4.61x** |
+
+配置：`AIAB_TTS_MAX_BATCH_ITEMS`（默认 8，一次最多几条）、`AIAB_TTS_BATCH_MAX_CHARS`
+（默认 40，超过就退回单条路径保证时序一致）。主项目侧是 `AB_SYNTH_BATCH_SIZE`（默认 4）
+与 `AB_SYNTH_BATCH_WORKERS`（默认 1：一个包内部已经并行 N 条，再叠并发只会抢显存）。
+
+### 内存自检：权重到底在显存还是又回主机内存了
+
+`GET /debug/memory` 直接报答案：`model.cpuResidentMB` 是还留在主机内存里的参数量（正常应当是 `0`），
+`model.modules` 逐个列出 w2v / codec / s2mel / campplus / bigvgan 的设备、精度与大小，
+`host` 是进程的常住工作集 / 提交。每次加载模型时也会把这份自检写进日志（`内存自检：{...}`）。
+
+注意区分三件事：显存占用（`model.cuda.reservedMB` 与 `nvidia-smi`）、**主机常驻**（`host.workingSetMB`）、
+**提交量**（`host.commitMB`，Windows 上把显存分配也算进去，所以经常十几 GB，不代表真的占了这么多内存）。
+主机常驻里含 torch 的 CUDA DLL 代码页（共享、可回收）与 CUDA 上下文，这部分不是权重副本。
+
 IndexTTS-2.5 默认 **3 路真并发**。上游的 GPT 推理模型原本把"当前请求的条件嵌入"存在实例属性
 `cached_mel_emb` 上，两个请求并发时互相覆盖，会 500
 `engine_error: The size of tensor a (N) must match the size of tensor b (M)`；
