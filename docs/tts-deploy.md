@@ -159,8 +159,9 @@ uv run --project tts aiab-tts check --url http://127.0.0.1:8020
 | 批量 4 条一包 | **3.82x** |
 | 批量 4 条一包（40 字/句） | **4.61x** |
 
-配置：`AIAB_TTS_MAX_BATCH_ITEMS`（默认 8，一次最多几条）、`AIAB_TTS_BATCH_MAX_CHARS`
-（默认 40，超过就退回单条路径保证时序一致）。主项目侧是 `AB_SYNTH_BATCH_SIZE`（默认 4）
+配置：`AIAB_TTS_MAX_BATCH_ITEMS`（默认 8，一次最多几条）、`AIAB_TTS_BATCH_MAX_SEGMENTS`
+（默认 8，一段 GPT 解码里最多几段）。长句按上游规则切段后一起批量解码，**不再退回单条推理**
+（实测长句占 64% 音频量，退回单条会把吞吐从 3.6x 打到 1.8x）。主项目侧是 `AB_SYNTH_BATCH_SIZE`（默认 4）
 与 `AB_SYNTH_BATCH_WORKERS`（默认 1：一个包内部已经并行 N 条，再叠并发只会抢显存）。
 
 ### 内存自检：权重到底在显存还是又回主机内存了

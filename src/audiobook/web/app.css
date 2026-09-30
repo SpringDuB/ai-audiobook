@@ -315,6 +315,20 @@
 .state-dot[data-state="synthesized"] { background: var(--accent); }
 .state-dot[data-state="synthesizing"], .state-dot[data-state="analyzing"] { background: var(--accent); }
 
+/* 分析进行中的章节：沙漏转圈 + 文案，跟着 SSE 的任务进度实时切换 */
+.chapter-item__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.chapter-item__status--busy { color: var(--accent); }
+.chapter-item__status--busy .icon { animation: aiab-spin 1.8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .chapter-item__status--busy .icon { animation: none; }
+}
+
 .script__head {
   position: sticky;
   inset-block-start: calc(var(--masthead-h) + var(--bar-h));

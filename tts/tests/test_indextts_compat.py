@@ -444,6 +444,35 @@ def test_conditioning_cache_shim_skips_when_upstream_has_it():
     assert model.infer_generator.__func__ is original.__func__
 
 
+def test_infer_batch_never_falls_back_to_single_infer():
+    """长句不许退回单条推理：长句占 64% 音频量，退回去整章吞吐直接腰斩。
+
+    现在的做法是段级批量：长文本按上游规则切成多段后，和同批其它段一起解码。
+    """
+    import inspect
+
+    from indextts.infer_v2_5 import IndexTTS2
+
+    source = inspect.getsource(IndexTTS2.infer_batch)
+    assert "self.infer(" not in source
+    assert 'AIAB_TTS_BATCH_MAX_SEGMENTS", "8"' in source
+
+
+def test_segment_blocks_flatten_long_items_into_batch():
+    """段级批量：一条长句切出的多段要和别的条目同块解码，而不是单独一条。"""
+    from indextts.infer_v2_5 import IndexTTS2
+
+    prepared = [["a1", "a2", "a3"], ["b1"], []]
+    blocks = IndexTTS2._aiab_segment_blocks(prepared, 4)
+    assert blocks == [[(0, 0, "a1"), (0, 1, "a2"), (0, 2, "a3"), (1, 0, "b1")]]
+    # 超过上限就切块，块内顺序保持（先来先解），拼回去时按 item/segment 还原
+    blocks = IndexTTS2._aiab_segment_blocks(prepared, 2)
+    assert [[(item, seg) for item, seg, _ in block] for block in blocks] == [
+        [(0, 0), (0, 1)],
+        [(0, 2), (1, 0)],
+    ]
+
+
 def test_conditioning_cache_does_not_mix_voices_across_threads():
     """并发时 A 在读条件、B 又进来装缓存：老实现会把 B 的条件给 A，串音色。"""
     import concurrent.futures

@@ -235,6 +235,18 @@ def test_group_batches_packs_same_voice_and_keeps_long_text_alone():
     assert [[row["id"] for row in group] for group in groups] == [["b"], ["a", "c", "d"]]
 
 
+def test_group_batches_sorts_by_length_to_avoid_padding_waste():
+    """一个包会被补齐到最长那条：长短混排会白算，所以要按字数排序再打包。"""
+    rows = [
+        {"id": "long", "text": "长" * 30},
+        {"id": "mid", "text": "中" * 12},
+        {"id": "short", "text": "短"},
+    ]
+    targets = {row["id"]: {"voice_id": "v1"} for row in rows}
+    groups = group_batches(rows, targets, 3, 300)
+    assert [[row["id"] for row in group] for group in groups] == [["short", "mid", "long"]]
+
+
 def test_synthesize_packs_same_voice_into_one_batch(conn, settings, narrator_lines):
     """整章合成时同音色的行要打包成一次批量解码（不再一行一个请求）。"""
     engine = BatchEngine()

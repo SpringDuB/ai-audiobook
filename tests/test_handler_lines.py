@@ -135,6 +135,32 @@ def test_casting_not_ready_while_analysis_jobs_are_active(settings, conn):
     assert casting_ready(settings, conn, book_id) is False
 
 
+def test_lines_handler_queues_chapter_scoped_casting_when_book_not_ready(settings, conn):
+    """只分析一章（全书还没跑完）→ 也要给本章角色推荐音色，而不是干等全书。"""
+    book_id = "b1"
+    store.atomic_replace_json(
+        store.chapters_path(settings, book_id),
+        {
+            "chapters": [
+                {"index": 1, "title": "第一章", "content": "苏锐说：“走。”", "chars": 8},
+                {"index": 2, "title": "第二章", "content": "小鹿还没分析。", "chars": 7},
+            ]
+        },
+    )
+    store.atomic_replace_json(store.characters_path(settings, book_id), CHARACTERS)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 1), EXTRACTION)
+    jobs.enqueue(conn, "lines", book_id, 1)
+    assert casting_ready(settings, conn, book_id) is False   # 第二章还没有行
+
+    assert run_once(_ctx(settings, conn, None)) is True
+
+    casting_jobs = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "casting"]
+    assert len(casting_jobs) == 1
+    job = casting_jobs[0]
+    assert job.chapter_index == 1
+    assert job.payload == {"chapters": [1]}
+
+
 def test_lines_handler_invalidates_chapter_audio_when_annotation_changes(settings, conn):
     """重分析改了标注 → 本章与整本成品作废，等「生成有声书」按新标注重建。"""
     book_id = "b1"

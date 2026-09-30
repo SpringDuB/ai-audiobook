@@ -151,5 +151,16 @@ def handle_lines(ctx, job) -> None:
         removed = invalidate_chapter_products(ctx.settings, book_id, chapter_index)
         logger.info("第 %s 章标注变化：作废 %d 个成品文件", chapter_index, len(removed))
     if casting_ready(ctx.settings, ctx.conn, book_id, exclude_job_id=job.id):
+        # 全书都分析完了：整本选角（跨章角色名按最终角色表重算）
         jobs.enqueue(ctx.conn, "casting", book_id)
+    else:
+        # 只分析了本章（或整本还在跑）：立刻为本章新冒出来的角色补音色推荐，
+        # 不等全书跑完 —— 前端角色栏点完「分析本章台词」就能看到推荐。
+        jobs.enqueue(
+            ctx.conn,
+            "casting",
+            book_id,
+            chapter_index,
+            payload={"chapters": [chapter_index]},
+        )
     ctx.progress(job, len(lines), len(lines), f"{len(lines)} 句")

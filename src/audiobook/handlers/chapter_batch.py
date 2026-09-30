@@ -7,10 +7,11 @@
 """
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs, store
-from ..analysis.extract import dump_extraction, extract_chapter
+from ..analysis.extract import ChapterExtraction, dump_extraction, extract_chapter
 from ..analysis.issues import record_issue
 from ..analysis.merge import extend_characters
 from ..analysis.roles import names_from_payload
@@ -53,19 +54,34 @@ def handle_chapters(ctx, job) -> None:
 
     results: list[tuple[int, list]] = []
     done = 0
-    max_workers = max(1, min(len(chapters), int(ctx.settings.llm_concurrency)))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(
-                extract_chapter,
+    # 正在提取的章节号：前端给这些章画"正在分析台词"的沙漏（同一时刻可能有多章）
+    inflight: set[int] = set()
+    inflight_lock = threading.Lock()
+
+    def extract_one(chapter) -> ChapterExtraction:
+        index = int(chapter["index"])
+        with inflight_lock:
+            inflight.add(index)
+            snapshot = sorted(inflight)
+        ctx.progress(job, done, len(chapters), f"第 {index} 章", extra={"chapters_inflight": snapshot})
+        try:
+            return extract_chapter(
                 runner,
                 book_id=book_id,
-                chapter_index=chapter["index"],
-                title=chapter.get("title") or f"第{chapter['index']}章",
+                chapter_index=index,
+                title=chapter.get("title") or f"第{index}章",
                 content=chapter["content"],
                 window_chars=ctx.settings.llm_line_window_chars,
                 known_names=known_names,
-            ): chapter
+            )
+        finally:
+            with inflight_lock:
+                inflight.discard(index)
+
+    max_workers = max(1, min(len(chapters), int(ctx.settings.llm_concurrency)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(extract_one, chapter): chapter
             for chapter in chapters
         }
         for future in as_completed(futures):
@@ -120,7 +136,13 @@ def handle_chapters(ctx, job) -> None:
                 results.append((chapter["index"], result.lines))
             finally:
                 done += 1
-                ctx.progress(job, done, len(chapters), f"第 {chapter['index']} 章")
+                ctx.progress(
+                    job,
+                    done,
+                    len(chapters),
+                    f"第 {chapter['index']} 章",
+                    extra={"chapters_inflight": sorted(inflight)},
+                )
     if not results:
         raise RuntimeError("勾选的章节全部提取失败，请检查 LLM 端点")
 

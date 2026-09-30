@@ -56,8 +56,52 @@ function paragraphs(content) {
 
 /* ---------------------------------------------------------------- 章节列表 */
 
-function chapterItem(chapter, state, onSelect) {
+// 分析类任务 → 章节状态：正在分析台词 / 等待分析。SSE 每秒推一次任务快照。
+const ANALYSIS_KINDS = new Set(["characters", "chapters", "lines"]);
+
+function analysisActivity(jobs, chapters) {
+  const activity = new Map();
+  const mark = (index, value) => {
+    if (!Number.isFinite(index)) return;
+    if (activity.get(index) === "running") return;   // 正在跑的最高优先，不被排队态覆盖
+    activity.set(index, value);
+  };
+  for (const job of jobs) {
+    if (!ANALYSIS_KINDS.has(job.kind)) continue;
+    if (job.status !== "running" && job.status !== "queued") continue;
+    const queued = job.status === "queued";
+    if (job.kind === "lines") {
+      mark(Number(job.chapter_index), queued ? "queued" : "running");
+      continue;
+    }
+    if (job.kind === "chapters") {
+      // 一个批量 job 内部并发提多章：progress.chapters_inflight 是此刻真正在跑的章
+      const inflight = new Set((job.progress?.chapters_inflight || []).map(Number));
+      for (const raw of job.payload?.chapters || []) {
+        const index = Number(raw);
+        mark(index, !queued && inflight.has(index) ? "running" : "queued");
+      }
+      continue;
+    }
+    // characters（整本）：progress.chapters_inflight 就是此刻正在提取的章
+    const inflight = new Set(job.progress?.chapters_inflight || []);
+    for (const chapter of chapters) {
+      mark(chapter.index, inflight.has(chapter.index) && !queued ? "running" : "queued");
+    }
+  }
+  return activity;
+}
+
+function chapterItem(chapter, state, onSelect, activity) {
   const active = chapter.index === state.index;
+  const analyzing = activity?.get(chapter.index);
+  const analyzed = Number(chapter.lines || 0) > 0;
+  const audioReady = Number(chapter.segments || 0) > 0 || chapter.state === "rendered";
+  const audioLabel = !audioReady
+    ? "未生成"
+    : chapter.lines && Number(chapter.segments || 0) < Number(chapter.lines)
+      ? `已生成 ${chapter.segments}/${chapter.lines}`
+      : "已生成";
   return h(
     "button",
     {
@@ -76,8 +120,20 @@ function chapterItem(chapter, state, onSelect) {
         "span",
         { class: "chapter-item__meta mono" },
         h("span", { class: "state-dot", dataset: { state: chapter.state } }),
-        `${chapter.lines || 0} 句 · ${chapter.duration_sec ? duration(chapter.duration_sec) : "未出"} `,
+        `${analyzed ? "已分析" : "未分析"} · ${audioLabel}`,
+        chapter.duration_sec ? ` · ${duration(chapter.duration_sec)}` : "",
       ),
+      analyzing
+        ? h(
+            "span",
+            {
+              class: `chapter-item__status${analyzing === "running" ? " chapter-item__status--busy" : ""}`,
+              title: analyzing === "running" ? "大模型正在提取这一章的说话人与情绪" : "已排进分析队列，等前面的章跑完",
+            },
+            icon(analyzing === "running" ? "hourglass" : "ellipsis", { size: 12 }),
+            analyzing === "running" ? "正在分析台词" : "等待分析",
+          )
+        : null,
     ),
   );
 }
@@ -651,8 +707,14 @@ async function build(route, host) {
       return;
     }
     if (!currentLines.length) {
+      const activity = chapterActivity.get(state.index);
       scriptBody.replaceChildren(
-        emptyState("这一章还没做逐句标注", "点上面的「分析角色文本」，worker 跑完就有了。"),
+        activity
+          ? emptyState(
+              activity === "running" ? "正在分析这一章的台词…" : "这一章已排进分析队列",
+              "大模型在逐句判定说话人与情绪，跑完这里会自动出现角色文本，不用刷新页面。",
+            )
+          : emptyState("这一章还没做逐句标注", "点上面的「分析本章台词」，worker 跑完就有了。"),
       );
       return;
     }
@@ -818,8 +880,12 @@ async function build(route, host) {
     });
   };
 
-  const paintChapterList = () => {
-    chapterList.replaceChildren(...state.chapters.map((chapter) => chapterItem(chapter, state, selectChapter)));
+  let chapterActivity = new Map();
+  const paintChapterList = (activity = chapterActivity) => {
+    chapterActivity = activity;
+    chapterList.replaceChildren(
+      ...state.chapters.map((chapter) => chapterItem(chapter, state, selectChapter, chapterActivity)),
+    );
   };
 
   const selectChapter = (index) => {
@@ -1043,7 +1109,9 @@ async function build(route, host) {
   // 右上角进度：跟着 SSE 里这本书的任务走；跑任务时顺手刷新章节状态
   let stopWatch = null;
   let lastRefresh = 0;
+  let analysisPollAt = 0;
   let wasBusy = false;
+  let activitySignature = "";
   const seenExports = new Set();
   let exportBaseline = null;
   const refreshOutput = async () => {
@@ -1060,6 +1128,24 @@ async function build(route, host) {
       return;
     }
     const mine = current.jobs.filter((job) => job.book_id === bookId);
+    // 章节列表上的"正在分析台词 / 等待分析"：只在状态变化时重画，避免每秒重建 DOM
+    const activity = analysisActivity(mine, state.chapters);
+    const signature = [...activity.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([index, value]) => `${index}:${value}`)
+      .join(",");
+    if (signature !== activitySignature) {
+      const before = chapterActivity.get(state.index) || "";
+      activitySignature = signature;
+      paintChapterList(activity);
+      // 当前章正在被分析（且还没有角色文本）→ 正文区显示进度提示
+      const now = activity.get(state.index) || "";
+      if (before !== now && !currentLines.length) paintScript();
+    }
+    if (activity.get(state.index) === "running" && Date.now() - analysisPollAt > 1500) {
+      analysisPollAt = Date.now();
+      pullLines(state.index);
+    }
     // 正在合成的章节：每秒拉一次逐句状态，句子一完成立刻能试听，不用刷新页面
     syncSynthProgress(mine);
     // 整本导出跑完：亮起「打开成果文件夹」，并提示一声
@@ -1098,6 +1184,8 @@ async function build(route, host) {
     if (wasBusy && !busy) {
       refreshChapters();
       reloadChapter(state.index);
+      // 选角任务跑完：角色栏立刻换成新的推荐音色（不刷新页面）
+      reloadCasting();
     }
     wasBusy = busy;
   });

@@ -108,6 +108,7 @@ def group_batches(rows: list[dict], targets: dict, size: int, chunk_limit: int) 
     """按音色打包：同一个音色的行排在一起，每 size 条一包。
 
     太长的文本（客户端本来就要分块）单独成包，走原来的逐行路径，时序与以前一致。
+    包内按文本长度排序：批量解码会把一个包补齐到最长那条，长短混在一起会白白多算。
     """
     groups: list[list[dict]] = []
     by_voice: dict[str, list[dict]] = {}
@@ -117,8 +118,9 @@ def group_batches(rows: list[dict], targets: dict, size: int, chunk_limit: int) 
             continue
         by_voice.setdefault(targets[row["id"]]["voice_id"], []).append(row)
     for voice_rows in by_voice.values():
-        for start in range(0, len(voice_rows), size):
-            groups.append(voice_rows[start : start + size])
+        ordered = sorted(voice_rows, key=lambda row: len(row["text"]))
+        for start in range(0, len(ordered), size):
+            groups.append(ordered[start : start + size])
     return groups
 
 

@@ -1000,15 +1000,18 @@ class IndexTTS2:
 
     def infer_batch(self, spk_audio_prompt, texts, output_paths, lang, emo_vectors=None,
                     duration_factors=None, emo_alpha=1.0, use_random=False, verbose=False,
-                    max_text_tokens_per_segment=120, text_normalization=True, **generation_kwargs):
+                    max_text_tokens_per_segment=120, text_normalization=True,
+                    interval_silence=200, **generation_kwargs):
         """[AIAB 新增] 同一音色的多条文本一起合成，返回每条音频的时长（秒）。
 
         为什么值得单独一条路径：GPT 自回归解码是显存带宽瓶颈——每生成一步都要把 1.5GB
         权重读一遍（300 步 ≈ 1.8s，单条就把带宽吃满）。一批里放 N 条文本，这一步权重只读
         一次就服务 N 条，所以 GPT 段耗时几乎不随 N 增长；s2mel / 声码器仍然逐条跑。
 
-        为了和单条路径结果一致，只把"一句话就切得完"的条目放进同一个 batch：
-        需要切段的（长文本、低显存切分）退回单条 infer 路径，拼好再落盘。
+        长句不再退回单条 infer：上游 split_text_by_tokens 会把长文本切成多段，
+        这里把"每条文本的每一段"压平成一个段列表，按 AIAB_TTS_BATCH_MAX_SEGMENTS
+        （默认 8）一块批量解码，再按原顺序拼回每条。结果与单条路径一致，但长句的
+        GPT 解码也是批量的（此前长句逐条跑，实测占 64% 音频量、吞吐直接腰斩）。
         """
         texts = [str(item) for item in texts]
         total = len(texts)
@@ -1026,7 +1029,9 @@ class IndexTTS2:
         started = time.perf_counter()
         sample_rate = 22050
         lang_prefix = f'<|{lang.lower()}|> '
-        batch_max_chars = int(os.environ.get("AIAB_TTS_BATCH_MAX_CHARS", "40"))
+        # 一块里最多几条"段"一起解码：段级批量的显存上限（GPT 解码一次读一遍权重，
+        # 块越大越省，但补齐到最长段的白算也越多；8 段正好是客户端的默认包大小）
+        max_segments = max(1, int(os.environ.get("AIAB_TTS_BATCH_MAX_SEGMENTS", "8")))
 
         do_sample = generation_kwargs.pop("do_sample", True)
         top_p = generation_kwargs.pop("top_p", 0.8)
@@ -1080,62 +1085,79 @@ class IndexTTS2:
                 while len(self._aiab_emo_conds) > self._aiab_voice_cache_max:
                     self._aiab_emo_conds.popitem(last=False)
 
-        # 2) 文本切段；只有"一段就够"的条目进 batch，其余走单条路径
-        prepared: list[list[torch.Tensor] | None] = []
+        # 2) 文本切段：所有条目都进批量。长句会被切成多段，下面按"段"压平一起解码
+        prepared: list[list[torch.Tensor]] = []
         for text in texts:
-            segments, tokens = self._aiab_text_segments(
+            _segments, tokens = self._aiab_text_segments(
                 text, lang, lang_prefix, max_text_tokens_per_segment, text_normalization)
-            single = len(segments) == 1 and len(text) <= batch_max_chars
-            prepared.append(tokens if single else None)
-        batch_index = [i for i, tokens in enumerate(prepared) if tokens is not None]
-
+            prepared.append(tokens)
+        blocks = self._aiab_segment_blocks(prepared, max_segments)
+        pieces: list[list[torch.Tensor | None]] = [[None] * len(tokens) for tokens in prepared]
         wavs: list[torch.Tensor | None] = [None] * total
-        if batch_index:
-            self._set_gr_progress(0.2, f"batch synthesis {len(batch_index)}/{total}...")
-            pad_token = 1  # 上游 F.pad(toks, (0, 1), value=1)：1 就是 start/stop text token，会被掩码滤掉
-            max_len = max(prepared[i][0].numel() for i in batch_index)
-            padded = torch.full((len(batch_index), max_len), pad_token, dtype=torch.int, device=self.device)
-            for row, index in enumerate(batch_index):
-                toks = prepared[index][0].to(self.device)
-                padded[row, : toks.numel()] = toks
-            langs = torch.LongTensor([lang_to_token(lang)] * len(batch_index)).to(self.device)
+        segment_total = sum(len(tokens) for tokens in prepared)
 
+        # 3) 段级批量解码：每块最多 max_segments 段（长句的段也在内，不再回退单条）
+        pad_token = 1  # 上游 F.pad(toks, (0, 1), value=1)：1 就是 start/stop text token，会被掩码滤掉
+        with torch.no_grad():
+            with torch.amp.autocast(self.device.split(":")[0], enabled=self.dtype is not None, dtype=self.dtype):
+                base_emovec = self.gpt.merge_emovec(
+                    spk_cond_emb,
+                    emo_cond_emb,
+                    torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                    torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                    alpha=emo_alpha,
+                )
+        emovecs_by_item: dict[int, torch.Tensor] = {}
+        similarity_index: list | None = None
+
+        def emovec_of(index: int) -> torch.Tensor:
+            """每条文本合成一份 emovec（同一句的所有段共用，和单条路径一致）。"""
+            nonlocal similarity_index
+            cached = emovecs_by_item.get(index)
+            if cached is not None:
+                return cached
+            vector = emo_vectors[index]
+            if vector is None:
+                value = base_emovec
+            else:
+                if similarity_index is None:
+                    if use_random:
+                        similarity_index = [random.randint(0, x - 1) for x in self.emo_num]
+                    else:
+                        similarity_index = [find_most_similar_cosine(style, tmp) for tmp in self.spk_matrix]
+                weight_vector = torch.tensor(vector, device=self.device)
+                emo_matrix = torch.cat(
+                    [tmp[i].unsqueeze(0) for i, tmp in zip(similarity_index, self.emo_matrix)], 0)
+                emovec_mat = torch.sum(weight_vector.unsqueeze(1) * emo_matrix, 0).unsqueeze(0)
+                value = emovec_mat + (1 - torch.sum(weight_vector)) * base_emovec
+            emovecs_by_item[index] = value
+            return value
+
+        for block_no, block in enumerate(blocks, start=1):
+            block_started = time.perf_counter()
+            self._set_gr_progress(
+                0.2 + 0.6 * (block_no - 1) / max(1, len(blocks)),
+                f"batch synthesis {block_no}/{len(blocks)} ({len(block)} segs)...",
+            )
+            block_size = len(block)
+            max_len = max(item[2].numel() for item in block)
+            padded = torch.full((block_size, max_len), pad_token, dtype=torch.int, device=self.device)
+            for row, (_item_index, _segment_index, tokens) in enumerate(block):
+                toks = tokens.to(self.device)
+                padded[row, : toks.numel()] = toks
+            langs = torch.LongTensor([lang_to_token(lang)] * block_size).to(self.device)
+            emo_vec = torch.cat([emovec_of(item[0]) for item in block], dim=0)
             with torch.no_grad():
                 with torch.amp.autocast(self.device.split(":")[0], enabled=self.dtype is not None, dtype=self.dtype):
-                    base_emovec = self.gpt.merge_emovec(
-                        spk_cond_emb,
-                        emo_cond_emb,
-                        torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
-                        torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
-                        alpha=emo_alpha,
-                    )
-                    if any(vector is not None for vector in (emo_vectors[i] for i in batch_index)):
-                        if use_random:
-                            random_index = [random.randint(0, x - 1) for x in self.emo_num]
-                        else:
-                            random_index = [find_most_similar_cosine(style, tmp) for tmp in self.spk_matrix]
-                    emovecs = []
-                    for index in batch_index:
-                        vector = emo_vectors[index]
-                        if vector is None:
-                            emovecs.append(base_emovec)
-                            continue
-                        weight_vector = torch.tensor(vector, device=self.device)
-                        emo_matrix = torch.cat(
-                            [tmp[i].unsqueeze(0) for i, tmp in zip(random_index, self.emo_matrix)], 0)
-                        emovec_mat = torch.sum(weight_vector.unsqueeze(1) * emo_matrix, 0).unsqueeze(0)
-                        emovecs.append(emovec_mat + (1 - torch.sum(weight_vector)) * base_emovec)
-                    emo_vec = torch.cat(emovecs, dim=0)
-                    batch_size = len(batch_index)
                     codes, _ = self.gpt.inference_speech(
-                        spk_cond_emb.expand(batch_size, -1, -1),
+                        spk_cond_emb.expand(block_size, -1, -1),
                         padded,
                         langs,
-                        emo_cond_emb.expand(batch_size, -1, -1),
-                        cond_lengths=torch.tensor([spk_cond_emb.shape[-1]] * batch_size, device=self.device),
-                        emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]] * batch_size, device=self.device),
+                        emo_cond_emb.expand(block_size, -1, -1),
+                        cond_lengths=torch.tensor([spk_cond_emb.shape[-1]] * block_size, device=self.device),
+                        emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]] * block_size, device=self.device),
                         emo_vec=emo_vec,
-                        campplus_embedding=style.expand(batch_size, -1, -1),
+                        campplus_embedding=style.expand(block_size, -1, -1),
                         wav=spk_audio_prompt,
                         do_sample=do_sample,
                         top_p=top_p,
@@ -1148,10 +1170,10 @@ class IndexTTS2:
                         max_generate_length=max_mel_tokens,
                         **generation_kwargs
                     )
-            gpt_time = time.perf_counter() - started
-            print(f">> batch gpt_gen_time: {gpt_time:.2f} seconds（{batch_size} 条）")
+            print(f">> batch gpt_gen_time: {time.perf_counter() - block_started:.2f} seconds"
+                  f"（{block_size} 段，第 {block_no}/{len(blocks)} 块）")
 
-            for row, index in enumerate(batch_index):
+            for row, (item_index, segment_index, _tokens) in enumerate(block):
                 code = codes[row]
                 stop = (code == self.stop_mel_token).nonzero(as_tuple=False)
                 if stop.numel():
@@ -1160,7 +1182,7 @@ class IndexTTS2:
                     with torch.amp.autocast(self.device.split(":")[0], enabled=self.dtype is not None, dtype=self.dtype):
                         S_infer = self.semantic_codec.decode(code.unsqueeze(0))
                         target_lengths = torch.LongTensor(
-                            [int(S_infer.shape[1] * 1.72 * duration_factors[index])]).to(code.device)
+                            [int(S_infer.shape[1] * 1.72 * duration_factors[item_index])]).to(code.device)
                         cond = self.s2mel.models['length_regulator'](
                             S_infer, ylens=target_lengths, n_quantizers=3, f0=None)[0]
                         cat_condition = torch.cat([prompt_condition, cond], dim=1)
@@ -1172,31 +1194,17 @@ class IndexTTS2:
                         vc_target = vc_target[:, :, ref_mel.size(-1):]
                         wav = self.bigvgan(vc_target.float()).squeeze().unsqueeze(0).squeeze(1)
                 wav = torch.clamp(32767 * wav, -32767.0, 32767.0)
-                wavs[index] = wav.cpu()
+                pieces[item_index][segment_index] = wav.cpu()
 
-        # 3) 需要切段的条目：走原来的单条路径，结果与以前完全一致
+        # 4) 按原顺序把每条的各段拼回去：多段之间补 interval_silence（与单条路径一致）
         for index in range(total):
-            if wavs[index] is not None:
-                continue
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = os.path.join(tmp_dir, f"{index}.wav")
-                self.infer(
-                    spk_audio_prompt=spk_audio_prompt,
-                    text=texts[index],
-                    output_path=tmp_path,
-                    lang=lang,
-                    emo_vector=emo_vectors[index],
-                    emo_alpha=emo_alpha,
-                    use_random=use_random,
-                    verbose=verbose,
-                    max_text_tokens_per_segment=max_text_tokens_per_segment,
-                    duration_factor=duration_factors[index],
-                    text_normalization=text_normalization,
-                    **generation_kwargs,
-                )
-                wav, _sr = torchaudio.load(tmp_path)
-            wavs[index] = torch.clamp(32767 * wav, -32767.0, 32767.0)
+            parts = [part for part in pieces[index] if part is not None]
+            if not parts:
+                raise RuntimeError(f"批量合成漏解了第 {index} 条（没有任何音频段）")
+            if len(parts) > 1 and interval_silence and interval_silence > 0:
+                parts = self.insert_interval_silence(
+                    parts, sampling_rate=sample_rate, interval_silence=interval_silence)
+            wavs[index] = torch.cat(parts, dim=1)
 
         durations = []
         for index in range(total):
@@ -1208,8 +1216,29 @@ class IndexTTS2:
                 save_pcm_wav(output_path, wav, sample_rate)
             durations.append(round(wav.shape[-1] / sample_rate, 3))
         print(f">> batch total {time.perf_counter() - started:.2f} seconds，"
-              f"{total} 条共 {sum(durations):.2f}s 音频（batch {len(batch_index)} 条）")
+              f"{total} 条共 {sum(durations):.2f}s 音频（{segment_total} 段 / {len(blocks)} 块）")
         return durations
+
+    @staticmethod
+    def _aiab_segment_blocks(prepared, max_segments):
+        """[AIAB 新增] 把每条文本切好的段压平成批量解码块。
+
+        ``prepared[i]`` 是第 i 条文本的 token 段列表；返回的每块是
+        ``[(item_index, segment_index, tokens), ...]``，每块最多 ``max_segments`` 段。
+        长句的段因此和同批其它段一起解码，不再退回单条 infer。
+        """
+        limit = max(1, int(max_segments))
+        blocks: list[list[tuple[int, int, object]]] = []
+        current: list[tuple[int, int, object]] = []
+        for item_index, tokens in enumerate(prepared):
+            for segment_index, token in enumerate(tokens):
+                current.append((item_index, segment_index, token))
+                if len(current) >= limit:
+                    blocks.append(current)
+                    current = []
+        if current:
+            blocks.append(current)
+        return blocks
 
 
 def find_most_similar_cosine(query_vector, matrix):
