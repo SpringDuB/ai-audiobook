@@ -82,13 +82,39 @@ def test_analyze_chapters_queues_one_batch_job_for_picked_chapters(settings, nar
     body = client.post(f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1, 2]}).json()
     # 勾选多章合成一个批量任务（内部按大模型并发同时提这几章），不再一章一个 job
     assert body["plan"] == [["chapters", None]]
-    # 勾选章节的旧提取结果被删掉 → 批量任务会重新调 LLM 提取
-    assert not store.extract_path(settings, book_id, 1).exists()
+    # 默认断点续跑：旧提取结果保留（handler 会跳过已分析好的章，不再重复花 LLM）
+    assert store.extract_path(settings, book_id, 1).exists()
     # 没勾的章一个文件都不碰
     assert store.extract_path(settings, book_id, 0).exists()
     job = jobs.get_job(_conn(settings), body["job_ids"][0])
     assert (job.kind, job.chapter_index) == ("chapters", None)
     assert job.payload == {"chapters": [1, 2]}
+
+
+def test_analyze_chapters_force_deletes_extracts_for_real_rerun(settings, narrator_lines):
+    """弹窗勾「覆盖重跑」→ force=true：删掉勾选章的提取结果，整章重提。"""
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 1), {"windows": 1, "lines": []})
+    body = client.post(
+        f"/api/books/{book_id}/analyze/chapters", json={"chapters": [1], "force": True}
+    ).json()
+    assert body["plan"] == [["chapters", None]]
+    assert not store.extract_path(settings, book_id, 1).exists()
+    job = jobs.get_job(_conn(settings), body["job_ids"][0])
+    assert job.payload == {"chapters": [1], "force": True}
+
+
+def test_analyze_all_chapters_force_passes_flag_to_characters_job(settings, narrator_lines):
+    client = _client(settings)
+    book_id = _seed_three_chapters(settings, narrator_lines)
+    store.atomic_replace_json(store.extract_path(settings, book_id, 0), {"windows": 1, "lines": []})
+    body = client.post(
+        f"/api/books/{book_id}/analyze/chapters", json={"chapters": [0, 1, 2], "force": True}
+    ).json()
+    assert body["plan"] == [["characters", None]]
+    assert not store.extract_path(settings, book_id, 0).exists()
+    assert jobs.get_job(_conn(settings), body["job_ids"][0]).payload == {"force": True}
 
 
 def test_analyze_chapters_merges_second_click_into_queued_batch(settings, narrator_lines):

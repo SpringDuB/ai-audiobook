@@ -1,3 +1,15 @@
+"""固定并发门：并发上限只由配置决定，请求失败一律只重试，不自动降档。
+
+历史行为会在失败时"减半 + 冷却"自适应降档，真实批量跑下来被证明有害：
+服务端一次网络抖动会同时掐断多路连接，几毫秒内就吃满"连续失败"阈值，
+10 路并发被打到 1 路；而恢复要每 8 次成功才 +1，对长任务等于永久降速。
+
+现在：
+- 断连 / 超时：不动并发，交给 runner 的抖动退避 + 重试；
+- 429（服务端明确限流）：同样不动并发，重试自带退避，不降用户的档；
+- ``stats()`` 里的计数只用于观测（日志/排查），不参与调度。
+"""
+
 import threading
 import time
 from contextlib import contextmanager
@@ -5,87 +17,60 @@ from typing import Callable
 
 
 class AdaptiveLimiter:
-    """自适应并发门：服务端限流降一档并冷却，连续成功后逐级恢复。
-
-    两类失败分开处理：
-    - 硬限流（429）：服务端明确说"太快了"，立刻减半 + 完整冷却；
-    - 链路抖动（连接被掐断/超时）：先短促停顿、不降档，连续多次才升级成硬限流。
-      旧行为是任何一次断连都减半 + 冻结整个池 60 秒，10 路并发一次抖动就塌到 1 路。
-    """
+    """（名字保留兼容调用方）现在的行为是固定并发门。"""
 
     def __init__(
         self,
         max_concurrency: int = 8,
         min_concurrency: int = 1,
-        restore_after: int = 8,
-        cooldown_seconds: float = 60.0,
-        soft_escalate_after: int = 3,
-        soft_cooldown_seconds: float = 5.0,
         clock: Callable[[], float] = time.monotonic,
+        **legacy,
     ):
+        # legacy 参数（cooldown_seconds / restore_after / soft_*）只为兼容老调用方，
+        # 已经不再影响调度：降档逻辑整体删掉了。
         self.max_concurrency = max(1, int(max_concurrency))
         self.min_concurrency = max(1, int(min_concurrency))
-        self.restore_after = max(1, int(restore_after))
-        self.cooldown_seconds = float(cooldown_seconds)
-        self.soft_escalate_after = max(1, int(soft_escalate_after))
-        self.soft_cooldown_seconds = float(soft_cooldown_seconds)
         self._clock = clock
         self._limit = self.max_concurrency
         self._inflight = 0
-        self._cooldown_until = 0.0
-        self._success_streak = 0
-        self._soft_failures = 0
+        self._transport_failures = 0
+        self._rate_limits = 0
+        self._successes = 0
         self._cond = threading.Condition()
 
     @property
     def limit(self) -> int:
-        with self._cond:
-            return self._limit
+        return self._limit
 
     def stats(self) -> dict:
         with self._cond:
             return {
                 "limit": self._limit,
                 "inflight": self._inflight,
-                "cooldown_remaining": max(0.0, self._cooldown_until - self._clock()),
-                "success_streak": self._success_streak,
-                "soft_failures": self._soft_failures,
+                "transport_failures": self._transport_failures,
+                "rate_limits": self._rate_limits,
+                "successes": self._successes,
             }
 
     def in_cooldown(self) -> bool:
-        return self.stats()["cooldown_remaining"] > 0
+        """固定并发门没有冷却期（保留接口给老调用方）。"""
+        return False
 
     def record_rate_limit(self) -> int:
-        """服务端明确限流：立刻降档 + 完整冷却。"""
+        """429：只计数。降档在这里被明确禁止——失败靠重试，不靠降并发。"""
         with self._cond:
-            self._soft_failures = 0
-            self._limit = max(self.min_concurrency, self._limit // 2)
-            self._cooldown_until = self._clock() + self.cooldown_seconds
-            self._success_streak = 0
-            self._cond.notify_all()
+            self._rate_limits += 1
             return self._limit
 
     def record_transport_error(self) -> int:
-        """连接被掐断 / 超时：先短暂停一下，不降档；连续多次才按硬限流处理。"""
+        """断连 / 超时：只计数，不降档、不冻结连接池，并发原样保持。"""
         with self._cond:
-            self._soft_failures += 1
-            if self._soft_failures < self.soft_escalate_after:
-                self._cooldown_until = max(
-                    self._cooldown_until, self._clock() + self.soft_cooldown_seconds
-                )
-                self._cond.notify_all()
-                return self._limit
-            self._soft_failures = 0
-        return self.record_rate_limit()
+            self._transport_failures += 1
+            return self._limit
 
     def record_success(self) -> int:
         with self._cond:
-            self._soft_failures = 0
-            self._success_streak += 1
-            if self._success_streak >= self.restore_after and self._limit < self.max_concurrency:
-                self._limit += 1
-                self._success_streak = 0
-                self._cond.notify_all()
+            self._successes += 1
             return self._limit
 
     @contextmanager
@@ -102,12 +87,9 @@ class AdaptiveLimiter:
         deadline = None if timeout is None else self._clock() + timeout
         with self._cond:
             while True:
-                wait = self._cooldown_until - self._clock()
-                if wait <= 0 and self._inflight < self._limit:
+                if self._inflight < self._limit:
                     self._inflight += 1
                     return
-                if wait <= 0:
-                    wait = 0.05
-                if deadline is not None and self._clock() + wait > deadline:
+                if deadline is not None and self._clock() + 0.05 > deadline:
                     raise TimeoutError("等待 LLM 并发槽超时")
-                self._cond.wait(timeout=wait)
+                self._cond.wait(timeout=0.05)

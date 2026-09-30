@@ -164,12 +164,19 @@ def fail(conn, job_id, worker_id, error, retry_delay_ms=None, now=None) -> str:
 def reap_expired(conn, now=None) -> int:
     ts = now_ms(now)
     rows = conn.execute(
-        "SELECT id, attempts, max_attempts FROM jobs"
+        "SELECT id, attempts, max_attempts, cancel_requested FROM jobs"
         " WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<?",
         (ts,),
     ).fetchall()
     for row in rows:
-        if row["attempts"] >= row["max_attempts"]:
+        if row["cancel_requested"]:
+            # 已经点过取消：worker 没了也算取消成功，别再排队重跑
+            conn.execute(
+                "UPDATE jobs SET status='canceled', lease_expires_at=NULL, worker_id=NULL,"
+                " updated_at=? WHERE id=?",
+                (ts, row["id"]),
+            )
+        elif row["attempts"] >= row["max_attempts"]:
             conn.execute(
                 "UPDATE jobs SET status='failed', error='租约过期且已达最大重试次数', updated_at=? WHERE id=?",
                 (ts, row["id"]),
@@ -218,6 +225,24 @@ def request_cancel(conn, job_id, now=None) -> None:
         conn.execute("UPDATE jobs SET status='canceled', updated_at=? WHERE id=?", (ts, job_id))
     else:
         conn.execute("UPDATE jobs SET cancel_requested=1, updated_at=? WHERE id=?", (ts, job_id))
+        # 没有 worker 在跑（租约早过期）时没人会来读这个标记 → 直接落成取消
+        row = conn.execute(
+            "SELECT lease_expires_at FROM jobs WHERE id=? AND status='running'", (job_id,)
+        ).fetchone()
+        lease = row["lease_expires_at"] if row is not None else None
+        if lease is not None and lease < ts:
+            mark_canceled(conn, job_id, now=ts)
+
+
+def mark_canceled(conn, job_id, now=None) -> bool:
+    """把执行中/排队中的任务落成 canceled（worker 收到取消、或租约过期时调用）。"""
+    ts = now_ms(now)
+    cur = conn.execute(
+        "UPDATE jobs SET status='canceled', worker_id=NULL, lease_expires_at=NULL, updated_at=?"
+        " WHERE id=? AND status IN ('queued','running')",
+        (ts, job_id),
+    )
+    return cur.rowcount == 1
 
 
 def retry(conn, job_id: int, now=None) -> bool:

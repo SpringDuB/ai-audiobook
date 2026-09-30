@@ -8,7 +8,7 @@ from ..analysis.casting import voice_for_speaker
 from ..analysis.issues import record_issue
 from ..cache import cache_key, params_from_line
 from ..engines.errors import TtsUnavailable, TtsVoiceMissing
-from ..worker import register
+from ..worker import JobCancelled, register
 
 logger = logging.getLogger(__name__)
 
@@ -198,13 +198,19 @@ def handle_synthesize(ctx, job) -> None:
     done += total - len(pending)
     ctx.progress(job, done, total, "", extra={"inflight": []})
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    cancelled = False
+    # 不用 with：取消时要立刻返回，不能让在跑的请求把任务拖到跑完
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = {}
         for group in groups:
             task = run_batch if len(group) > 1 else run_single
             argument = group if len(group) > 1 else group[0]
             futures[pool.submit(task, argument)] = group
         for future in as_completed(futures):
+            if jobs_mod.is_canceled(ctx.conn, job.id):
+                cancelled = True
+                break
             group = futures[future]
             try:
                 future.result()
@@ -226,6 +232,11 @@ def handle_synthesize(ctx, job) -> None:
             for row in group:
                 done += 1
                 note_progress(row)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    if cancelled:
+        # 已合成的片段留在盘上，重新点生成会走缓存只补没跑完的行
+        raise JobCancelled(f"已取消：{done}/{total} 行已有音频，已生成的片段保留")
     if failed == total:
         if endpoint_down:
             record_issue(

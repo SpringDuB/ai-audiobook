@@ -140,6 +140,40 @@ def test_batch_handler_extracts_picked_chapters_and_keeps_others(settings, conn,
     assert sorted(passes) == ["extract", "extract", "merge"]
 
 
+def test_batch_handler_skips_chapters_already_analyzed(settings, conn, tmp_path):
+    """勾选里已经分析好的章直接跳过：只有没提取过的章才发 LLM 请求。"""
+    book_id = _seed(settings, conn, tmp_path)
+    store.atomic_replace_json(
+        store.extract_path(settings, book_id, 2),
+        {"windows": 1, "lines": [{"text": "等我。", "role": "小鹿"}]},
+    )
+    ctx = _ctx(settings, conn, _llm())
+    jobs.enqueue(conn, "chapters", book_id, payload={"chapters": [1, 2]})
+
+    assert run_once(ctx) is True
+
+    rows = store.read_jsonl(store.llm_log_path(settings, book_id))
+    assert [row["chapter"] for row in rows if row["pass"] == "extract"] == [1]
+    # 已分析过的第 2 章原样保留，没有被重提覆盖
+    assert store.read_json(store.extract_path(settings, book_id, 2))["lines"][0]["text"] == "等我。"
+
+
+def test_batch_handler_force_reanalyzes_picked_chapters(settings, conn, tmp_path):
+    book_id = _seed(settings, conn, tmp_path)
+    store.atomic_replace_json(
+        store.extract_path(settings, book_id, 2),
+        {"windows": 1, "lines": [{"text": "旧文本", "role": "旁白"}]},
+    )
+    ctx = _ctx(settings, conn, _llm())
+    jobs.enqueue(conn, "chapters", book_id, payload={"chapters": [1, 2], "force": True})
+
+    assert run_once(ctx) is True
+
+    rows = store.read_jsonl(store.llm_log_path(settings, book_id))
+    assert sorted(row["chapter"] for row in rows if row["pass"] == "extract") == [1, 2]
+    assert store.read_json(store.extract_path(settings, book_id, 2))["lines"][0]["text"] == "等我。"
+
+
 def test_batch_handler_runs_extractions_concurrently(settings, conn, tmp_path):
     book_id = _seed(settings, conn, tmp_path)
     llm = SlowFakeLLM(routes={"【EXTRACT】": _extract_route, "【MERGE_ROLES】": MERGED})

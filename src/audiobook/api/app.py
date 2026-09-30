@@ -539,9 +539,15 @@ def create_app(settings, conn) -> FastAPI:
     def analyze_book(book_id: str, force: bool = False):
         """只推分析链：分章 → 整章分析（角色 + 逐句情感）→ 选角。
 
-        force=true 时无视断点整本重跑，会覆盖已分析的逐句标注（含人工修改）。
+        force=true 时无视断点整本重跑，会覆盖已分析的逐句标注（含人工修改）；
+        默认（force=false）已经分析好的章节会被跳过。
         """
         plan = resume_book(settings, conn, book_id, phase="analysis", force=force)
+        if force:
+            active = jobs.find_active(conn, "characters", book_id)
+            if active is not None:
+                # enqueue 是幂等的：force 得写进 payload，handler 才知道要不要重提
+                jobs.set_payload(conn, active.id, {"force": True})
         return {"ok": True, "queued": len(plan), "plan": plan}
 
     @app.post("/api/books/{book_id}/chapters/{index}/analyze")
@@ -560,18 +566,20 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.post("/api/books/{book_id}/analyze/chapters")
     def analyze_chapters(book_id: str, payload: dict | None = None):
-        """只重跑勾选章节的分析：删掉这些章的提取结果，再重新提取。
+        """只重跑勾选章节的分析：默认跳过已经分析好的章，force=true 才覆盖重跑。
 
         勾选全部章节时走整书 characters 任务（跨章合并同人异名更准，跑完会自动
         为每章排队 lines）；勾选一部分时走一个 chapters 批量任务：job 内部按大模型
         并发同时提这几章（和 characters 同一模式），新称呼并进现有角色表。
         """
+        body = payload or {}
         try:
-            picked = sorted({int(item) for item in ((payload or {}).get("chapters") or [])})
+            picked = sorted({int(item) for item in (body.get("chapters") or [])})
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="chapters 必须是章节序号数组") from exc
         if not picked:
             raise HTTPException(status_code=400, detail="至少选择一章")
+        force = bool(body.get("force"))
         chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
         known = {int(chapter["index"]) for chapter in chapters}
         if not known:
@@ -580,11 +588,13 @@ def create_app(settings, conn) -> FastAPI:
         if unknown:
             raise HTTPException(status_code=400, detail=f"不存在的章节：{unknown}")
         if len(picked) == len(known):
-            for index in picked:
-                store.extract_path(settings, book_id, index).unlink(missing_ok=True)
-            plan: list[tuple[str, int | None]] = [("characters", None)]
-            job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
-            return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
+            if force:
+                for index in picked:
+                    store.extract_path(settings, book_id, index).unlink(missing_ok=True)
+            job_id = jobs.enqueue(conn, "characters", book_id)
+            if force:
+                jobs.set_payload(conn, job_id, {"force": True})
+            return {"ok": True, "queued": 1, "plan": [["characters", None]], "job_ids": [job_id]}
 
         active = jobs.find_active(conn, "chapters", book_id)
         if active is not None and active.status == "running":
@@ -592,8 +602,9 @@ def create_app(settings, conn) -> FastAPI:
             # lines（各章一个 job），保证不会静默丢单。它已覆盖的章交给它自己跑。
             covered = {int(item) for item in ((active.payload or {}).get("chapters") or [])}
             extra = [index for index in picked if index not in covered]
-            for index in extra:
-                store.extract_path(settings, book_id, index).unlink(missing_ok=True)
+            if force:
+                for index in extra:
+                    store.extract_path(settings, book_id, index).unlink(missing_ok=True)
             plan = [("lines", index) for index in extra]
             job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
             return {
@@ -604,15 +615,23 @@ def create_app(settings, conn) -> FastAPI:
                 "running_job_id": active.id,
             }
 
-        for index in picked:
-            store.extract_path(settings, book_id, index).unlink(missing_ok=True)
+        if force:
+            for index in picked:
+                store.extract_path(settings, book_id, index).unlink(missing_ok=True)
         if active is not None:
             # 还没开跑：把这次勾选并进同一条批量任务，避免两次点击各跑一批
             merged = sorted({int(item) for item in ((active.payload or {}).get("chapters") or [])} | set(picked))
-            jobs.set_payload(conn, active.id, {"chapters": merged})
+            merged_force = force or bool((active.payload or {}).get("force"))
+            merged_payload = {"chapters": merged}
+            if merged_force:
+                merged_payload["force"] = True
+            jobs.set_payload(conn, active.id, merged_payload)
             return {"ok": True, "queued": 1, "plan": [["chapters", None]], "job_ids": [active.id]}
 
-        job_id = jobs.enqueue(conn, "chapters", book_id, payload={"chapters": picked})
+        job_payload = {"chapters": picked}
+        if force:
+            job_payload["force"] = True
+        job_id = jobs.enqueue(conn, "chapters", book_id, payload=job_payload)
         plan = [("chapters", None)]
         return {"ok": True, "queued": 1, "plan": plan, "job_ids": [job_id]}
 

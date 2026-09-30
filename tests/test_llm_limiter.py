@@ -1,81 +1,79 @@
+"""并发门：请求失败只重试，永远不降档（用户明确要求：不要降低并发）。"""
+
+import threading
+import time
+
 import pytest
 
 from audiobook.llm.limiter import AdaptiveLimiter
 
 
-def test_rate_limit_halves_limit_and_floors_at_min():
-    limiter = AdaptiveLimiter(max_concurrency=8, min_concurrency=1)
-    assert limiter.limit == 8
-    assert limiter.record_rate_limit() == 4
-    assert limiter.record_rate_limit() == 2
-    assert limiter.record_rate_limit() == 1
-    assert limiter.record_rate_limit() == 1
+def test_failures_never_lower_the_limit():
+    limiter = AdaptiveLimiter(max_concurrency=10)
+    assert limiter.limit == 10
+    for _ in range(30):
+        assert limiter.record_transport_error() == 10
+    for _ in range(30):
+        assert limiter.record_rate_limit() == 10
+    assert limiter.limit == 10
+    stats = limiter.stats()
+    assert stats["transport_failures"] == 30
+    assert stats["rate_limits"] == 30
 
 
-def test_success_streak_restores_limit_one_step_at_a_time():
-    limiter = AdaptiveLimiter(max_concurrency=8, restore_after=3)
-    limiter.record_rate_limit()
-    assert limiter.limit == 4
-    for _ in range(3):
-        limiter.record_success()
-    assert limiter.limit == 5
-    for _ in range(9):
-        limiter.record_success()
-    assert limiter.limit == 8
-    for _ in range(9):
-        limiter.record_success()
-    assert limiter.limit == 8
-
-
-def test_cooldown_uses_injected_clock():
-    now = {"t": 1000.0}
-    limiter = AdaptiveLimiter(max_concurrency=8, cooldown_seconds=60.0, clock=lambda: now["t"])
-    limiter.record_rate_limit()
-    assert limiter.in_cooldown() is True
-    now["t"] += 59.0
-    assert limiter.in_cooldown() is True
-    now["t"] += 2.0
-    assert limiter.in_cooldown() is False
-
-
-def test_slot_tracks_inflight_and_allows_entering_after_cooldown():
-    now = {"t": 0.0}
-    limiter = AdaptiveLimiter(max_concurrency=2, cooldown_seconds=10.0, clock=lambda: now["t"])
-    limiter.record_rate_limit()
-    now["t"] = 11.0
+def test_slot_tracks_inflight():
+    limiter = AdaptiveLimiter(max_concurrency=2)
     with limiter.slot(timeout=0.5):
         assert limiter.stats()["inflight"] == 1
     assert limiter.stats()["inflight"] == 0
 
 
-def test_slot_raises_timeout_when_cooldown_never_ends():
-    limiter = AdaptiveLimiter(max_concurrency=1, cooldown_seconds=600.0)
-    limiter.record_rate_limit()
-    with pytest.raises(TimeoutError):
-        with limiter.slot(timeout=0.05):
-            pass
+def test_slot_times_out_when_no_slot_frees_up():
+    limiter = AdaptiveLimiter(max_concurrency=1)
+    with limiter.slot():
+        with pytest.raises(TimeoutError):
+            with limiter.slot(timeout=0.05):
+                pass
 
 
-def test_transport_error_pauses_without_halving_until_repeated():
-    """单次断连只是链路抖动：停顿一下，不降并发；连续 3 次才升级成硬限流。"""
+def test_legacy_downgrade_knobs_are_ignored():
+    """老调用方还在传 cooldown_seconds / soft_escalate_after：一律不再影响并发档位。"""
     limiter = AdaptiveLimiter(
-        max_concurrency=8, cooldown_seconds=60.0, soft_cooldown_seconds=5.0, soft_escalate_after=3
+        max_concurrency=4,
+        cooldown_seconds=60.0,
+        soft_escalate_after=3,
+        soft_cooldown_seconds=5.0,
+        restore_after=1,
     )
-    assert limiter.record_transport_error() == 8
-    assert limiter.limit == 8
-    assert 0 < limiter.stats()["cooldown_remaining"] <= 5
-
-    assert limiter.record_transport_error() == 8
-    assert limiter.limit == 8
-
-    assert limiter.record_transport_error() == 4  # 第 3 次连续失败 → 当作真限流，减半
-    assert limiter.stats()["cooldown_remaining"] > 5  # 用完整冷却，不是 5 秒
-
-
-def test_success_resets_transport_error_streak():
-    limiter = AdaptiveLimiter(max_concurrency=8, soft_escalate_after=3)
-    limiter.record_transport_error()
-    limiter.record_transport_error()
+    for _ in range(9):
+        limiter.record_transport_error()
+    limiter.record_rate_limit()
+    assert limiter.limit == 4
     limiter.record_success()
-    assert limiter.stats()["soft_failures"] == 0
-    assert limiter.record_transport_error() == 8  # 成功过就不算"连续失败"，不会一上来就升级
+    assert limiter.limit == 4
+    assert limiter.in_cooldown() is False
+
+
+def test_slots_cap_real_concurrency():
+    limiter = AdaptiveLimiter(max_concurrency=3)
+    lock = threading.Lock()
+    start = threading.Barrier(12)
+    state = {"inflight": 0, "peak": 0}
+
+    def work():
+        start.wait()
+        with limiter.slot(timeout=5):
+            with lock:
+                state["inflight"] += 1
+                state["peak"] = max(state["peak"], state["inflight"])
+            time.sleep(0.02)
+            with lock:
+                state["inflight"] -= 1
+
+    threads = [threading.Thread(target=work) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert state["peak"] == 3

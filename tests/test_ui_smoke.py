@@ -279,12 +279,16 @@ def test_analyze_button_opens_chapter_picker(served, settings, narrator_lines, t
             "--click=.workbench__actions .btn:nth-of-type(3)",   # 分析全本台词
             "--eval=JSON.stringify({ modal: Boolean(document.querySelector('.modal--wide')),"
             " rows: document.querySelectorAll('.pick-row').length,"
+            " rerun: Boolean(document.querySelector('.switch-row')),"
             " text: (document.querySelector('.modal') || {}).innerText || '' })",
         ),
     )
     assert page["consoleErrors"] == []
     probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
     assert probe["modal"] is True and probe["rows"] == 1
+    # 默认跳过已分析好的章，返回的 force 由「覆盖重跑」开关决定
+    assert probe["rerun"] is True
+    assert "覆盖重跑" in probe["text"]
     assert "卷一" in probe["text"]
 
 

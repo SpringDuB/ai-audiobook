@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 
 @register("book_export")
 def handle_book_export(ctx, job) -> None:
+    ctx.raise_if_cancelled(job)
+
     def progress(done: int, total: int, message: str) -> None:
         ctx.progress(job, done, total, message)
 

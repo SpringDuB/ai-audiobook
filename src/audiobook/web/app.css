@@ -576,6 +576,20 @@
 .pick-row__no { color: var(--text-faint); font-size: var(--text-xs); }
 .pick-row__title { font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-row__meta { color: var(--text-faint); font-size: var(--text-xs); }
+/* 「覆盖重跑」开关：只有勾选框 + 说明两列，单独一行提醒（不是章节行） */
+.switch-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  margin-top: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--inset);
+  cursor: pointer;
+}
+.switch-row__label { font-size: var(--text-sm); }
 
 /* ------------------------------------------------------------------ 任务中心 */
 

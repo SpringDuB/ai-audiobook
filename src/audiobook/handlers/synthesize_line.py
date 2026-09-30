@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 @register("synthesize_line")
 def handle_synthesize_line(ctx, job) -> None:
+    ctx.raise_if_cancelled(job)
     line_id = (job.progress or {}).get("pending_line")
     if not line_id:
         raise RuntimeError("synthesize_line 缺少 pending_line")

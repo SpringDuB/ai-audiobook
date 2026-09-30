@@ -94,6 +94,35 @@ def test_cancel_queued_and_running(conn):
     assert jobs.is_canceled(conn, running) is True
 
 
+def test_worker_reported_cancel_finalizes_job(conn):
+    """worker 收到 cancel_requested 后把任务落成 canceled，不再是 running。"""
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.claim(conn, "w1", lease_seconds=10, now=1_000)
+    jobs.request_cancel(conn, job_id, now=2_000)
+    assert jobs.get_job(conn, job_id).status == "running"
+    assert jobs.mark_canceled(conn, job_id, now=2_100) is True
+    job = jobs.get_job(conn, job_id)
+    assert job.status == "canceled"
+    assert jobs.mark_canceled(conn, job_id, now=2_200) is False  # 幂等
+
+
+def test_reap_expired_cancels_instead_of_requeueing(conn):
+    """worker 挂了但用户点过取消：租约过期后直接算取消，别偷偷重排。"""
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.claim(conn, "w1", lease_seconds=10, now=1_000)
+    jobs.request_cancel(conn, job_id, now=2_000)
+    assert jobs.reap_expired(conn, now=20_000) == 1
+    assert jobs.get_job(conn, job_id).status == "canceled"
+
+
+def test_request_cancel_finishes_when_no_worker_is_alive(conn):
+    """租约早过期（worker 没了）：没人会读到标记，直接落成取消。"""
+    job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
+    jobs.claim(conn, "w1", lease_seconds=10, now=1_000)
+    jobs.request_cancel(conn, job_id, now=99_000)
+    assert jobs.get_job(conn, job_id).status == "canceled"
+
+
 def test_progress_roundtrip(conn):
     job_id = jobs.enqueue(conn, "synthesize", "book1", 1)
     jobs.set_progress(conn, job_id, 3, 10, "第 3 行")

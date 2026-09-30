@@ -51,6 +51,40 @@ def test_unknown_kind_fails_job(conn, settings):
     assert jobs.get_job(conn, job_id).status == "failed"
 
 
+def test_handler_can_stop_when_user_cancels(conn, settings):
+    """handler 察觉取消后抛 JobCancelled：落成 canceled，不算失败、不重排。"""
+
+    @register("unit_cancel")
+    def _handler(ctx, job):
+        jobs.request_cancel(ctx.conn, job.id)
+        ctx.raise_if_cancelled(job)
+
+    try:
+        job_id = jobs.enqueue(conn, "unit_cancel", "book1", 1, max_attempts=3)
+        assert run_once(make_ctx(conn, settings)) is True
+        job = jobs.get_job(conn, job_id)
+        assert job.status == "canceled"
+        assert job.attempts == 1
+        assert jobs.claim(conn, "w-other") is None  # 不会重新排队
+    finally:
+        HANDLERS.pop("unit_cancel", None)
+
+
+def test_cancel_requested_mid_run_is_not_marked_done(conn, settings):
+    """handler 正常跑完、但期间用户点过取消：以取消为准，别标成已完成。"""
+
+    @register("unit_cancel_late")
+    def _handler(ctx, job):
+        jobs.request_cancel(ctx.conn, job.id)
+
+    try:
+        job_id = jobs.enqueue(conn, "unit_cancel_late", "book1", 1)
+        assert run_once(make_ctx(conn, settings)) is True
+        assert jobs.get_job(conn, job_id).status == "canceled"
+    finally:
+        HANDLERS.pop("unit_cancel_late", None)
+
+
 def test_long_handler_keeps_lease_alive(conn, settings):
     @register("unit_slow")
     def _handler(ctx, job):

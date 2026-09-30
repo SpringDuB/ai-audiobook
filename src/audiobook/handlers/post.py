@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 @register("post")
 def handle_post(ctx, job) -> None:
+    ctx.raise_if_cancelled(job)
     settings, book_id, chapter = ctx.settings, job.book_id, job.chapter_index
 
     def progress(done: int, total: int, message: str) -> None:

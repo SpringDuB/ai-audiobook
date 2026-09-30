@@ -78,6 +78,56 @@ def test_characters_handler_extracts_then_merges_and_enqueues_lines(settings, co
     assert sorted(passes) == ["extract", "extract", "merge"]
 
 
+def test_characters_handler_skips_chapters_already_analyzed(settings, conn, tmp_path):
+    """取消后重跑「分析全本台词」：已分析好的章一个 LLM 请求都不发。"""
+    txt = tmp_path / "b.txt"
+    txt.write_text(SAMPLE, encoding="utf-8")
+    book_id = import_book(settings, conn, txt, title="T")
+    ctx = _ctx(settings, conn, _llm())
+    run_once(ctx)  # chapter_split
+    # 第 0 章已经分析过：盘上有提取结果 + 行数据
+    store.atomic_replace_json(
+        store.extract_path(settings, book_id, 0),
+        {"windows": 1, "lines": [{"text": "苏锐站在门口。", "role": "旁白"}]},
+    )
+
+    resume_book(settings, conn, book_id, phase="analysis")
+    assert run_once(ctx) is True
+
+    passes = [row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))]
+    # 只有第 1 章还调了 extract：第 0 章直接复用旧结果
+    assert sorted(passes) == ["extract", "merge"]
+    rows = store.read_jsonl(store.llm_log_path(settings, book_id))
+    assert [row["chapter"] for row in rows if row["pass"] == "extract"] == [1]
+    # 旧结果原样保留（没有被重新提取覆盖）
+    assert store.read_json(store.extract_path(settings, book_id, 0))["lines"][0]["text"] == "苏锐站在门口。"
+    # 复用章照样排队 lines：整合后的最终角色表再物化一遍（不再花 LLM）
+    line_jobs = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "lines"]
+    assert sorted(j.chapter_index for j in line_jobs) == [0, 1]
+
+
+def test_characters_handler_force_reanalyzes_everything(settings, conn, tmp_path):
+    """payload.force=true（弹窗勾「覆盖重跑」）才整本重提。"""
+    txt = tmp_path / "b.txt"
+    txt.write_text(SAMPLE, encoding="utf-8")
+    book_id = import_book(settings, conn, txt, title="T")
+    ctx = _ctx(settings, conn, _llm())
+    run_once(ctx)  # chapter_split
+    store.atomic_replace_json(
+        store.extract_path(settings, book_id, 0),
+        {"windows": 1, "lines": [{"text": "旧文本", "role": "旁白"}]},
+    )
+
+    job_id = jobs.enqueue(conn, "characters", book_id, payload={"force": True})
+    assert run_once(ctx) is True
+
+    passes = [row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))]
+    assert sorted(passes) == ["extract", "extract", "merge"]
+    first = store.read_json(store.extract_path(settings, book_id, 0))["lines"][0]
+    assert first["text"] == "苏锐站在门口。"
+    assert jobs.get_job(conn, job_id).status == "done"
+
+
 def test_characters_handler_keeps_other_chapters_when_one_chapter_fails(settings, conn, tmp_path):
     txt = tmp_path / "b.txt"
     txt.write_text(SAMPLE, encoding="utf-8")

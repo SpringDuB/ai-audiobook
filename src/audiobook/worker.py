@@ -9,6 +9,10 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+class JobCancelled(Exception):
+    """handler 察觉到用户在任务界面点了取消：任务落成 canceled，不算失败、不重试。"""
+
+
 # 这些键变了就必须重建引擎 / LLM 客户端；其余的（停顿、响度、导出格式）改了下个任务自然生效
 ENGINE_KEYS = (
     "engine",
@@ -52,6 +56,14 @@ class WorkerContext:
 
     def progress(self, job, done: int, total: int, message: str = "", extra: dict | None = None) -> None:
         jobs.set_progress(self.conn, job.id, done, total, message, extra=extra)
+
+    def cancelled(self, job) -> bool:
+        """任务是不是被点了取消（队列里的取消会直接把状态改成 canceled）。"""
+        return jobs.is_canceled(self.conn, job.id)
+
+    def raise_if_cancelled(self, job) -> None:
+        if self.cancelled(job):
+            raise JobCancelled(f"任务 {job.id} 已取消")
 
     def refresh(self) -> bool:
         """每轮任务前重读设置：改并发/端点/引擎、点了一键启动 TTS，都不用重启 worker。"""
@@ -135,10 +147,19 @@ def run_once(ctx: WorkerContext, lease_seconds: int | None = None) -> bool:
         if handler is None:
             raise RuntimeError(f"未注册的任务类型: {job.kind}")
         handler(ctx, job)
-        jobs.complete(ctx.conn, job.id, ctx.worker_id)
+    except JobCancelled as exc:
+        logger.info("任务 %s 已取消：%s", job.id, exc)
+        jobs.mark_canceled(ctx.conn, job.id)
     except Exception as exc:  # noqa: BLE001 - 任何异常都要落库，不能让 worker 退出
         logger.exception("任务 %s 执行失败", job.id)
         jobs.fail(ctx.conn, job.id, ctx.worker_id, f"{type(exc).__name__}: {exc}")
+    else:
+        # handler 正常跑完，但期间用户点过取消：以取消为准，别标成已完成
+        if jobs.is_canceled(ctx.conn, job.id):
+            logger.info("任务 %s 执行完时发现取消请求，按取消处理", job.id)
+            jobs.mark_canceled(ctx.conn, job.id)
+        else:
+            jobs.complete(ctx.conn, job.id, ctx.worker_id)
     finally:
         stop.set()
         hb.join(timeout=1.0)

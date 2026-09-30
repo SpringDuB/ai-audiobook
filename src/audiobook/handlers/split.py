@@ -27,6 +27,7 @@ def split_book(settings, conn, book_id: str) -> list[dict]:
 
 @register("chapter_split")
 def handle_split(ctx, job) -> None:
+    ctx.raise_if_cancelled(job)
     book_id = job.book_id
     chapters = split_book(ctx.settings, ctx.conn, book_id)
     # 分章只是本地文本处理（不花 LLM）。分析链由用户点「一键分析 / 分析角色文本」触发，

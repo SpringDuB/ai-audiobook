@@ -77,15 +77,20 @@ function analysisActivity(jobs, chapters) {
     if (job.kind === "chapters") {
       // 一个批量 job 内部并发提多章：progress.chapters_inflight 是此刻真正在跑的章
       const inflight = new Set((job.progress?.chapters_inflight || []).map(Number));
+      const extracted = new Set((job.progress?.chapters_done || []).map(Number));
       for (const raw of job.payload?.chapters || []) {
         const index = Number(raw);
+        // 这一章已经提取完：不再显示状态（章节 meta 里的「已分析」才是结果）
+        if (extracted.has(index)) continue;
         mark(index, !queued && inflight.has(index) ? "running" : "queued");
       }
       continue;
     }
     // characters（整本）：progress.chapters_inflight 就是此刻正在提取的章
     const inflight = new Set(job.progress?.chapters_inflight || []);
+    const extracted = new Set(job.progress?.chapters_done || []);
     for (const chapter of chapters) {
+      if (extracted.has(Number(chapter.index))) continue;
       mark(chapter.index, inflight.has(chapter.index) && !queued ? "running" : "queued");
     }
   }
@@ -123,7 +128,9 @@ function chapterItem(chapter, state, onSelect, activity) {
         `${analyzed ? "已分析" : "未分析"} · ${audioLabel}`,
         chapter.duration_sec ? ` · ${duration(chapter.duration_sec)}` : "",
       ),
-      analyzing
+      // 只有"正在提取"（沙漏）和"确实还没分析、在排队等着"才显示；
+      // 已经分析好的章不再显示状态——meta 里的「已分析」就是结论
+      analyzing === "running" || (analyzing === "queued" && !analyzed)
         ? h(
             "span",
             {
@@ -1028,22 +1035,23 @@ async function build(route, host) {
         async () => {
           // 弹窗多选章节：默认勾上还没分析的章，也可以只挑几章返工
           const pending = state.chapters.filter((chapter) => !Number(chapter.lines || 0)).map((chapter) => chapter.index);
-          const picked = await chapterPickerDialog({
+          const choice = await chapterPickerDialog({
             title: "分析哪些章节的台词？",
             message:
-              "整本重跑勾选章节的提取（说话人 + 情绪）。已勾选且已有标注的章节会被覆盖（含人工修改），" +
-              "对应成品音频随之失效，需要重新生成。",
+              "默认只补还没分析过的章节：已经分析好的会直接跳过，不重复花大模型调用。" +
+              "要重算已完成的章节（含人工修改），勾上最下面的「覆盖重跑」。",
             chapters: state.chapters,
             confirmLabel: "开始分析",
+            rerunLabel: "覆盖重跑：勾选章节里已分析好的部分也重新分析",
             selected: pending.length ? pending : state.chapters.map((chapter) => chapter.index),
           });
-          if (!picked || !picked.length) return;
-          queued(await api.analyzeChapters(bookId, picked), "章节分析");
+          if (!choice || !choice.picked.length) return;
+          queued(await api.analyzeChapters(bookId, choice.picked, choice.force), "章节分析");
           await refreshChapters();
         },
         {
           glyph: "book-open-text",
-          title: "整本重跑逐句标注，并重推角色音色（新称呼会并进角色表）；弹窗里可以只勾几章返工",
+          title: "补跑逐句标注（说话人 + 情绪）；已分析好的章节自动跳过，弹窗里可以只勾几章，或勾「覆盖重跑」返工",
         },
       ),
       action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {

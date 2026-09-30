@@ -137,6 +137,7 @@ def _chapter_meta(ctx, book_id: str, chapter_index: int) -> dict:
 
 @register("lines")
 def handle_lines(ctx, job) -> None:
+    ctx.raise_if_cancelled(job)
     book_id, chapter_index = job.book_id, job.chapter_index
     chapter = _chapter_meta(ctx, book_id, chapter_index)
 

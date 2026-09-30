@@ -53,19 +53,27 @@ class LlmJsonRunner:
                     )
             except LLMError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                # 限流是服务端明确的背压 → 降档 + 冷却；断连/超时多数是链路抖动
-                # → 短促停顿、不降档，连续多次才升级。否则 10 个线程会在同一毫秒
-                # 一起回头再打，把重试也一起打废。
+                # 失败一律"抖动退避 + 重试"，绝不降并发：一次网络抖动会同时掐断
+                # 多路连接，任何"连续失败就降档"的策略都会在几毫秒内把 10 路
+                # 打到 1 路（用户明确要求：失败只重试，不要动并发）。
                 if isinstance(exc, LLMRateLimit):
-                    lowered = self.limiter.record_rate_limit()
-                    logger.warning("LLM 限流：pass=%s 并发降到 %s", pass_name, lowered)
+                    limit = self.limiter.record_rate_limit()
+                    logger.warning(
+                        "LLM 限流：pass=%s 第 %s/%s 次，退避后重试（并发保持 %s）",
+                        pass_name,
+                        attempt,
+                        self.max_attempts,
+                        limit,
+                    )
                     self._backoff(attempt)
                 elif isinstance(exc, (LLMDisconnected, LLMTimeout)):
                     limit = self.limiter.record_transport_error()
                     logger.warning(
-                        "LLM %s：pass=%s 停一下重试（并发 %s）",
+                        "LLM %s：pass=%s 第 %s/%s 次，退避后重试（并发保持 %s）",
                         type(exc).__name__,
                         pass_name,
+                        attempt,
+                        self.max_attempts,
                         limit,
                     )
                     self._backoff(attempt)
@@ -82,9 +90,9 @@ class LlmJsonRunner:
                 )
                 continue
             except TimeoutError as exc:  # 等并发槽超时（内置 TimeoutError，不是 LLMTimeout）
-                lowered = self.limiter.record_rate_limit()
+                limit = self.limiter.record_rate_limit()
                 last_error = f"等待 LLM 并发槽超时: {exc}"
-                logger.warning("LLM 等槽超时：pass=%s 并发降到 %s", pass_name, lowered)
+                logger.warning("LLM 等槽超时：pass=%s（并发保持 %s）", pass_name, limit)
                 self._backoff(attempt)
                 self._log(book_id, pass_name, chapter_index, scene_id, attempt, False, None, last_error)
                 continue

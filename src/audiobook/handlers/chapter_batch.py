@@ -11,11 +11,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs, store
-from ..analysis.extract import ChapterExtraction, dump_extraction, extract_chapter
+from ..analysis.extract import ChapterExtraction, dump_extraction, extract_chapter, load_extraction
 from ..analysis.issues import record_issue
 from ..analysis.merge import extend_characters
 from ..analysis.roles import names_from_payload
-from ..worker import register
+from ..worker import JobCancelled, register
 from .common import require_llm
 from .lines import materialize_chapter
 
@@ -51,19 +51,48 @@ def handle_chapters(ctx, job) -> None:
 
     existing = store.read_json(store.characters_path(ctx.settings, book_id), default={}) or {}
     known_names = names_from_payload(existing)
+    # 默认跳过已经分析好的章节（断点续跑）；只有显式 force 才全部重提
+    force = bool((job.payload or {}).get("force"))
 
     results: list[tuple[int, list]] = []
-    done = 0
+    reused: list[int] = []
+    pending: list[dict] = []
+    for chapter in chapters:
+        index = int(chapter["index"])
+        cached = None if force else store.read_json(store.extract_path(ctx.settings, book_id, index))
+        lines = load_extraction(cached) if cached else []
+        if lines:
+            # 这一章已经分析过：一个 LLM 请求都不发，只把旧结果并进角色表
+            results.append((index, lines))
+            reused.append(index)
+            continue
+        pending.append(chapter)
+
+    done = len(reused)
     # 正在提取的章节号：前端给这些章画"正在分析台词"的沙漏（同一时刻可能有多章）
     inflight: set[int] = set()
+    # 已经有提取结果的章号（含本轮复用的）：前端据此撤掉"等待分析"
+    finished: set[int] = set(reused)
     inflight_lock = threading.Lock()
+    if reused:
+        logger.info("跳过 %d 章已分析好的章节：%s", len(reused), reused[:20])
+        ctx.progress(
+            job, done, len(chapters), f"跳过 {len(reused)} 章已分析", extra={"chapters_inflight": []}
+        )
 
     def extract_one(chapter) -> ChapterExtraction:
         index = int(chapter["index"])
         with inflight_lock:
             inflight.add(index)
             snapshot = sorted(inflight)
-        ctx.progress(job, done, len(chapters), f"第 {index} 章", extra={"chapters_inflight": snapshot})
+            done_snapshot = sorted(finished)
+        ctx.progress(
+            job,
+            done,
+            len(chapters),
+            f"第 {index} 章",
+            extra={"chapters_inflight": snapshot, "chapters_done": done_snapshot},
+        )
         try:
             return extract_chapter(
                 runner,
@@ -78,75 +107,90 @@ def handle_chapters(ctx, job) -> None:
             with inflight_lock:
                 inflight.discard(index)
 
-    max_workers = max(1, min(len(chapters), int(ctx.settings.llm_concurrency)))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(extract_one, chapter): chapter
-            for chapter in chapters
-        }
-        for future in as_completed(futures):
-            chapter = futures[future]
-            try:
-                result = future.result()
-            except Exception as exc:  # noqa: BLE001 - 单章失败不拖垮其它勾选章
-                logger.warning("第 %s 章提取失败: %s", chapter["index"], exc)
-                record_issue(
-                    ctx.settings,
-                    book_id,
-                    "chapter_extract_failed",
-                    reason=f"{type(exc).__name__}: {exc}",
-                    chapter=chapter["index"],
-                    fallback="本章不参与角色整合，行数据留空（可单独重跑本章）",
-                    detail={"title": chapter.get("title")},
-                )
-            else:
-                store.atomic_replace_json(
-                    store.extract_path(ctx.settings, book_id, chapter["index"]),
-                    dump_extraction(result),
-                )
-                for issue in result.issues:
-                    record_issue(
-                        ctx.settings,
-                        book_id,
-                        issue["kind"],
-                        reason=issue["reason"],
-                        chapter=chapter["index"],
-                        fallback=issue.get("fallback"),
-                        detail=issue.get("detail"),
-                    )
-                # 边提取边落行：前端不用等整批跑完，一章算完就能看到角色文本
+    cancelled = False
+    if pending:
+        max_workers = max(1, min(len(pending), int(ctx.settings.llm_concurrency)))
+        # 不用 with：取消时要立刻返回，不能让在跑的请求把任务拖到跑完
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {pool.submit(extract_one, chapter): chapter for chapter in pending}
+            for future in as_completed(futures):
+                if ctx.cancelled(job):
+                    cancelled = True
+                    break
+                chapter = futures[future]
                 try:
-                    materialize_chapter(
-                        ctx,
-                        book_id=book_id,
-                        chapter_index=chapter["index"],
-                        spoken=result.lines,
-                        allow_llm=False,
-                    )
-                except Exception as exc:  # noqa: BLE001 - 提前落行失败不影响整批
-                    logger.warning("第 %s 章提前落行失败: %s", chapter["index"], exc)
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001 - 单章失败不拖垮其它勾选章
+                    logger.warning("第 %s 章提取失败: %s", chapter["index"], exc)
                     record_issue(
                         ctx.settings,
                         book_id,
-                        "chapter_materialize_failed",
+                        "chapter_extract_failed",
                         reason=f"{type(exc).__name__}: {exc}",
                         chapter=chapter["index"],
-                        fallback="角色整合结束后由 lines 任务重新落行",
+                        fallback="本章不参与角色整合，行数据留空（可单独重跑本章）",
+                        detail={"title": chapter.get("title")},
                     )
-                results.append((chapter["index"], result.lines))
-            finally:
-                done += 1
-                ctx.progress(
-                    job,
-                    done,
-                    len(chapters),
-                    f"第 {chapter['index']} 章",
-                    extra={"chapters_inflight": sorted(inflight)},
-                )
+                else:
+                    store.atomic_replace_json(
+                        store.extract_path(ctx.settings, book_id, chapter["index"]),
+                        dump_extraction(result),
+                    )
+                    for issue in result.issues:
+                        record_issue(
+                            ctx.settings,
+                            book_id,
+                            issue["kind"],
+                            reason=issue["reason"],
+                            chapter=chapter["index"],
+                            fallback=issue.get("fallback"),
+                            detail=issue.get("detail"),
+                        )
+                    # 边提取边落行：前端不用等整批跑完，一章算完就能看到角色文本
+                    try:
+                        materialize_chapter(
+                            ctx,
+                            book_id=book_id,
+                            chapter_index=chapter["index"],
+                            spoken=result.lines,
+                            allow_llm=False,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 提前落行失败不影响整批
+                        logger.warning("第 %s 章提前落行失败: %s", chapter["index"], exc)
+                        record_issue(
+                            ctx.settings,
+                            book_id,
+                            "chapter_materialize_failed",
+                            reason=f"{type(exc).__name__}: {exc}",
+                            chapter=chapter["index"],
+                            fallback="角色整合结束后由 lines 任务重新落行",
+                        )
+                    results.append((chapter["index"], result.lines))
+                finally:
+                    with inflight_lock:
+                        finished.add(int(chapter["index"]))
+                    done += 1
+                    ctx.progress(
+                        job,
+                        done,
+                        len(chapters),
+                        f"第 {chapter['index']} 章",
+                        extra={
+                            "chapters_inflight": sorted(inflight),
+                            "chapters_done": sorted(finished),
+                        },
+                    )
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+    if cancelled:
+        # 已提取的章都写在盘上了，下次再点会跳过它们
+        raise JobCancelled(f"已取消：{done}/{len(chapters)} 章有提取结果，下次分析会自动跳过")
     if not results:
         raise RuntimeError("勾选的章节全部提取失败，请检查 LLM 端点")
 
     results.sort(key=lambda item: item[0])
+    ctx.raise_if_cancelled(job)
     # 整批只调一次整合：LLM 只看到"新称呼"，老角色表原样保留
     characters, issues = extend_characters(
         runner, book_id=book_id, payload=existing, extractions=results

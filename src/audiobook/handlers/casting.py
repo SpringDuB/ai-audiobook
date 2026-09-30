@@ -32,6 +32,7 @@ def _scope_chapters(job) -> list[int]:
 
 @register("casting")
 def handle_casting(ctx, job) -> None:
+    ctx.raise_if_cancelled(job)
     book_id = job.book_id
     characters = store.read_json(store.characters_path(ctx.settings, book_id))
     if not characters:
@@ -76,6 +77,8 @@ def handle_casting(ctx, job) -> None:
             fallback=issue.get("fallback"),
             detail=issue.get("detail"),
         )
+    # 算完到落盘之间再确认一次：取消掉的任务不该把半成品写进 casting.json
+    ctx.raise_if_cancelled(job)
     store.atomic_replace_json(store.casting_path(ctx.settings, book_id), casting)
     # 选角是分析链的最后一步：到此为止，合成由用户点「生成有声书」触发
     logger.info("选角完成：%d 个角色（合成链等「生成有声书」）", len(casting["roles"]))

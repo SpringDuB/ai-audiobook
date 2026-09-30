@@ -150,6 +150,7 @@ export function chapterPickerDialog({
   chapters,
   confirmLabel = "开始",
   selected = null,
+  rerunLabel = "",
 }) {
   return new Promise((resolve) => {
     let settled = false;
@@ -202,11 +203,15 @@ export function chapterPickerDialog({
             hint.textContent = "至少勾选一章";
             return;
           }
-          finish(picked);
+          finish({ picked, force: Boolean(rerun && rerun.checked) });
         },
       },
       confirmLabel,
     );
+    // 「覆盖重跑」开关：默认关闭 → 已经分析好的章会被跳过（断点续跑）
+    const rerun = rerunLabel
+      ? h("input", { class: "pick-row__box", type: "checkbox" })
+      : null;
     const panel = h(
       "div",
       { class: "modal modal--wide", role: "dialog", "aria-modal": "true", "aria-label": title },
@@ -220,6 +225,9 @@ export function chapterPickerDialog({
         hint,
       ),
       h("div", { class: "modal__list" }, ...rows),
+      rerun
+        ? h("label", { class: "switch-row" }, rerun, h("span", { class: "switch-row__label" }, rerunLabel))
+        : null,
       h(
         "div",
         { class: "modal__actions" },

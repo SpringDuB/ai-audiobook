@@ -48,7 +48,8 @@ export const api = {
   runBook: (id) => send("POST", `/api/books/${id}/run`),
   analyzeBook: (id, force = false) => send("POST", `/api/books/${id}/analyze?force=${force ? "true" : "false"}`),
   analyzeChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/analyze`),
-  analyzeChapters: (id, chapters) => send("POST", `/api/books/${id}/analyze/chapters`, { chapters }),
+  analyzeChapters: (id, chapters, force = false) =>
+    send("POST", `/api/books/${id}/analyze/chapters`, { chapters, force }),
   generateBook: (id) => send("POST", `/api/books/${id}/generate`),
   generateChapter: (id, index) => send("POST", `/api/books/${id}/chapters/${index}/generate`),
   exportBook: (id, body) => send("POST", `/api/books/${id}/export`, body),
