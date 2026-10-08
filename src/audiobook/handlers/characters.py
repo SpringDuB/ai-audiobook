@@ -9,7 +9,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs, store
-from ..analysis.extract import ChapterExtraction, dump_extraction, extract_chapter, load_extraction
+from ..analysis.extract import (
+    ChapterExtraction,
+    dump_extraction,
+    extract_chapter,
+    is_legacy_extraction,
+    load_extraction,
+)
 from ..analysis.issues import record_issue
 from ..analysis.merge import merge_roles, role_entries
 from ..analysis.roles import names_from_payload
@@ -40,6 +46,9 @@ def handle_characters(ctx, job) -> None:
     for chapter in chapters:
         index = int(chapter["index"])
         cached = None if force else store.read_json(store.extract_path(ctx.settings, book_id, index))
+        if is_legacy_extraction(cached):
+            # 老结果没有逐句表演描述（换 Qwen3-TTS 之前的格式）：重新提取这一章
+            cached = None
         lines = load_extraction(cached) if cached else []
         if lines:
             # 这一章已经分析过：一个 LLM 请求都不发，直接拿旧结果参与整合

@@ -8,6 +8,7 @@ from audiobook.analysis.extract import (
     ChapterExtraction,
     dump_extraction,
     extract_chapter,
+    is_legacy_extraction,
     load_extraction,
     window_text,
 )
@@ -120,3 +121,16 @@ def test_dump_and_load_round_trip():
     payload = dump_extraction(result)
     loaded = load_extraction(payload)
     assert [line.model_dump() for line in loaded] == [line.model_dump() for line in result.lines]
+
+
+def test_legacy_extraction_is_detected_so_it_gets_reextracted():
+    """换 Qwen3-TTS 之前的结果带 emotion、没有 voice：要认出来重新提取。"""
+    legacy = {"lines": [{"text": "走。", "role": "苏锐", "emotion": "愤怒", "intensity": 0.8}]}
+    assert is_legacy_extraction(legacy) is True
+
+    current = {"lines": [{"text": "走。", "role": "苏锐", "voice": "压低声音，语速偏快"}]}
+    assert is_legacy_extraction(current) is False
+    # 新格式但模型没写 voice：不能判成老格式，否则每次分析都白重跑一遍
+    quiet = {"lines": [{"text": "走。", "role": "苏锐"}]}
+    assert is_legacy_extraction(quiet) is False
+    assert is_legacy_extraction(None) is False

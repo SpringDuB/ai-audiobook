@@ -24,9 +24,9 @@ def _extract_route(user: str) -> list[dict]:
             continue
         if "：" in line and not line.startswith("“"):
             name, rest = line.split("：", 1)
-            rows.append({"text": rest, "role": name, "emotion": "平静", "intensity": 0.4})
+            rows.append({"text": rest, "role": name, "voice": "平静地陈述，语速中等"})
         else:
-            rows.append({"text": line, "role": "旁白", "emotion": None})
+            rows.append({"text": line, "role": "旁白", "voice": "平稳叙述，语速稍慢"})
     return rows
 
 
@@ -66,7 +66,7 @@ def test_characters_handler_extracts_then_merges_and_enqueues_lines(settings, co
         assert raw["lines"]
     first = store.read_json(store.extract_path(settings, book_id, 1))["lines"][0]
     assert first["text"] == "走。" and first["role"] == "小鹿"
-    assert first["emotion"] == "平静" and first["intensity"] == 0.4
+    assert first["voice"] == "平静地陈述，语速中等"
     line_jobs = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "lines"]
     assert sorted(j.chapter_index for j in line_jobs) == [0, 1]
     # 边提取边落行：characters 跑完时行已经在盘上（前端不用等整本跑完），

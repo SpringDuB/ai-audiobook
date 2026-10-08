@@ -152,3 +152,17 @@ def dump_extraction(result: ChapterExtraction) -> dict:
 
 def load_extraction(payload: dict | None) -> list[SpokenLine]:
     return [SpokenLine.model_validate(item) for item in ((payload or {}).get("lines") or [])]
+
+
+def is_legacy_extraction(payload: dict | None) -> bool:
+    """是不是"没有逐句表演描述"的老格式（换 Qwen3-TTS 之前的结果）。
+
+    老格式每条带 emotion、没有 voice。这种章节要重新提取一次，否则整章都只能拿
+    角色基础描述去合成，逐句的语气就没了。
+    """
+    rows = (payload or {}).get("lines") or []
+    if not rows:
+        return False
+    has_voice = any(str((row or {}).get("voice") or "").strip() for row in rows)
+    has_emotion = any((row or {}).get("emotion") for row in rows)
+    return has_emotion and not has_voice

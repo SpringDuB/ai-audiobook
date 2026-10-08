@@ -8,7 +8,7 @@
 import logging
 
 from .. import jobs, store
-from ..analysis.extract import dump_extraction, extract_chapter, load_extraction
+from ..analysis.extract import dump_extraction, extract_chapter, is_legacy_extraction, load_extraction
 from ..analysis.issues import record_issue
 from ..analysis.materialize import materialize
 from ..analysis.merge import extend_characters
@@ -36,9 +36,10 @@ def _synthesis_signature(rows: list[dict]) -> list[dict]:
 def _spoken_of(ctx, job, chapter) -> list:
     path = store.extract_path(ctx.settings, job.book_id, job.chapter_index)
     payload = store.read_json(path)
-    if payload:
+    if payload and not is_legacy_extraction(payload):
         return load_extraction(payload)
-    # 本章还没提取过（例如单独点「分析本章」）：这里补跑一次
+    # 本章还没提取过（例如单独点「分析本章」），或只有老格式结果（没有逐句表演描述）：
+    # 这里补跑一次
     runner = require_llm(ctx)
     existing = store.read_json(store.characters_path(ctx.settings, job.book_id), default={}) or {}
     result = extract_chapter(

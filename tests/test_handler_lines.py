@@ -20,8 +20,8 @@ CHARACTERS = {
 EXTRACTION = {
     "windows": 1,
     "lines": [
-        {"text": "苏锐说：", "role": "旁白", "emotion": None},
-        {"text": "“走。”", "role": "苏锐", "emotion": "愤怒", "intensity": 0.7},
+        {"text": "苏锐说：", "role": "旁白", "voice": "平稳叙述，语速中等"},
+        {"text": "“走。”", "role": "苏锐", "voice": "压低声音，语气强硬"},
     ],
 }
 
@@ -55,10 +55,9 @@ def test_lines_handler_materializes_extraction_and_triggers_casting(settings, co
     assert [row["kind"] for row in rows] == ["narration", "dialogue"]
     assert [row["speaker"] for row in rows] == ["narrator", "role_0001"]
     assert [row["id"] for row in rows] == ["c0001-s01-l001", "c0001-s01-l002"]
-    assert rows[1]["emotion"]["dominant"] == "愤怒"
-    assert rows[1]["emotion"]["mix"] == [{"name": "愤怒", "weight": 0.7}]
-    # 旁白不带情绪向量
-    assert rows[0]["emotion"] == {"dominant": "平静", "intensity": 0.0, "source": "none"}
+    # 逐句表演描述落到行上（合成时和角色基础描述拼在一起）
+    assert rows[1]["voice_prompt"] == "压低声音，语气强硬"
+    assert rows[0]["voice_prompt"] == "平稳叙述，语速中等"
     casting_jobs = [j for j in jobs.list_jobs(conn, book_id) if j.kind == "casting"]
     assert len(casting_jobs) == 1
     assert casting_ready(settings, conn, book_id) is True
@@ -70,7 +69,7 @@ def test_lines_handler_merges_a_new_name_into_the_character_table(settings, conn
     store.atomic_replace_json(store.characters_path(settings, book_id), CHARACTERS)
     store.atomic_replace_json(
         store.extract_path(settings, book_id, 1),
-        {"windows": 1, "lines": [{"text": "锐哥，走。", "role": "锐哥", "emotion": "平静", "intensity": 0.3}]},
+        {"windows": 1, "lines": [{"text": "锐哥，走。", "role": "锐哥", "voice": "平静地陈述"}]},
     )
     jobs.enqueue(conn, "lines", book_id, 1)
     llm = FakeLLM(routes={"【MERGE_ROLES】": {"characters": [{"name": "苏锐", "aliases": ["锐哥"]}]}})
@@ -92,8 +91,8 @@ def test_lines_handler_reruns_extraction_only_when_it_is_missing(settings, conn)
 
     def route(user: str) -> list[dict]:
         return [
-            {"text": "苏锐说：", "role": "旁白", "emotion": None},
-            {"text": "“走。”", "role": "苏锐", "emotion": "平静", "intensity": 0.3},
+            {"text": "苏锐说：", "role": "旁白", "voice": "平稳叙述"},
+            {"text": "“走。”", "role": "苏锐", "voice": "平静地陈述，语速中等"},
         ]
 
     llm = FakeLLM(routes={"【EXTRACT】": route})
@@ -111,7 +110,7 @@ def test_lines_handler_builds_role_table_from_scratch_when_missing(settings, con
     jobs.enqueue(conn, "lines", book_id, 1)
 
     def extract(user: str) -> list[dict]:
-        return [{"text": "“走。”", "role": "苏锐", "emotion": "平静", "intensity": 0.3}]
+        return [{"text": "“走。”", "role": "苏锐", "voice": "平静地陈述"}]
 
     llm = FakeLLM(
         routes={
