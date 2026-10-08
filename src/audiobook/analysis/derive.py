@@ -1,7 +1,6 @@
-"""把一行标注推导成落盘记录：id / 语速 / 语言 / 注音。
+"""把一行标注推导成落盘记录：id / 语速 / 语言 / 注音 / 本句表演描述。
 
-情绪完全来自提取阶段的大模型结果（主情绪 + 可选副情绪），这里不再有
-规则推断的情绪层；唯一的约定是：**旁白不带情绪向量**，只有人物话术带。
+情绪完全来自提取阶段的大模型结果（voice = 这一句该怎么演），这里不做规则推断。
 句与句之间不再插入额外静音：停顿由 TTS 模型自己按文本处理。
 """
 
@@ -73,6 +72,7 @@ def derive_line(
     speaker_name: str,
     kind: str = "dialogue",
     pronounce_table: dict[str, str] | None = None,
+    voice_prompt: str = "",
 ) -> dict:
     kind = kind if kind in ("narration", "dialogue") else "narration"
     emotion = resolve_emotion(row, kind)
@@ -88,6 +88,8 @@ def derive_line(
         "addressee": None,
         "addressee_name": None,
         "text": sentence,
+        # 这一句的表演描述（大模型直出）：和角色基础音色描述拼起来喂 TTS
+        "voice_prompt": (voice_prompt or "").strip(),
         "emotion": emotion,
         "emotion_text": None if kind == "narration" else derive_emotion_text(emotion, delivery),
         "delivery": delivery,

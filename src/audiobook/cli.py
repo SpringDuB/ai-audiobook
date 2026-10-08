@@ -335,6 +335,7 @@ def main(argv=None) -> int:
             split,
             synthesize,
             synthesize_line,
+            voice_design,
         )
         from .llm.base import LLMError
         from .llm.limiter import AdaptiveLimiter

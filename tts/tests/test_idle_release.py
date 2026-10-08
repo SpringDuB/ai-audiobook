@@ -1,0 +1,113 @@
+"""空闲归还显存：只在"模型已加载 + 没在飞请求 + 静默够久"时把缓存池的空闲块还给驱动。"""
+
+import time
+
+import pytest
+
+import aiab_tts.state as state_mod
+from _stub_backend import StubBackend
+from aiab_tts.config import TtsSettings
+from aiab_tts.state import ServiceState
+
+
+def _state(tmp_path, **overrides) -> ServiceState:
+    settings = TtsSettings(data_dir=tmp_path / "data", **overrides)
+    return ServiceState(StubBackend(), settings)
+
+
+class _Pool:
+    """假的缓存池读数：empty_cache 之后 reserved 掉到 allocated（块真还给驱动了）。"""
+
+    def __init__(self, allocated=1000.0, reserved=3000.0):
+        self.allocated = allocated
+        self.reserved = reserved
+        self.emptied = 0
+
+    def read(self):
+        return self.allocated, self.reserved
+
+    def empty(self):
+        self.emptied += 1
+        self.reserved = self.allocated
+
+
+@pytest.fixture
+def pool(monkeypatch):
+    fake = _Pool()
+    monkeypatch.setattr(state_mod, "_cuda_pool_mb", fake.read)
+    monkeypatch.setattr(state_mod, "_empty_cuda_cache", fake.empty)
+    return fake
+
+
+# 测试里用 3600s：后台线程整场测试都不会真的归还，只有手动调用会触发
+LONG_IDLE = 3600
+
+
+def _idle_state(tmp_path, **overrides) -> ServiceState:
+    state = _state(tmp_path, idle_release_seconds=LONG_IDLE, **overrides)
+    state._last_activity = time.monotonic() - LONG_IDLE * 2
+    return state
+
+
+def test_reclaimer_thread_only_starts_when_enabled(tmp_path):
+    assert _state(tmp_path, idle_release_seconds=0)._idle_reclaimer is None
+    assert _state(tmp_path, idle_release_seconds=5)._idle_reclaimer is not None
+
+
+def test_idle_release_returns_free_pool_to_driver(tmp_path, pool):
+    state = _idle_state(tmp_path)
+    state.warmup()
+
+    freed = state._maybe_release_idle_memory()
+
+    assert freed == pytest.approx(2000.0)
+    assert pool.emptied == 1
+    assert state.idle_released_mb == pytest.approx(2000.0)
+    assert state.health()["idleReleasedMB"] == pytest.approx(2000.0)
+
+
+def test_idle_release_skips_recent_activity_and_inflight(tmp_path, pool):
+    state = _idle_state(tmp_path)
+    state.warmup()
+
+    # 刚有请求进来（含还在闸门外排队的）→ 不还
+    state._last_activity = time.monotonic()
+    assert state._maybe_release_idle_memory() == 0.0
+
+    # 静默够久，但有请求在飞 → 不还（清池子会伤到它）
+    state._last_activity = time.monotonic() - LONG_IDLE * 2
+    state.inflight = 1
+    try:
+        assert state._maybe_release_idle_memory() == 0.0
+    finally:
+        state.inflight = 0
+    assert pool.emptied == 0
+
+
+def test_idle_release_skips_small_free_pool(tmp_path, monkeypatch):
+    fake = _Pool(allocated=1000.0, reserved=1100.0)  # 空闲块只有 100MB
+    monkeypatch.setattr(state_mod, "_cuda_pool_mb", fake.read)
+    monkeypatch.setattr(state_mod, "_empty_cuda_cache", fake.empty)
+    state = _idle_state(tmp_path, idle_release_min_free_mb=256)
+    state.warmup()
+
+    assert state._maybe_release_idle_memory() == 0.0
+    assert fake.emptied == 0
+
+
+def test_request_resets_idle_timer(tmp_path, pool):
+    state = _idle_state(tmp_path)
+    state.warmup()
+    ref_id = state.add_ref(b"RIFFfake", "参考")["refId"]
+
+    state.synthesize({"text": "第一句。", "refId": ref_id})
+
+    # 请求结束后计时被刷新 → 立刻触发归还应当被跳过
+    assert state._maybe_release_idle_memory() == 0.0
+    assert pool.emptied == 0
+
+
+def test_unloaded_model_never_triggers_release(tmp_path, pool):
+    state = _idle_state(tmp_path)
+    assert state._maybe_release_idle_memory() == 0.0
+    assert pool.emptied == 0

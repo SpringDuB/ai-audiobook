@@ -24,8 +24,8 @@ TTS_PROJECT = REPO / "tts"
 TTS_TESTS = TTS_PROJECT / "tests"
 UV = shutil.which("uv")
 
-# 产品里的 TTS 服务只有 indextts（要 GPU + 权重），所以契约测试用 tts/tests 里的 stub 后端起一个真进程：
-# 进程边界、HTTP 契约、参考音频上传、并发门这些要验的东西一个不少。
+# 产品里的 TTS 服务要 GPU + 权重，所以契约测试用 tts/tests 里的 stub 后端起一个真进程：
+# 进程边界、HTTP 契约、并发门这些要验的东西一个不少。
 STUB_SERVER = (
     "import sys, uvicorn;"
     "sys.path.insert(0, r'{tests}');"
@@ -50,16 +50,24 @@ def _route_extract(user: str) -> list[dict]:
             continue
         if "说：“" in line:
             head, rest = line.split("说：“", 1)
-            rows.append({"text": f"{head}说：", "role": "旁白", "emotion": None})
-            rows.append({"text": f"“{rest}", "role": head, "emotion": "平静", "intensity": 0.4})
+            rows.append({"text": f"{head}说：", "role": "旁白", "voice": "平稳叙述"})
+            rows.append({"text": f"“{rest}", "role": head, "voice": "平静地陈述，语速中等"})
         else:
-            rows.append({"text": line, "role": "旁白", "emotion": None})
+            rows.append({"text": line, "role": "旁白", "voice": "平稳叙述，语速中等"})
     return rows
 
 
 def _route_merge(user: str) -> dict:
     people = [{"name": name, "aliases": []} for name in ("苏锐", "王胖子") if name in user]
     return {"characters": people}
+
+
+def _route_voice_design(user: str) -> dict:
+    if "角色：旁白" in user:
+        return {"description": "三十多岁的男性，嗓音低沉厚实，语速中偏慢，讲述感强。", "sample": "苏锐说："}
+    if "角色：王胖子" in user:
+        return {"description": "二十多岁的男性，嗓音洪亮，语速偏快，带点嬉皮笑脸。", "sample": "好。"}
+    return {"description": "二十出头的年轻男性，嗓音偏低，语速不快，冷静克制。", "sample": "走。"}
 
 
 def _free_port() -> int:
@@ -128,18 +136,19 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         settings = settings.model_copy(
             update={"engine": "http", "tts_endpoints": [base_url], "synth_concurrency_max": 4}
         )
-        # 音色参考音频：用最小 WAV 占位（stub 后端只校验文件存在）
-        ref = settings.voices_dir / "default" / "ref.wav"
-        ref.parent.mkdir(parents=True, exist_ok=True)
-        ref.write_bytes(b"RIFFfake")
-
         conn = connect(settings.db_path)
         init_db(conn)
         txt = tmp_path / "book.txt"
         txt.write_text(SAMPLE, encoding="utf-8")
         book_id = import_book(settings, conn, txt, title="TTS 契约测试")
 
-        llm = FakeLLM(routes={"【EXTRACT】": _route_extract, "【MERGE_ROLES】": _route_merge})
+        llm = FakeLLM(
+            routes={
+                "【EXTRACT】": _route_extract,
+                "【MERGE_ROLES】": _route_merge,
+                "【VOICE_DESIGN】": _route_voice_design,
+            }
+        )
         engine = build_engine(settings)
         ctx = WorkerContext(
             settings=settings,
@@ -172,9 +181,13 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
         meta = store.read_json(store.audio_dir(settings, book_id, 0) / "c0000-s01-l001.meta.json")
         assert meta["engine"] == "stub-tts"
         assert meta["cache_key"]
+        # 音色描述（角色基础描述 + 本句表演描述）真的送到了服务端
+        assert meta["voice_source"] == "design"
+        assert "平稳叙述" in meta["voice_prompt"]
+        assert "三十多岁的男性" in meta["voice_prompt"]
         assert all(job.status == "done" for job in jobs.list_jobs(conn, book_id))
-        # 合成阶段不允许出现任何行级异常；音色库未迁移时的 voice_library_empty 属预期
+        # 合成阶段不允许出现任何行级异常
         kinds = {issue["kind"] for issue in store.read_jsonl(store.issues_path(settings, book_id))}
-        assert kinds <= {"voice_library_empty"}
+        assert kinds == set()
     finally:
         _kill_tree(process)

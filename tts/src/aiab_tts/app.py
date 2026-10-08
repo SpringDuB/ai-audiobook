@@ -6,12 +6,16 @@ from .state import ServiceError, ServiceState
 
 
 def build_backend(settings: TtsSettings):
-    backend = (settings.backend or "indextts").lower()
+    backend = (settings.backend or "qwen3").lower()
+    if backend in ("qwen3", "qwen3-tts", "qwen"):
+        from .backends.qwen3 import Qwen3TtsBackend  # 懒加载：只有真后端才 import torch 生态
+
+        return Qwen3TtsBackend(settings)
     if backend in ("indextts", "indextts-2.5"):
         from .backends.indextts import IndexTtsBackend  # 懒加载：只有真后端才 import torch 生态
 
         return IndexTtsBackend(settings)
-    raise ValueError(f"未知后端: {settings.backend}（只支持 indextts）")
+    raise ValueError(f"未知后端: {settings.backend}（支持 qwen3 / indextts）")
 
 
 def build_state(settings: TtsSettings) -> ServiceState:
@@ -88,6 +92,25 @@ def create_app(settings: TtsSettings, state: ServiceState | None = None) -> Fast
                 "X-Item-Count": str(len(durations)),
                 "X-Item-Durations": ",".join(f"{value:.3f}" for value in durations),
                 "X-Elapsed-Ms": str(elapsed_ms),
+            },
+        )
+
+    @app.post("/v1/design")
+    def design(payload: dict):
+        """按音色描述造一段参考音频（Qwen3-TTS VoiceDesign）。
+
+        每个角色调一次，产物由客户端落盘复用；返回体就是那一段 WAV。
+        """
+        result = service.design(payload)
+        return Response(
+            content=result.audio,
+            media_type="audio/wav",
+            headers={
+                "X-Engine": result.engine,
+                "X-Engine-Version": result.engine_version,
+                "X-Duration-Sec": f"{result.duration_sec:.3f}",
+                "X-Sample-Rate": str(result.sample_rate),
+                "X-Elapsed-Ms": str(result.elapsed_ms),
             },
         )
 

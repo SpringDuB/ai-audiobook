@@ -1,9 +1,9 @@
 from . import jobs, store
-from .analysis.casting import voice_for_speaker
+from .analysis.voices import resolve_line_voice
 from .render.chapter import RENDER_VERSION
 
-# 分析链（书稿 → 角色 → 逐句情感 → 选角）与合成链（合成 → 渲染 → 合本）
-ANALYSIS_KINDS = {"chapter_split", "characters", "chapters", "lines", "casting"}
+# 分析链（书稿 → 角色 → 逐句标注 → 选角 → 音色设计）与合成链（合成 → 渲染 → 合本）
+ANALYSIS_KINDS = {"chapter_split", "characters", "chapters", "lines", "casting", "voice_design"}
 AUDIO_KINDS = {"synthesize", "post", "book_export"}
 PHASE_KINDS = {"analysis": ANALYSIS_KINDS, "audio": AUDIO_KINDS}
 
@@ -40,7 +40,28 @@ def _plan_analysis(settings, book_id: str, force: bool = False) -> list[tuple[st
         return plan
     if not store.casting_path(settings, book_id).exists():
         return [("casting", None)]
+    if _roles_missing_design(settings, book_id):
+        # 角色表有了但音色还没设计完（VoiceDesign 造参考音频）：补上这一步，
+        # 否则后面合成会全部退回旁白音色
+        return [("voice_design", None)]
     return []
+
+
+def _roles_missing_design(settings, book_id: str) -> bool:
+    """还有角色没有基础音色描述吗？（旁白也算角色，也要有描述）"""
+    from .analysis.design import pending_roles, role_ids_with_lines
+
+    characters = store.read_json(store.characters_path(settings, book_id), default={}) or {}
+    if not characters.get("characters"):
+        return False
+    chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+    lines_by_chapter = {
+        int(chapter["index"]): store.read_jsonl(store.lines_path(settings, book_id, int(chapter["index"])))
+        for chapter in chapters
+    }
+    # 这里只判断"有没有描述"，不需要台词样本：用轻量版，别为了这个把样本也攒一遍
+    briefs = role_ids_with_lines(lines_by_chapter)
+    return bool(pending_roles(characters, briefs, settings, book_id))
 
 
 def _plan_audio(settings, book_id: str) -> list[tuple[str, int | None]]:
@@ -63,8 +84,11 @@ def _plan_audio(settings, book_id: str) -> list[tuple[str, int | None]]:
     plan: list[tuple[str, int | None]] = []
     casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
     if not store.casting_path(settings, book_id).exists():
-        # 还没有角色音色表：先补一轮选角，别拿 default 硬合
+        # 还没有角色音色表：先补一轮选角，别拿兜底描述硬合
         plan.append(("casting", None))
+    if _roles_missing_design(settings, book_id):
+        # 有角色还没写基础音色描述：先补描述，再合成（否则整章都用兜底声音）
+        plan.append(("voice_design", None))
     missing: list[tuple[str, int | None]] = []
     stale: list[tuple[str, int | None]] = []
     for chapter in analyzed:
@@ -87,7 +111,11 @@ def _plan_audio(settings, book_id: str) -> list[tuple[str, int | None]]:
 
 
 def _voice_stale(settings, book_id: str, index: int, casting: dict) -> bool:
-    """逐句音频记的音色和当前选角不一致吗？（换音色后要真的重合成，不能拿旧片段重渲染）"""
+    """逐句音频记的音色和当前选角不一致吗？
+
+    （换库存音色、重新设计角色音色都会让 voice_key 变，必须真的重合成，
+    不能拿旧片段重渲染。）
+    """
     if not casting.get("roles"):
         return False
     rows = store.read_jsonl(store.lines_path(settings, book_id, index))
@@ -96,12 +124,16 @@ def _voice_stale(settings, book_id: str, index: int, casting: dict) -> bool:
         speaker = row.get("speaker")
         if not speaker:
             continue
-        expected = voice_for_speaker(casting, speaker)
-        if not expected:
-            continue
+        expected = resolve_line_voice(settings, book_id, row, casting)
         meta = store.read_json(clips / f"{row['id']}.meta.json", default={}) or {}
+        recorded_key = meta.get("voice_key")
+        if recorded_key:
+            if recorded_key != expected.voice_key:
+                return True
+            continue
+        # 老片段只有 voice_id：库存音色还能比，设计音色对不上就直接算过期
         recorded = meta.get("voice_id")
-        if recorded and recorded != expected:
+        if recorded and recorded != expected.voice_id:
             return True
     return False
 

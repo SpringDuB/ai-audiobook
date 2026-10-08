@@ -159,6 +159,20 @@ def test_build_command_prefers_venv_python(tmp_path, monkeypatch):
     assert command == [str(python), "-m", "aiab_tts", "serve", "--backend", "indextts", "--host", "127.0.0.1", "--port", "8123"]
 
 
+def test_build_command_uses_the_qwen_venv_for_qwen3(tmp_path, monkeypatch):
+    """qwen3 后端要跑在它自己的 venv 里（依赖和 IndexTTS 那套互相打架）。"""
+    fake_root = tmp_path / "tts"
+    for name in (".venv", ".venv-qwen"):
+        scripts = fake_root / name / ("Scripts" if os.name == "nt" else "bin")
+        scripts.mkdir(parents=True)
+        (scripts / ("python.exe" if os.name == "nt" else "python")).write_text("", encoding="utf-8")
+    monkeypatch.setattr(tts_service, "TTS_DIR", fake_root)
+    service = LocalTtsService(get_settings(data_dir=tmp_path / "data"))
+    command = service.build_command(backend="qwen3", port=8123)
+    assert ".venv-qwen" in command[0]
+    assert command[2:] == ["aiab_tts", "serve", "--backend", "qwen3", "--host", "127.0.0.1", "--port", "8123"]
+
+
 def test_logs_decode_gbk_from_old_runs(tmp_path):
     """老版本子进程按 GBK 写日志：读取端要兜住，不能显示成一串替换符。"""
     service = _service(tmp_path)

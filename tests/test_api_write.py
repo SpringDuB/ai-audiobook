@@ -60,6 +60,85 @@ def test_export_endpoint_enqueues_book_export(settings, narrator_lines):
     assert jobs.get_job(_conn(settings), body["job_id"]).kind == "book_export"
 
 
+def _seed_role(settings, book_id: str, description: str = "三十多岁的男性，嗓音低沉厚实。") -> None:
+    store.atomic_replace_json(
+        store.casting_path(settings, book_id),
+        {
+            "roles": {
+                "narrator": {
+                    "role_id": "narrator",
+                    "name": "旁白",
+                    "voice_source": "design",
+                    "source": "design",
+                    "voice_id": "narrator",
+                    "description": description,
+                    "description_source": "llm",
+                    "sample": "夜色很深。",
+                }
+            },
+            "names": {"旁白": "narrator"},
+        },
+    )
+
+
+def test_role_description_can_be_edited_and_rewritten(settings, narrator_lines):
+    """角色音色描述：手改走 PUT（source=manual），让模型重写走 voice_design 任务。"""
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    _seed_role(settings, book_id)
+
+    body = client.put(
+        f"/api/books/{book_id}/roles/narrator/description",
+        json={"description": "五十岁的女性，嗓音沙哑温暖，语速偏慢。"},
+    ).json()
+    assert body["role"]["description"].startswith("五十岁的女性")
+    assert body["role"]["description_source"] == "manual"
+
+    job_id = client.post(f"/api/books/{book_id}/roles/narrator/rewrite").json()["job_id"]
+    job = jobs.get_job(_conn(settings), job_id)
+    assert (job.kind, job.payload) == ("voice_design", {"roles": ["narrator"], "force": True})
+
+    assert client.put(f"/api/books/{book_id}/roles/nope/description", json={"description": "x"}).status_code == 404
+    assert client.put(f"/api/books/{book_id}/roles/narrator/description", json={"description": " "}).status_code == 400
+
+
+def test_role_preview_generates_and_serves_audio(settings, narrator_lines, monkeypatch):
+    """试听：按当前描述生成 preview.wav（引擎是替身），生成完 has_preview 变真。"""
+    import audiobook.api.app as app_module
+    from fake_engine import FakeEngine
+
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    _seed_role(settings, book_id)
+
+    class DesignEngine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.calls: list[dict] = []
+
+        def design_voice(self, *, instruct, text, lang, out_path, timeout=None):
+            self.calls.append({"instruct": instruct, "text": text, "lang": lang})
+            return super().synthesize(text, "design", None, out_path)
+
+    engine = DesignEngine()
+    monkeypatch.setattr(app_module, "build_engine", lambda _settings: engine)
+
+    body = client.post(f"/api/books/{book_id}/roles/narrator/preview", json={}).json()
+    assert body["ok"] is True and body["duration"] > 0
+    assert engine.calls[0]["instruct"].startswith("三十多岁的男性")
+    assert engine.calls[0]["text"] == "夜色很深。"
+
+    audio = client.get(f"/api/books/{book_id}/roles/narrator/preview.wav")
+    assert audio.status_code == 200 and audio.content[:4] == b"RIFF"
+
+    roles = client.get(f"/api/books/{book_id}/casting").json()["roles"]
+    assert roles[0]["has_preview"] is True and roles[0]["preview_current"] is True
+    # 描述一改，试听就过期（前端据此提示"重新生成"）
+    client.put(f"/api/books/{book_id}/roles/narrator/description", json={"description": "完全不同的描述。"})
+    roles = client.get(f"/api/books/{book_id}/casting").json()["roles"]
+    assert roles[0]["has_preview"] is True and roles[0]["preview_current"] is False
+
+
 def _seed_three_chapters(settings, narrator_lines) -> str:
     book_id = _seed_book(settings, narrator_lines)
     store.atomic_replace_json(
@@ -158,21 +237,31 @@ def test_analyze_chapters_rejects_empty_or_unknown_selection(settings, narrator_
 
 
 def test_generate_chapter_enqueues_casting_then_synthesis(settings, narrator_lines):
-    """角色还没选音色：先补一轮选角，再合成这一章。"""
+    """角色还没有音色描述：先补选角 + 写描述，再合成这一章。"""
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
     body = client.post(f"/api/books/{book_id}/chapters/0/generate").json()
-    assert body["plan"] == [["casting", None], ["synthesize", 0]]
+    assert body["plan"] == [["casting", None], ["voice_design", None], ["synthesize", 0]]
     kinds = [jobs.get_job(_conn(settings), job_id).kind for job_id in body["job_ids"]]
-    assert kinds == ["casting", "synthesize"]
+    assert kinds == ["casting", "voice_design", "synthesize"]
 
 
-def test_generate_chapter_skips_casting_when_voices_are_bound(settings, narrator_lines):
+def test_generate_chapter_skips_casting_when_described(settings, narrator_lines):
+    """已有音色描述：直接合成，不再排队等描述。"""
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
     store.atomic_replace_json(
         store.casting_path(settings, book_id),
-        {"roles": {"narrator": {"role_id": "narrator", "voice_id": "v001"}}},
+        {
+            "roles": {
+                "narrator": {
+                    "role_id": "narrator",
+                    "voice_source": "design",
+                    "source": "design",
+                    "description": "三十多岁的男性，嗓音低沉厚实，语速中偏慢。",
+                }
+            }
+        },
     )
     body = client.post(f"/api/books/{book_id}/chapters/0/generate").json()
     assert body["plan"] == [["synthesize", 0]]

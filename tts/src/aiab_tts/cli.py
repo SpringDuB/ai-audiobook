@@ -8,9 +8,15 @@ def describe_backend(settings) -> list[str]:
     """启动时先说清楚"要不要模型、要不要下载"，免得日志里只有 uvicorn 三行。"""
     from pathlib import Path
 
-    backend = (settings.backend or "indextts").lower()
+    backend = (settings.backend or "qwen3").lower()
     model_dir = Path(settings.model_dir).resolve()
     lines = [f"后端 {backend}：模型来源={settings.model_source}，模型目录={model_dir}"]
+    if backend in ("qwen3", "qwen3-tts", "qwen"):
+        lines.append(
+            "Qwen3-TTS：逐句按音色描述生成（VoiceDesign）；"
+            f"权重 {model_dir}/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+            "（缺就先跑 tts/scripts/install_qwen3.ps1）"
+        )
     if settings.model_source in {"modelscope", "huggingface"}:
         lines.append("权重缺失/损坏时会按这个来源自动下载，进度就打印在本日志里。")
     else:
@@ -64,7 +70,10 @@ def _check(args) -> int:
         return 2
     print(f"engine={health.get('engine')} version={health.get('engineVersion')} status={health.get('status')}")
     print(f"并发自报={health.get('recommendedConcurrency')} inflight={health.get('inflight')}")
-    print(f"情绪={caps.get('emotionDims')} 语速={caps.get('rateRange')} 语言={caps.get('languages')}")
+    print(
+        f"按描述生成={caps.get('voicePrompt')} 音色设计={caps.get('voiceDesign')} "
+        f"情绪={caps.get('emotionDims')} 语速={caps.get('rateRange')} 语言={caps.get('languages')}"
+    )
     print(f"采样率={caps.get('sampleRate')} 单次文本上限={caps.get('maxTextChars')}")
     return 0
 
@@ -106,7 +115,7 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     serve = sub.add_parser("serve", help="启动 TTS 服务")
-    serve.add_argument("--backend", default=None, choices=["indextts"])
+    serve.add_argument("--backend", default=None, choices=["qwen3", "indextts"])
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--access-log", action="store_true", help="打开逐请求访问日志（默认关闭）")

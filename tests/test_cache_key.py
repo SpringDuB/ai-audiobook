@@ -1,3 +1,5 @@
+import pytest
+
 from audiobook.cache import cache_key
 from audiobook.engines.base import EngineCapabilities, SynthParams
 
@@ -70,11 +72,39 @@ def test_params_from_line_switches_channel():
     assert text_params.emotion_text == "压着火气，语速比平时快" and text_params.emo_vector is None
 
     vector_params = params_from_line(row, _caps(emotion_text=True), mode="vector")
-    assert vector_params.emotion_text is None and vector_params.emo_vector[1] == 0.9
+    # 向量总强度会被抬到 0.9~1.0（见 cache.normalize_emotion_weights）：
+    # 不这样的话 (1-Σ) 这一项会让参考音频自己的语气占掉大半
+    assert vector_params.emotion_text is None
+    assert vector_params.emo_vector[1] == pytest.approx(0.99)
+    assert 0.9 <= sum(vector_params.emo_vector) <= 1.0
 
     # 服务端不支持文本描述时：文本模式也要退回向量
     fallback = params_from_line(row, _caps(emotion_text=False), mode="text")
-    assert fallback.emotion_text is None and fallback.emo_vector[1] == 0.9
+    assert fallback.emotion_text is None and fallback.emo_vector[1] == pytest.approx(0.99)
+
+
+def test_emotion_weights_are_normalized_to_full_strength():
+    """Σ 权重统一抬到 0.9~1.0：参考音频的情绪占比从 40%+ 降到 ≤10%。"""
+    from audiobook.cache import normalize_emotion_weights
+
+    dims = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm")
+
+    weak = {dim: 0.0 for dim in dims}
+    weak["calm"] = 0.4
+    out = normalize_emotion_weights(weak)
+    assert out["calm"] == pytest.approx(0.94)  # Σ=0.4 → 抬到 0.94
+    assert 0.9 <= sum(out.values()) <= 1.0
+
+    # Σ>1（主情绪 1.0 + 副情绪 0.45）会被压回 1.0 以内，避免 (1-Σ) 变成负数
+    strong = {dim: 0.0 for dim in dims}
+    strong["angry"] = 1.0
+    strong["sad"] = 0.45
+    squeezed = normalize_emotion_weights(strong)
+    assert sum(squeezed.values()) == pytest.approx(1.0)
+    assert squeezed["angry"] > squeezed["sad"]
+
+    empty = normalize_emotion_weights({dim: 0.0 for dim in dims})
+    assert sum(empty.values()) == 0.0
 
 
 def test_chinese_emotion_names_map_to_engine_dims():

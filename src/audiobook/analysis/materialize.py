@@ -1,8 +1,7 @@
-"""落盘：把「说话人名字 + 情绪」物化成行记录（id / role_id / 停顿 / 语速）。
+"""落盘：把「说话人名字 + 本句表演描述」物化成行记录（id / role_id / 语速 / 注音）。
 
 大模型给的是名字（还可能给"未知"），这里把它翻成 role_id，并把旁白与人物话术分开：
-旁白不带情绪向量，人物话术带主情绪（+ 可选副情绪）。对不上角色表的说话人、
-没给情绪的对白都会写进异常清单，不允许静默降级。
+对不上角色表的说话人会写进异常清单，不允许静默降级。
 """
 
 from .derive import derive_line
@@ -22,7 +21,6 @@ def materialize(
     narrator_name = index.get(NARRATOR_ID, {}).get("name") or "旁白"
     rows: list[dict] = []
     unknown: list[str] = []
-    missing_emotion: list[str] = []
     for item in spoken:
         text = (item.text or "").strip()
         if not text:
@@ -53,9 +51,8 @@ def materialize(
             speaker_name=speaker_name,
             kind=kind,
             pronounce_table=pronounce_table,
+            voice_prompt=(item.voice or "").strip(),
         )
-        if kind == "dialogue" and row["emotion"]["source"] != "line":
-            missing_emotion.append(row["id"])
         rows.append(row)
     issues: list[dict] = []
     if unknown:
@@ -66,15 +63,6 @@ def materialize(
                 "reason": f"{len(unknown)} 句的说话人不在角色表里：{'、'.join(distinct[:5])}",
                 "fallback": "按旁白音色处理",
                 "detail": {"count": len(unknown), "roles": distinct[:10]},
-            }
-        )
-    if missing_emotion:
-        issues.append(
-            {
-                "kind": "emotion_missing",
-                "reason": f"{len(missing_emotion)} 句人物话术没有有效情绪，按平静处理",
-                "fallback": "emotion=平静（source=default）",
-                "detail": {"count": len(missing_emotion), "lines": missing_emotion[:10]},
             }
         )
     return rows, issues

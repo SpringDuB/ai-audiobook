@@ -11,11 +11,25 @@ from aiab_tts.config import TtsSettings
 
 
 def test_unknown_backend_is_rejected():
-    """产品里只有 indextts 一种后端，别再有"假引擎"这种选项。"""
+    """只认 qwen3 / indextts，别再有"假引擎"这种选项。"""
     from aiab_tts.app import build_backend
 
-    with pytest.raises(ValueError, match="只支持 indextts"):
+    with pytest.raises(ValueError, match="支持 qwen3"):
         build_backend(TtsSettings(backend="fake"))
+
+
+def test_qwen3_backend_needs_no_model_to_build():
+    """qwen3 后端是懒加载：build_backend 只装配，不在启动时 import torch。"""
+    from aiab_tts.app import build_backend
+    from aiab_tts.backends.qwen3 import Qwen3TtsBackend
+
+    backend = build_backend(TtsSettings(backend="qwen3"))
+    assert isinstance(backend, Qwen3TtsBackend)
+    assert backend.is_loaded() is False
+    caps = backend.capabilities()
+    assert caps["voiceDesign"] is True
+    assert caps["voicePrompt"] is True
+    assert caps["emotions"] is False
 
 
 def test_indextts_backend_says_it_will_download():

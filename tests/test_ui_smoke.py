@@ -105,18 +105,17 @@ def _seed_book(settings, narrator_lines, book_id="smoke"):
     store.atomic_replace_json(
         store.casting_path(settings, book_id),
         {
-            "narrator_voice": "v1",
             "roles": {
                 "narrator": {
                     "role_id": "narrator",
                     "name": "旁白",
-                    "voice_id": "v1",
-                    "voice_name": "测试男声",
-                    "source": "llm",
-                    "recommendations": [
-                        {"voice_id": "v1", "voice_name": "测试男声", "confidence": 0.9, "reason": "叙述平稳"},
-                        {"voice_id": "v2", "voice_name": "备选女声", "confidence": 0.5, "reason": "情绪更亮"},
-                    ],
+                    "voice_source": "design",
+                    "source": "design",
+                    "voice_id": "narrator",
+                    "description": "三十多岁的男性，嗓音低沉厚实，语速中偏慢，讲述感强。",
+                    "description_source": "llm",
+                    "sample": "第一句。",
+                    "recommendations": [],
                 }
             },
         },
@@ -171,11 +170,12 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert workspace["view"] == "book"
     assert workspace["counts"]["chapterItems"] == 1
     assert workspace["counts"]["castRows"] == 1
-    assert workspace["counts"]["recChips"] == 2   # 推荐音色直接排在角色行上
     assert "角色音色" in workspace["text"]
-    assert "推荐" in workspace["text"]
-    # 每个推荐音色都要有试听按钮（不是只能选中）
-    assert workspace["counts"]["recPlays"] == workspace["counts"]["recChips"] == 2
+    # 角色行上是"音色描述 + 试听/保存/重写/绑库存音色"这一组动作
+    assert workspace["counts"]["descEditors"] == 1
+    assert workspace["counts"]["descActions"] == 4
+    assert workspace["counts"]["bindButtons"] == 1
+    assert "音色描述" in workspace["text"] or "三十多岁的男性" in workspace["text"]
     # 默认停在「原文」页签：进书先看干净原文，不再直接甩出角色文本
     assert workspace["counts"]["rawParagraphs"] >= 1
     assert workspace["counts"]["lines"] == 0
@@ -215,11 +215,20 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
 def test_workspace_voice_picker_lists_categories(served, settings, narrator_lines, tmp_path):
     book_id = _seed_book(settings, narrator_lines)
     _seed_voice(settings)
-    page = _probe(f"{served}/#/book/{book_id}", tmp_path / "picker", extra=("--click=.cast-row .btn",))
+    page = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "picker",
+        extra=(
+            "--click=.cast-row__bind",
+            # 选择器是挂在 body 上的浮层，不在 #main 里，单独取它的文字
+            "--eval=JSON.stringify({picker: (document.querySelector('.picker')?.innerText || '').replace(/\\s+/g, ' ')})",
+        ),
+    )
     assert page["consoleErrors"] == []
     assert page["counts"]["pickers"] == 1
     assert page["counts"]["pickerRows"] == 1
-    assert "测试男声" in page["text"]
+    picker = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert "测试男声" in picker["picker"]
 
 
 def test_shelf_card_only_has_open_delete_and_opens_on_click(served, settings, narrator_lines, tmp_path):

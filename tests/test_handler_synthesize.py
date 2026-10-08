@@ -151,16 +151,30 @@ def test_changed_text_regenerates_only_that_line(conn, settings, narrator_lines)
     assert engine.calls == before + 1
 
 
-def test_voice_change_regenerates_only_that_role(conn, settings, narrator_lines):
-    """换某个角色的音色：只重合成它用旧音色生成的句子，别的句子继续走缓存。"""
+def test_description_change_regenerates_only_that_role(conn, settings, narrator_lines):
+    """改某个角色的音色描述：只重合成这个角色的句子，别的句子继续走缓存。"""
     rows = narrator_lines(1, "第一句。第二句。")
     rows[1]["speaker"] = "role_0001"
     rows[1]["speaker_name"] = "小鹿"
     _prepare_book(narrator_lines, settings)
     store.write_jsonl_atomic(store.lines_path(settings, "b1", 1), rows)
+
+    def casting(description: str) -> dict:
+        return {
+            "roles": {
+                "role_0001": {
+                    "role_id": "role_0001",
+                    "voice_source": "design",
+                    "source": "design",
+                    "description": description,
+                }
+            },
+            "names": {"小鹿": "role_0001"},
+        }
+
     store.atomic_replace_json(
         store.casting_path(settings, "b1"),
-        {"roles": {"role_0001": {"voice_id": "v_old"}}, "names": {"小鹿": "role_0001"}},
+        casting("二十出头的年轻女性，声音清脆，语速偏快。"),
     )
     engine = CountingEngine()
     ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", engine=engine)
@@ -168,18 +182,19 @@ def test_voice_change_regenerates_only_that_role(conn, settings, narrator_lines)
     _run_synthesize(conn, ctx)
     assert engine.calls == 2
 
-    # 小鹿换音色 → 只重跑小鹿那一句；旁白那句已经有音频，不再找引擎
+    # 小鹿换音色描述 → 只重跑小鹿那一句；旁白那句已经有音频，不再找引擎
     store.atomic_replace_json(
         store.casting_path(settings, "b1"),
-        {"roles": {"role_0001": {"voice_id": "v_new"}}, "names": {"小鹿": "role_0001"}},
+        casting("三十多岁的女性，嗓音低哑，语速缓慢。"),
     )
     before = engine.calls
     _run_synthesize(conn, ctx)
     assert engine.calls == before + 1
     meta = store.read_json(store.audio_dir(settings, "b1", 1) / "c0001-s01-l002.meta.json")
-    assert meta["voice_id"] == "v_new"
+    assert meta["voice_source"] == "design"
+    assert meta["voice_key"].startswith("design:role_0001:")
 
-    # 已经按新音色合成过：再点一次一个字都不重跑
+    # 已经按新描述合成过：再点一次一个字都不重跑
     _run_synthesize(conn, ctx)
     assert engine.calls == before + 1
 

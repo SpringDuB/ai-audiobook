@@ -1,8 +1,7 @@
-"""casting handler：大模型推荐音色 → voices/casting.json（含推荐列表，默认用第一个）。"""
+"""casting handler：登记角色 → voices/casting.json，并把缺描述的角色交给 voice_design。"""
 
 from audiobook import jobs, store
 from audiobook.handlers import casting as casting_handler  # noqa: F401
-from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
 from audiobook.llm.runner import LlmJsonRunner
 from audiobook.worker import WorkerContext, run_once
@@ -50,46 +49,40 @@ def _seed_book(settings, book_id="book1") -> None:
     )
 
 
-def _route(user: str) -> dict:
-    if "角色：旁白" in user:
-        return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "适合旁白"}]}
-    return {"recommendations": [{"voiceId": "v_hero", "confidence": 0.8, "reason": "冷峻克制"}]}
+def _ctx(settings, conn, llm=None) -> WorkerContext:
+    runner = LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=4), settings) if llm else None
+    return WorkerContext(settings=settings, conn=conn, worker_id="w1", llm=runner)
 
 
-def _ctx(settings, conn, llm) -> WorkerContext:
-    return WorkerContext(
-        settings=settings,
-        conn=conn,
-        worker_id="w1",
-        llm=LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=4), settings),
-    )
+def _next_jobs(conn, book_id: str, kind: str) -> list:
+    return [job for job in jobs.list_jobs(conn, book_id) if job.kind == kind]
 
 
-def test_casting_handler_recommends_voices_and_stops_before_synthesis(settings, conn):
-    book_id = "book1"
-    _seed_book(settings, book_id)
-    _seed_voice(settings, "v_nar", "沉稳旁白", gender="女", usage_type=["旁白叙述"])
-    _seed_voice(settings, "v_hero", "冷峻男声")
-    jobs.enqueue(conn, "casting", book_id)
-
-    assert run_once(_ctx(settings, conn, FakeLLM(routes={"【VOICE_RECOMMEND】": _route}))) is True
-
-    casting = store.read_json(store.casting_path(settings, book_id))
-    assert casting["roles"]["narrator"]["voice_id"] == "v_nar"
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
-    assert casting["roles"]["role_0001"]["source"] == "llm"
-    assert casting["roles"]["role_0001"]["recommendations"] == [
-        {"voice_id": "v_hero", "voice_name": "冷峻男声", "confidence": 0.8, "reason": "冷峻克制"}
-    ]
-    assert casting["names"]["老苏"] == "role_0001"
-    # 选角是分析链的最后一步：合成要等用户点「生成有声书」
-    assert [j for j in jobs.list_jobs(conn, book_id) if j.kind == "synthesize"] == []
-
-
-def test_casting_handler_keeps_a_manual_choice_but_refreshes_recommendations(settings, conn):
+def test_casting_handler_registers_roles_then_asks_for_descriptions(settings, conn):
     book_id = "book1"
     _seed_book(settings, book_id)
     _seed_voice(settings, "v_nar", "沉稳旁白")
+    jobs.enqueue(conn, "casting", book_id)
+
+    assert run_once(_ctx(settings, conn)) is True
+
+    casting = store.read_json(store.casting_path(settings, book_id))
+    assert casting["roles"]["role_0001"]["voice_source"] == "design"
+    assert casting["roles"]["role_0001"]["voice_id"] == "role_0001"
+    assert casting["roles"]["role_0001"]["description"] == ""
+    assert casting["names"]["老苏"] == "role_0001"
+
+    design_jobs = _next_jobs(conn, book_id, "voice_design")
+    assert len(design_jobs) == 1
+    # 不带 roles：任务自己算"谁缺描述"，多章各自登记一次会被幂等去重
+    assert design_jobs[0].payload is None
+    # 合成要等用户点「生成有声书」
+    assert _next_jobs(conn, book_id, "synthesize") == []
+
+
+def test_casting_handler_keeps_manual_library_binding_out_of_design(settings, conn):
+    book_id = "book1"
+    _seed_book(settings, book_id)
     _seed_voice(settings, "v_hero", "冷峻男声")
     store.atomic_replace_json(
         store.casting_path(settings, book_id),
@@ -97,34 +90,43 @@ def test_casting_handler_keeps_a_manual_choice_but_refreshes_recommendations(set
     )
     jobs.enqueue(conn, "casting", book_id)
 
-    def route(user: str) -> dict:
-        if "角色：旁白" in user:
-            return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "适合旁白"}]}
-        return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.7, "reason": "也行"}]}
-
-    assert run_once(_ctx(settings, conn, FakeLLM(routes={"【VOICE_RECOMMEND】": route}))) is True
+    assert run_once(_ctx(settings, conn)) is True
 
     role = store.read_json(store.casting_path(settings, book_id))["roles"]["role_0001"]
-    assert role["voice_id"] == "v_hero" and role["source"] == "manual"
-    assert role["recommendations"][0]["voice_id"] == "v_nar"
+    assert role["voice_id"] == "v_hero"
+    assert role["voice_source"] == "library"
+    assert role["source"] == "manual"
+    # 手工绑过的角色不需要写描述，但任务照样入队（描述生成时会跳过它）
+    assert len(_next_jobs(conn, book_id, "voice_design")) == 1
 
 
-def test_casting_handler_without_voice_library_falls_back_and_records_issue(settings, conn):
+def test_casting_handler_skips_roles_that_already_have_a_description(settings, conn):
     book_id = "book1"
     _seed_book(settings, book_id)
+    store.atomic_replace_json(
+        store.casting_path(settings, book_id),
+        {
+            "roles": {
+                "role_0001": {
+                    "role_id": "role_0001",
+                    "source": "design",
+                    "description": "二十出头的年轻男性，嗓音偏低。",
+                    "description_source": "llm",
+                }
+            }
+        },
+    )
     jobs.enqueue(conn, "casting", book_id)
 
-    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w1", llm=None)
-    assert run_once(ctx) is True
+    assert run_once(_ctx(settings, conn)) is True
 
-    casting = store.read_json(store.casting_path(settings, book_id))
-    assert {role["voice_id"] for role in casting["roles"].values()} == {"default"}
-    kinds = [issue["kind"] for issue in store.read_jsonl(store.issues_path(settings, book_id))]
-    assert kinds == ["voice_library_empty"]
+    role = store.read_json(store.casting_path(settings, book_id))["roles"]["role_0001"]
+    assert role["description"].startswith("二十出头")
+    assert len(_next_jobs(conn, book_id, "voice_design")) == 1
 
 
-def test_scoped_casting_fills_only_roles_without_recommendations(settings, conn):
-    """单章分析后的增量选角：只为缺推荐的角色调模型，已有推荐的角色原样保留。"""
+def test_scoped_casting_only_asks_for_this_chapters_roles(settings, conn):
+    """单章分析：只给本章出现过的角色（+旁白）补描述，别把整本书重算一遍。"""
     book_id = "book1"
     store.atomic_replace_json(
         store.characters_path(settings, book_id),
@@ -155,70 +157,11 @@ def test_scoped_casting_fills_only_roles_without_recommendations(settings, conn)
         store.lines_path(settings, book_id, 2),
         [{"id": "c0002-s01-l001", "kind": "dialogue", "speaker": "role_0002", "speaker_name": "小鹿", "text": "走。"}],
     )
-    _seed_voice(settings, "v_nar", "沉稳旁白")
-    _seed_voice(settings, "v_hero", "冷峻男声")
-    _seed_voice(settings, "v_girl", "清亮女声")
-    store.atomic_replace_json(
-        store.casting_path(settings, book_id),
-        {
-            "roles": {
-                "role_0001": {
-                    "role_id": "role_0001",
-                    "name": "苏锐",
-                    "aliases": [],
-                    "voice_id": "v_hero",
-                    "voice_name": "冷峻男声",
-                    "source": "llm",
-                    "recommendations": [
-                        {"voice_id": "v_hero", "voice_name": "冷峻男声", "confidence": 0.8, "reason": "冷峻"}
-                    ],
-                    "overrides": {},
-                }
-            }
-        },
-    )
-    jobs.enqueue(conn, "casting", book_id, 1, payload={"chapters": [1]})
+    jobs.enqueue(conn, "casting", book_id, payload={"chapters": [1]})
 
-    def route(user: str) -> dict:
-        if "角色：旁白" in user:
-            return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "适合旁白"}]}
-        assert "角色：小鹿" in user, user
-        return {"recommendations": [{"voiceId": "v_girl", "confidence": 0.77, "reason": "少女感"}]}
-
-    llm = FakeLLM(routes={"【VOICE_RECOMMEND】": route})
-    assert run_once(_ctx(settings, conn, llm)) is True
+    assert run_once(_ctx(settings, conn)) is True
 
     casting = store.read_json(store.casting_path(settings, book_id))
-    # 已有推荐的苏锐原样保留，没有调用模型
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
-    assert not any("角色：苏锐" in call["user"] for call in llm.calls)
-    # 新角色当场拿到推荐，默认用第一条
-    assert casting["roles"]["role_0002"]["voice_id"] == "v_girl"
-    assert casting["roles"]["role_0002"]["source"] == "llm"
-    assert casting["roles"]["role_0002"]["recommendations"][0]["voice_id"] == "v_girl"
-    assert casting["roles"]["narrator"]["voice_id"] == "v_nar"
-    assert casting["narrator_voice"] == "v_nar"
-
-
-def test_scoped_casting_keeps_manual_choice_but_adds_recommendations(settings, conn):
-    """手选过的角色：增量选角只补推荐列表，不改用户选定的音色。"""
-    book_id = "book1"
-    _seed_book(settings, book_id)
-    _seed_voice(settings, "v_nar", "沉稳旁白")
-    _seed_voice(settings, "v_hero", "冷峻男声")
-    store.atomic_replace_json(
-        store.casting_path(settings, book_id),
-        {"roles": {"role_0001": {"role_id": "role_0001", "voice_id": "v_hero", "source": "manual"}}},
-    )
-    jobs.enqueue(conn, "casting", book_id, 1, payload={"chapters": [1]})
-
-    def route(user: str) -> dict:
-        if "角色：旁白" in user:
-            return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "适合旁白"}]}
-        return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.6, "reason": "也能用"}]}
-
-    assert run_once(_ctx(settings, conn, FakeLLM(routes={"【VOICE_RECOMMEND】": route}))) is True
-
-    role = store.read_json(store.casting_path(settings, book_id))["roles"]["role_0001"]
-    assert role["voice_id"] == "v_hero" and role["source"] == "manual"
-    assert role["recommendations"][0]["voice_id"] == "v_nar"
+    # 角色表照样登记全（避免幽灵角色），但描述只补本章的
+    assert set(casting["roles"]) == {"narrator", "role_0001", "role_0002"}
+    assert len(_next_jobs(conn, book_id, "voice_design")) == 1

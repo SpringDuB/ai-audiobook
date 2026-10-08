@@ -6,9 +6,13 @@ from typing import Protocol
 @dataclass(frozen=True)
 class SynthesisRequest:
     text: str
-    ref_path: Path
+    # 参考音频：给了就走音色克隆（Qwen3-TTS Base / IndexTTS）；
+    # 没给但带 voice_prompt 时走"按描述生成"（Qwen3-TTS VoiceDesign）
+    ref_path: Path | None = None
     ref_text: str = ""
     lang: str = "ZH"
+    # 这一句的音色描述（角色基础描述 + 本句语气描述拼好的那一句）
+    voice_prompt: str = ""
     emo_vector: tuple[float, ...] | None = None
     # 自然语言情绪描述（"压着火气、语速比平时快"）：需要服务端加载了 QwenEmotion
     emotion_text: str = ""

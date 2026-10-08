@@ -1,4 +1,4 @@
-"""端到端：导入 → 分析角色文本（提取/整合/推荐）→ 生成有声书（合成/渲染/合本）。
+"""端到端：导入 → 分析角色文本（提取/整合/音色描述）→ 生成有声书（合成/渲染/合本）。
 
 全程离线：LLM 用 FakeLLM（按提示词标记路由），TTS 用 FakeEngine。
 这与产品里"只有真引擎"的约束不冲突——替身只存在于 tests/。
@@ -8,7 +8,16 @@ from audiobook import audio, jobs, store
 from audiobook.api.app import create_app  # noqa: F401  确保导入链路完整
 from audiobook.db import connect, init_db
 from fake_engine import FakeEngine
-from audiobook.handlers import book_export, casting, characters, lines, post, split, synthesize  # noqa: F401
+from audiobook.handlers import (  # noqa: F401
+    book_export,
+    casting,
+    characters,
+    lines,
+    post,
+    split,
+    synthesize,
+    voice_design,
+)
 from audiobook.importer import import_book
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
@@ -36,16 +45,16 @@ def _route_extract(user: str) -> list[dict]:
             continue
         if line.startswith("“") and "”" in line:
             end = line.index("”") + 1
-            rows.append({"text": line[:end], "role": "王胖子", "emotion": "喜悦", "intensity": 0.6})
+            rows.append({"text": line[:end], "role": "王胖子", "voice": "兴冲冲地提高音量，语速偏快"})
             tail = line[end:]
             if tail:
-                rows.append({"text": tail, "role": "旁白", "emotion": None})
+                rows.append({"text": tail, "role": "旁白", "voice": "平稳叙述，语速中等"})
         elif "说：“" in line:
             head, rest = line.split("说：“", 1)
-            rows.append({"text": f"{head}说：", "role": "旁白", "emotion": None})
-            rows.append({"text": f"“{rest}", "role": head, "emotion": "愤怒", "intensity": 0.8})
+            rows.append({"text": f"{head}说：", "role": "旁白", "voice": "平稳叙述"})
+            rows.append({"text": f"“{rest}", "role": head, "voice": "压低声音，语气强硬"})
         else:
-            rows.append({"text": line, "role": "旁白", "emotion": None})
+            rows.append({"text": line, "role": "旁白", "voice": "平稳叙述，语速稍慢"})
     return rows
 
 
@@ -58,10 +67,22 @@ def _route_merge(user: str) -> dict:
     return {"characters": people}
 
 
-def _route_recommend(user: str) -> dict:
+def _route_voice_design(user: str) -> dict:
+    """假模型：旁白给讲述声，角色按身份给各自的声音描述。"""
     if "角色：旁白" in user:
-        return {"recommendations": [{"voiceId": "v_nar", "confidence": 0.9, "reason": "叙述平稳"}]}
-    return {"recommendations": [{"voiceId": "v_hero", "confidence": 0.85, "reason": "冷峻克制"}]}
+        return {
+            "description": "三十多岁的男性，嗓音低沉厚实，语速中偏慢，讲述感强。",
+            "sample": "苏锐站在院子里。",
+        }
+    if "角色：王胖子" in user:
+        return {
+            "description": "二十多岁的男性，嗓音洪亮，语速偏快，带着点嬉皮笑脸。",
+            "sample": "老苏，你怎么看？",
+        }
+    return {
+        "description": "二十出头的年轻男性，嗓音偏低，语速不快，冷静克制。",
+        "sample": "胖子，别废话。",
+    }
 
 
 def _seed_voices(settings) -> None:
@@ -89,7 +110,7 @@ def _ctx(settings, conn, engine=None) -> WorkerContext:
         routes={
             "【EXTRACT】": _route_extract,
             "【MERGE_ROLES】": _route_merge,
-            "【VOICE_RECOMMEND】": _route_recommend,
+            "【VOICE_DESIGN】": _route_voice_design,
         }
     )
     return WorkerContext(
@@ -134,17 +155,17 @@ def test_full_pipeline_offline_produces_chapter_and_book_artifacts(settings, tmp
     rows = store.read_jsonl(store.lines_path(settings, book_id, 1))
     assert [row["kind"] for row in rows] == ["narration", "dialogue", "narration"]
     assert [row["speaker"] for row in rows] == ["narrator", "role_0002", "narrator"]
-    assert rows[1]["emotion"]["source"] == "line"
-    assert rows[1]["emotion"]["mix"] == [{"name": "喜悦", "weight": 0.6}]
-    assert rows[0]["emotion"] == {"dominant": "平静", "intensity": 0.0, "source": "none"}
+    assert rows[1]["voice_prompt"] == "兴冲冲地提高音量，语速偏快"
+    assert rows[0]["voice_prompt"] == "平稳叙述，语速稍慢"
     rows_ch2 = store.read_jsonl(store.lines_path(settings, book_id, 2))
     assert [row["kind"] for row in rows_ch2] == ["narration", "dialogue"]
     assert [row["speaker"] for row in rows_ch2] == ["narrator", "role_0001"]
 
     casting = store.read_json(store.casting_path(settings, book_id))
-    assert casting["narrator_voice"] == "v_nar"
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
-    assert casting["roles"]["role_0001"]["recommendations"][0]["voice_name"] == "冷峻男声"
+    assert casting["roles"]["role_0001"]["voice_source"] == "design"
+    assert casting["roles"]["role_0001"]["description"].startswith("二十出头的年轻男性")
+    assert casting["roles"]["narrator"]["description"].startswith("三十多岁的男性")
+    assert casting["roles"]["role_0002"]["description"].startswith("二十多岁的男性")
     assert casting["names"]["苏锐"] == "role_0001"
 
     # 分析跑完不该自己开始合成：那是「生成有声书」的事
@@ -166,7 +187,7 @@ def test_full_pipeline_offline_produces_chapter_and_book_artifacts(settings, tmp
     assert all(j.status == "done" for j in jobs.list_jobs(conn, book_id))
 
     passes = {row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))}
-    assert passes == {"extract", "merge", "casting"}
+    assert passes == {"extract", "merge", "voice_design"}
 
 
 def test_rerun_after_line_change_only_regenerates_changed_line(settings, tmp_path):

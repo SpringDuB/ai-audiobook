@@ -175,6 +175,10 @@ try {
         castRows: document.querySelectorAll(".cast-row").length,
         recChips: document.querySelectorAll(".cast-row__recs .chip").length,
         recPlays: document.querySelectorAll(".cast-row__recs .rec-play").length,
+        // 角色音色描述：输入框 + 动作按钮（试听 / 保存 / 重写 / 绑库存音色）
+        descEditors: document.querySelectorAll(".cast-row__desc").length,
+        descActions: document.querySelectorAll(".cast-row__actions .btn").length,
+        bindButtons: document.querySelectorAll(".cast-row__bind").length,
         pickers: document.querySelectorAll(".picker").length,
         pickerRows: document.querySelectorAll(".picker__row").length,
         rawParagraphs: document.querySelectorAll(".raw-text").length,

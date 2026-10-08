@@ -52,7 +52,17 @@ class StubBackend:
             "maxTextChars": 300,
             "supportsSeed": True,
             "supportsWarmup": True,
+            # 按描述生成（Qwen3-TTS 那条路）：逐句给音色描述，不需要参考音频
+            "voiceDesign": True,
+            "voicePrompt": True,
         }
+
+    def design(self, *, text: str, instruct: str, lang: str = "ZH"):
+        """按描述造一段音频（试听接口用），返回 (wav 字节, 采样率, 说的文本)。"""
+        result = self.synthesize(
+            SynthesisRequest(text=text, voice_prompt=instruct, lang=lang, ref_path=None)
+        )
+        return result.audio, result.sample_rate, text
 
     def synthesize(self, request: SynthesisRequest) -> SynthesisResult:
         started = time.monotonic()
@@ -64,8 +74,10 @@ class StubBackend:
         rate = max(0.5, min(2.0, request.rate or 1.0))
         duration = max(0.12, len(request.text) * MS_PER_CHAR / 1000.0) / rate
         seed = request.seed if request.seed is not None else 0
+        # 音色描述进摘要：描述不同 → 波形不同（契约测试据此确认描述真的送到了）
         digest = hashlib.sha256(
-            f"{request.text}|{seed}|{request.emo_vector}|{request.emotion_text}|{request.lang}".encode("utf-8")
+            f"{request.text}|{seed}|{request.emo_vector}|{request.emotion_text}|{request.lang}"
+            f"|{request.voice_prompt}|{request.ref_text}".encode("utf-8")
         ).digest()
         base_freq = 180.0 + digest[0]
         frames = int(self.sample_rate * duration)

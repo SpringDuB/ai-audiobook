@@ -4,9 +4,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .. import jobs as jobs_mod
 from .. import store
-from ..analysis.casting import voice_for_speaker
 from ..analysis.issues import record_issue
+from ..analysis.voices import resolve_line_voice
 from ..cache import cache_key, params_from_line
+from ..engines.base import ref_token
 from ..engines.errors import TtsUnavailable, TtsVoiceMissing
 from ..worker import JobCancelled, register
 
@@ -29,23 +30,29 @@ def effective_concurrency(ctx) -> int:
     return max(1, ctx.settings.synth_concurrency)
 
 
-def resolve_voice_id(settings, book_id: str, speaker: str) -> str:
-    casting = store.read_json(store.casting_path(settings, book_id), default={})
-    if not isinstance(casting, dict) or not casting:
-        return "default"
-    return voice_for_speaker(casting, speaker) or "default"
-
-
 def line_target(ctx, job, row: dict) -> dict:
     """一行要用的音色 / 参数 / 文件路径 / 缓存键（单条与批量共用同一份计算）。"""
     caps = ctx.engine.capabilities()
-    voice_id = resolve_voice_id(ctx.settings, job.book_id, row["speaker"])
-    params = params_from_line(row, caps, mode=ctx.settings.emotion_mode)
-    key = cache_key(row["text"], voice_id, caps, params)
+    voice = resolve_line_voice(ctx.settings, job.book_id, row)
+    params = params_from_line(
+        row,
+        caps,
+        mode=ctx.settings.emotion_mode,
+        voice_prompt=voice.instruct,
+        ref_path=voice.ref_path,
+        ref_text=voice.ref_text,
+    )
+    # 缓存键用 voice_key（含设计音色的版本），不是引擎侧的 voice_id：
+    # 同一个角色重新设计音色后，只有这个角色的行会重合成
+    key = cache_key(row["text"], voice.voice_key, caps, params)
     clip = store.audio_dir(ctx.settings, job.book_id, job.chapter_index) / f"{row['id']}.wav"
     meta_path = clip.with_suffix(".meta.json")
     return {
-        "voice_id": voice_id,
+        "voice_id": voice.voice_id,
+        "voice_key": voice.voice_key,
+        "voice_source": voice.source,
+        "instruct": voice.instruct,
+        "ref_path": voice.ref_path,
         "params": params,
         "key": key,
         "clip": clip,
@@ -67,6 +74,10 @@ def write_line_meta(ctx, job, row: dict, target: dict, duration: float) -> None:
             "id": row["id"],
             "cache_key": target["key"],
             "voice_id": target["voice_id"],
+            "voice_key": target["voice_key"],
+            "voice_source": target["voice_source"],
+            "ref_token": ref_token(target["ref_path"]) if target["ref_path"] else None,
+            "voice_prompt": target["instruct"],
             "engine": ctx.engine.capabilities().name,
             "engine_version": ctx.engine.capabilities().version,
             "params": {

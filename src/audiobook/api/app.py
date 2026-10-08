@@ -12,7 +12,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import audio, jobs, store, voicelib
-from ..analysis.casting import voice_for_speaker
+from ..analysis.design import save_description
+from ..analysis.voices import description_key, preview_path, write_preview_meta
+from ..engines.factory import build_engine
+from ..analysis.derive import derive_lang as _derive_lang
 from ..config import EMOTION_TEXT_ENABLED, OVERLAY_KEYS, get_settings, load_overlay, save_overlay
 from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
@@ -90,15 +93,46 @@ def _chapters_with_role(settings, book_id: str, role_id: str) -> list[int]:
 
 
 def _casting_covers_chapter(settings, book_id: str, index: int) -> bool:
-    """这一章的每个说话人都已经绑定音色了吗？（没有就要先补一轮选角）"""
+    """这一章每个说话人都已经有发声方式了吗？（基础音色描述 / 手工绑的库存音色）"""
+    from ..analysis.voices import resolve_line_voice
+
     casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
     if not (casting.get("roles") or {}):
         return False
     for row in store.read_jsonl(store.lines_path(settings, book_id, index)):
-        speaker = row.get("speaker")
-        if speaker and not voice_for_speaker(casting, speaker):
+        if not row.get("speaker"):
+            continue
+        plan = resolve_line_voice(settings, book_id, row, casting)
+        if plan.source == "design-missing":
+            return False
+        if plan.source == "library" and not store.voice_ref_path(settings, plan.voice_id).exists():
             return False
     return True
+
+
+def _preview_state(settings, book_id: str, role_id: str, description: str) -> dict:
+    """角色试听：文件在不在（exists）、是不是按当前描述生成的（current）。"""
+    path = preview_path(settings, book_id, role_id)
+    if not path.exists():
+        return {"exists": False, "current": False}
+    meta = store.read_json(path.with_suffix(".json"), default={}) or {}
+    return {
+        "exists": True,
+        "current": meta.get("description_key") == description_key(description),
+    }
+
+
+def _role_payload(settings, book_id: str, role_id: str, role: dict, names: dict, occurrences: dict) -> dict:
+    """角色行给前端的形状：登记信息 + 出场统计 + 试听状态。"""
+    preview = _preview_state(settings, book_id, role_id, role.get("description") or "")
+    return {
+        **role,
+        "name": role.get("name") or names.get(role_id, role_id),
+        "chapters": occurrences.get(role_id, {}).get("chapters", []),
+        "lines": occurrences.get(role_id, {}).get("lines", 0),
+        "has_preview": preview["exists"],
+        "preview_current": preview["current"],
+    }
 
 
 def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
@@ -360,12 +394,7 @@ def create_app(settings, conn) -> FastAPI:
         names = _character_names(settings, book_id)
         occurrences = _role_occurrences(settings, book_id)
         roles = [
-            {
-                **role,
-                "name": role.get("name") or names.get(role_id, role_id),
-                "chapters": occurrences.get(role_id, {}).get("chapters", []),
-                "lines": occurrences.get(role_id, {}).get("lines", 0),
-            }
+            _role_payload(settings, book_id, role_id, role, names, occurrences)
             for role_id, role in (casting.get("roles") or {}).items()
         ]
         roles.sort(key=lambda role: (-role["lines"], role["role_id"]))
@@ -476,6 +505,7 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.put("/api/books/{book_id}/casting/{role_id}")
     def update_casting(book_id: str, role_id: str, payload: dict):
+        """手工给角色绑一个库存音色（备用通道）：voice_source 变 library，合成走克隆。"""
         casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
         roles = casting.setdefault("roles", {})
         if role_id not in roles:
@@ -497,6 +527,8 @@ def create_app(settings, conn) -> FastAPI:
         roles[role_id]["voice_id"] = str(payload.get("voice_id") or roles[role_id].get("voice_id") or "default")
         roles[role_id]["overrides"] = payload.get("overrides") or roles[role_id].get("overrides") or {}
         roles[role_id]["source"] = "manual"
+        # 手工绑库存音色：这条记录改成走克隆通道（合成时会用音色库里的 ref.wav）
+        roles[role_id]["voice_source"] = "library"
         voice_name = payload.get("voice_name")
         if voice_name:
             roles[role_id]["voice_name"] = str(voice_name)
@@ -505,6 +537,105 @@ def create_app(settings, conn) -> FastAPI:
         for index in chapters:
             invalidate_chapter(settings, book_id, index)
         return {"role": roles[role_id], "invalidated": chapters}
+
+    @app.put("/api/books/{book_id}/roles/{role_id}/description")
+    def update_role_description(book_id: str, role_id: str, payload: dict):
+        """保存角色基础音色描述（用户手改）：描述一改，这个角色的旧音频自动按新描述重生成。"""
+        if store.read_json(store.casting_path(settings, book_id), default={}) is None:
+            raise HTTPException(status_code=404, detail="book not found")
+        casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
+        role = (casting.get("roles") or {}).get(role_id)
+        if not role:
+            raise HTTPException(status_code=404, detail="role not found")
+        description = str(payload.get("description") or "").strip()
+        if not description:
+            raise HTTPException(status_code=400, detail="音色描述不能为空")
+        entry = save_description(
+            settings,
+            book_id,
+            role_id,
+            description=description,
+            sample=str(payload.get("sample") or role.get("sample") or "").strip(),
+            source="manual",
+            name=role.get("name"),
+        )
+        return {"role": entry}
+
+    @app.post("/api/books/{book_id}/roles/{role_id}/rewrite")
+    def rewrite_role_description(book_id: str, role_id: str):
+        """让大模型重新写一版音色描述（异步任务，跑完前端刷新就能看到）。"""
+        casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
+        if role_id not in (casting.get("roles") or {}):
+            raise HTTPException(status_code=404, detail="role not found")
+        job_id = jobs.enqueue(conn, "voice_design", book_id, payload={"roles": [role_id], "force": True})
+        return {"job_id": job_id}
+
+    @app.post("/api/books/{book_id}/roles/{role_id}/preview")
+    def generate_role_preview(book_id: str, role_id: str, payload: dict | None = None):
+        """按当前描述生成角色试听（Qwen3-TTS VoiceDesign + 该角色的试音台词）。
+
+        第一次点要生成几秒音频（模型没加载时要先加载），之后再点直接听缓存文件。
+        """
+        payload = payload or {}
+        casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
+        role = (casting.get("roles") or {}).get(role_id)
+        if not role:
+            raise HTTPException(status_code=404, detail="role not found")
+        description = str(payload.get("description") or role.get("description") or "").strip()
+        if not description:
+            raise HTTPException(status_code=400, detail="这个角色还没有音色描述：先点「重写描述」或自己写一段")
+        sample = str(payload.get("sample") or role.get("sample") or "").strip() or "你先坐下，慢慢说，我听着呢。"
+        if payload.get("description") is not None or payload.get("sample") is not None:
+            role = save_description(
+                settings,
+                book_id,
+                role_id,
+                description=description,
+                sample=sample,
+                source="manual",
+                name=role.get("name"),
+            )
+        out_path = preview_path(settings, book_id, role_id)
+        engine = None
+        try:
+            engine = build_engine(settings)
+            result = engine.design_voice(
+                instruct=description,
+                text=sample,
+                lang=_derive_lang(sample),
+                out_path=out_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - 试听失败要把原因原样给界面
+            raise HTTPException(status_code=503, detail=f"试听生成失败：{type(exc).__name__}: {exc}") from exc
+        finally:
+            close = getattr(engine, "close", None)
+            if callable(close):
+                close()
+        write_preview_meta(
+            settings,
+            book_id,
+            role_id,
+            {
+                "role_id": role_id,
+                "description_key": description_key(description),
+                "sample": sample,
+                "duration": round(float(result.duration), 3),
+                "updated_at": int(time.time() * 1000),
+            },
+        )
+        return {
+            "ok": True,
+            "duration": round(float(result.duration), 3),
+            "sample": sample,
+            "updated_at": int(time.time() * 1000),
+        }
+
+    @app.get("/api/books/{book_id}/roles/{role_id}/preview.wav")
+    def role_preview_audio(book_id: str, role_id: str):
+        path = preview_path(settings, book_id, role_id)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="还没有试听音频：先点「试听」生成")
+        return FileResponse(path, media_type="audio/wav")
 
     @app.put("/api/settings")
     def update_settings(payload: dict):
@@ -644,8 +775,9 @@ def create_app(settings, conn) -> FastAPI:
             raise HTTPException(status_code=409, detail="本章还没有分析结果，先点「分析本章」")
         plan: list[tuple[str, int | None]] = []
         if not _casting_covers_chapter(settings, book_id, index):
-            # 角色还没选音色：先补一轮选角，再合成这一章
+            # 角色还没有基础音色描述：先补选角 + 描述，再合成这一章
             plan.append(("casting", None))
+            plan.append(("voice_design", None))
         plan.append(("synthesize", index))
         job_ids = [jobs.enqueue(conn, kind, book_id, chapter_index) for kind, chapter_index in plan]
         return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}

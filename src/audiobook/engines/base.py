@@ -41,6 +41,10 @@ class EngineCapabilities:
     # 服务端是否支持批量合成（同一个音色多条文本一次解码）
     batch: bool = False
     max_batch_items: int = 1
+    # 服务端是否支持"按自然语言描述设计音色"（Qwen3-TTS VoiceDesign）
+    voice_design: bool = False
+    # 服务端是否支持"逐句按描述生成"（把每句的音色描述直接喂给它）
+    voice_prompt: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,12 @@ class SynthParams:
     rate: float = 1.0
     lang: str | None = "ZH"
     pronunciation: dict[str, str] | None = None
+    # 这一句的音色描述 = 角色基础音色描述 + 本句语气描述（Qwen3-TTS 按它生成）
+    voice_prompt: str = ""
+    # 这一行要用哪个参考音频：设计出来的角色音色直接给路径 + 参考文本；
+    # 为空时引擎退回"按 voice_id 到音色库里找 ref.wav"的老路径（旁白/库存音色）
+    ref_path: Path | None = None
+    ref_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,4 +90,23 @@ def summarize_params(params: SynthParams | None, caps: EngineCapabilities) -> di
         summary["lang"] = params.lang
     if caps.pronunciation and params.pronunciation:
         summary["pronunciation"] = dict(sorted(params.pronunciation.items()))
+    if caps.voice_prompt and params.voice_prompt:
+        # 音色描述（含本句语气）变了就是要重新生成这一句
+        summary["voice_prompt"] = params.voice_prompt
+    if params.ref_path is not None:
+        # 参考音频换了（重新设计音色 / 换了库存音的参考音频）必须重合成：
+        # 用文件指纹当缓存键的一部分，别让旧片段的缓存把新音色挡回去
+        summary["ref"] = ref_token(params.ref_path)
+        if params.ref_text:
+            summary["ref_text"] = params.ref_text
     return summary
+
+
+def ref_token(path: Path) -> str:
+    """参考音频指纹：路径 + 大小 + mtime。同一份文件重写一次就会换 token。"""
+    path = Path(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return f"{path.name}:missing"
+    return f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}"

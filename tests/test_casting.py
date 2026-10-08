@@ -1,4 +1,4 @@
-"""选角：音色推荐由大模型给出（1–3 个），本地只做校验、兜底与手选保留。"""
+"""选角登记：角色 → casting.json。角色默认走"设计音色"，手工绑库存音色的保持不动。"""
 
 from audiobook.analysis.casting import (
     VoiceProfile,
@@ -69,7 +69,8 @@ def test_samples_by_role_prefers_dialogue_and_keeps_order():
     assert samples["旁白"] == ["夜色很深。"]
 
 
-def test_build_casting_keeps_llm_order_and_drops_invalid_ids(settings):
+def test_build_casting_registers_every_role_as_design(settings):
+    """所有角色（含旁白）默认登记成设计音色：不调大模型、不等音色库。"""
     voices = [_voice("v_nar", gender="女", usage_type=("旁白叙述",)), _voice("v_hero")]
     llm = FakeLLM(routes={"【VOICE_RECOMMEND】": _route})
     casting, issues = build_casting(
@@ -80,65 +81,68 @@ def test_build_casting_keeps_llm_order_and_drops_invalid_ids(settings):
         voices=voices,
     )
     assert issues == []
-    narrator = casting["roles"]["narrator"]
-    assert narrator["voice_id"] == "v_nar"
-    assert narrator["recommendations"][0]["voice_name"] == "音色v_nar"
-    hero = casting["roles"]["role_0001"]
-    # 不存在的 voiceId 被剔除，第一推荐顺位变成 v_hero
-    assert [item["voice_id"] for item in hero["recommendations"]] == ["v_hero", "v_nar"]
-    assert hero["voice_id"] == "v_hero"
-    assert hero["source"] == "llm"
-    assert casting["narrator_voice"] == "v_nar"
-    assert len(llm.calls) == 2
-    assert voice_for_speaker(casting, "老苏") == "v_hero"
+    assert llm.calls == []  # 登记不花大模型
+    for role in casting["roles"].values():
+        assert role["voice_source"] == "design"
+        assert role["source"] == "design"
+        assert role["voice_id"] == role["role_id"]
+        assert role["description"] == ""
+    assert casting["voice_library_size"] == 2
+    assert casting["narrator_voice"] == "narrator"
 
 
-def test_build_casting_keeps_a_manual_choice(settings):
-    voices = [_voice("v_nar", gender="女"), _voice("v_hero")]
-    previous = {"roles": {"role_0001": {"role_id": "role_0001", "voice_id": "v_nar", "source": "manual"}}}
-    llm = FakeLLM(routes={"【VOICE_RECOMMEND】": _route})
+def test_build_casting_keeps_a_manual_library_choice(settings):
+    """手工绑过库存音色的角色：保留绑定，改成走克隆通道。"""
+    previous = {
+        "roles": {
+            "role_0001": {
+                "role_id": "role_0001",
+                "voice_id": "v_nar",
+                "voice_name": "音色v_nar",
+                "source": "manual",
+            }
+        }
+    }
     casting, _ = build_casting(
-        _runner(settings, llm),
-        book_id="b1",
-        characters=CHARACTERS,
-        samples=SAMPLES,
-        voices=voices,
-        previous=previous,
-    )
-    hero = casting["roles"]["role_0001"]
-    assert hero["voice_id"] == "v_nar"
-    assert hero["source"] == "manual"
-    assert hero["recommendations"][0]["voice_id"] == "v_hero"
-
-
-def test_build_casting_falls_back_when_llm_fails(settings):
-    voices = [_voice("v_nar"), _voice("v_hero")]
-    llm = FakeLLM(routes={"【VOICE_RECOMMEND】": _route}, fail_on={"【VOICE_RECOMMEND】"})
-    casting, issues = build_casting(
-        _runner(settings, llm),
-        book_id="b1",
-        characters=CHARACTERS,
-        samples=SAMPLES,
-        voices=voices,
-    )
-    assert [issue["kind"] for issue in issues] == ["voice_recommend_failed", "voice_recommend_failed"]
-    # 兜底也要尽量不撞音色：旁白先拿 v_nar，角色拿 v_hero
-    assert casting["roles"]["narrator"]["voice_id"] == "v_nar"
-    assert casting["roles"]["role_0001"]["voice_id"] == "v_hero"
-    assert casting["roles"]["role_0001"]["source"] == "fallback"
-
-
-def test_build_casting_without_voices_falls_back_to_default(settings):
-    casting, issues = build_casting(
         _runner(settings, FakeLLM(routes={"【VOICE_RECOMMEND】": _route})),
         book_id="b1",
         characters=CHARACTERS,
         samples=SAMPLES,
-        voices=[],
+        voices=[_voice("v_nar"), _voice("v_hero")],
+        previous=previous,
     )
-    assert casting["voice_library_size"] == 0
-    assert {role["voice_id"] for role in casting["roles"].values()} == {"default"}
-    assert [issue["kind"] for issue in issues] == ["voice_library_empty"]
+    hero = casting["roles"]["role_0001"]
+    assert hero["voice_id"] == "v_nar"
+    assert hero["voice_source"] == "library"
+    assert hero["source"] == "manual"
+    assert voice_for_speaker(casting, "老苏") == "v_nar"
+
+
+def test_build_casting_keeps_an_existing_description(settings):
+    """重跑登记不会把已经写好的音色描述冲掉。"""
+    previous = {
+        "roles": {
+            "role_0001": {
+                "role_id": "role_0001",
+                "source": "design",
+                "description": "二十出头的年轻男性，嗓音偏低。",
+                "description_source": "manual",
+                "sample": "别废话。",
+            }
+        }
+    }
+    casting, _ = build_casting(
+        None,
+        book_id="b1",
+        characters=CHARACTERS,
+        samples=SAMPLES,
+        voices=[],
+        previous=previous,
+    )
+    hero = casting["roles"]["role_0001"]
+    assert hero["description"] == "二十出头的年轻男性，嗓音偏低。"
+    assert hero["description_source"] == "manual"
+    assert hero["sample"] == "别废话。"
 
 
 def test_load_voice_library_reads_directory(settings):

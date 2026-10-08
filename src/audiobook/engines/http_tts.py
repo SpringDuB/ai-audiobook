@@ -21,9 +21,10 @@ class RefCache:
     def __init__(self) -> None:
         self._data: dict[tuple[str, str], str] = {}
 
-    def key(self, base_url: str, voice_id: str, path: Path) -> tuple[str, str]:
+    def key(self, base_url: str, voice_id: str, path: Path, ref_text: str = "") -> tuple[str, str]:
         stat = path.stat()
-        return (base_url, f"{voice_id}:{stat.st_mtime_ns}:{stat.st_size}")
+        # 参考文本也进 key：同一段音频配不同文字，克隆出来的语气不一样
+        return (base_url, f"{voice_id}:{stat.st_mtime_ns}:{stat.st_size}:{hash(ref_text)}")
 
     def get(self, key) -> str | None:
         return self._data.get(key)
@@ -79,8 +80,31 @@ class HttpTtsEngine:
                 max_text_chars=int(data.get("maxTextChars") or 300),
                 batch=bool(data.get("batch")),
                 max_batch_items=max(1, int(data.get("maxBatchItems") or 1)),
+                voice_design=bool(data.get("voiceDesign")),
+                voice_prompt=bool(data.get("voicePrompt")),
             )
         return self._caps
+
+    def design_voice(
+        self, *, instruct: str, text: str, lang: str, out_path: Path, timeout: float | None = None
+    ) -> AudioResult:
+        """按描述设计一个音色，把生成的参考音频落到 out_path（Qwen3-TTS VoiceDesign）。"""
+        if not self.capabilities().voice_design:
+            raise TtsError("服务端不支持音色设计（需要 TTS backend=qwen3）")
+        payload = {"instruct": instruct, "text": text, "lang": lang or "ZH"}
+        try:
+            response = self._client.post(
+                "v1/design",
+                json=payload,
+                timeout=timeout or httpx.Timeout(self.settings.tts_design_timeout_seconds),
+            )
+        except httpx.TimeoutException as exc:
+            raise TtsError(f"音色设计超时: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise TtsError(f"音色设计请求失败: {exc}") from exc
+        if response.status_code >= 400:
+            raise self._error(response)
+        return self._store_wav(response, out_path)
 
     def synthesize_batch(
         self, items: list[tuple[str, SynthParams]], voice_id: str, out_paths: list[Path]
@@ -99,23 +123,27 @@ class HttpTtsEngine:
         for text, params in items:
             params = params or SynthParams()
             entry: dict = {"text": text, "rate": params.rate}
-            if params.emotion_text and caps.emotion_text:
+            if params.voice_prompt and caps.voice_prompt:
+                entry["voicePrompt"] = params.voice_prompt
+            elif params.emotion_text and caps.emotion_text:
                 entry["emoText"] = params.emotion_text
             elif params.emo_vector:
                 entry["emoVector"] = list(params.emo_vector)
             if params.pronunciation:
                 entry["pronunciation"] = params.pronunciation
             payload_items.append(entry)
-        payload = {
-            "refId": self._ref_id(voice_id),
-            "lang": (items[0][1].lang if items[0][1] else None) or "ZH",
-            "items": payload_items,
-        }
+        first_params = items[0][1] or SynthParams()
+        payload: dict = {"lang": first_params.lang or "ZH", "items": payload_items}
+        ref_id = self._optional_ref_id(voice_id, first_params)
+        if ref_id:
+            payload["refId"] = ref_id
         try:
             response = self._post_batch(payload)
         except TtsBadRef:
-            self._refs.drop(self._ref_key(voice_id))
-            payload["refId"] = self._ref_id(voice_id)
+            if not ref_id:
+                raise
+            self._refs.drop(self._ref_key(voice_id, params=first_params))
+            payload["refId"] = self._ref_id(voice_id, params=first_params)
             response = self._post_batch(payload)
         durations = [
             float(value)
@@ -175,14 +203,20 @@ class HttpTtsEngine:
     # --- 内部 ---
 
     def _synthesize_once(self, text: str, voice_id: str, params: SynthParams, out_path: Path) -> AudioResult:
+        caps = self.capabilities()
         payload = {
             "text": text,
-            "refId": self._ref_id(voice_id),
             "lang": params.lang or "ZH",
             "rate": params.rate,
             "format": "wav",
         }
-        if params.emotion_text and self.capabilities().emotion_text:
+        ref_id = self._optional_ref_id(voice_id, params)
+        if ref_id:
+            payload["refId"] = ref_id
+        if params.voice_prompt and caps.voice_prompt:
+            # 逐句描述（角色基础描述 + 本句语气）：Qwen3-TTS 按它演这一句
+            payload["voicePrompt"] = params.voice_prompt
+        elif params.emotion_text and caps.emotion_text:
             payload["emoText"] = params.emotion_text
         elif params.emo_vector:
             payload["emoVector"] = list(params.emo_vector)
@@ -191,8 +225,10 @@ class HttpTtsEngine:
         try:
             response = self._post_synthesize(payload)
         except TtsBadRef:
-            self._refs.drop(self._ref_key(voice_id))
-            payload["refId"] = self._ref_id(voice_id)
+            if not ref_id:
+                raise
+            self._refs.drop(self._ref_key(voice_id, params=params))
+            payload["refId"] = self._ref_id(voice_id, params=params)
             response = self._post_synthesize(payload)
         return self._store_wav(response, out_path)
 
@@ -221,23 +257,46 @@ class HttpTtsEngine:
         sample_rate = int(response.headers.get("X-Sample-Rate") or self.capabilities().sample_rate)
         return AudioResult(path=out_path, duration=duration, sample_rate=sample_rate)
 
-    def _ref_key(self, voice_id: str):
-        path = store.voice_ref_path(self.settings, voice_id)
+    def _ref_path(self, voice_id: str, params: SynthParams | None) -> Path:
+        """这一行用哪个参考音频：行参数里带了就用它，否则到音色库里按 voice_id 找。"""
+        override = getattr(params, "ref_path", None) if params is not None else None
+        return Path(override) if override else store.voice_ref_path(self.settings, voice_id)
+
+    def _optional_ref_id(self, voice_id: str, params: SynthParams | None) -> str | None:
+        """要参考音频就上传并返回 refId；纯描述通道返回 None（不上传、也不需要音色库）。
+
+        三种情况：
+          - 行参数里带了参考音频（手工选的库存音色）→ 上传它；
+          - 只有音色描述、服务端支持按描述生成 → 不需要参考音频；
+          - 其余（旁白库存音色等）→ 按 voice_id 到音色库里找，缺文件就报 TtsVoiceMissing。
+        """
+        if params is not None and params.ref_path is not None:
+            return self._ref_id(voice_id, params)
+        if params is not None and params.voice_prompt and self.capabilities().voice_prompt:
+            return None
+        return self._ref_id(voice_id, params)
+
+    def _ref_key(self, voice_id: str, params: SynthParams | None = None):
+        path = self._ref_path(voice_id, params)
         if not path.exists():
             raise TtsVoiceMissing(f"缺少参考音频: {path}")
-        return self._refs.key(self.base_url, voice_id, path)
+        ref_text = (getattr(params, "ref_text", "") or "") if params is not None else ""
+        return self._refs.key(self.base_url, voice_id, path, ref_text)
 
-    def _ref_id(self, voice_id: str) -> str:
-        key = self._ref_key(voice_id)
+    def _ref_id(self, voice_id: str, params: SynthParams | None = None) -> str:
+        key = self._ref_key(voice_id, params)
         cached = self._refs.get(key)
         if cached:
             return cached
-        path = store.voice_ref_path(self.settings, voice_id)
+        path = self._ref_path(voice_id, params)
+        ref_text = (getattr(params, "ref_text", "") or "") if params is not None else ""
         try:
             response = self._client.post(
                 "v1/refs",
                 files={"file": (path.name, path.read_bytes(), "audio/wav")},
-                data={"refText": ""},
+                # 参考文本（克隆模型要它来对齐内容）：设计出来的音色知道说的是哪句，
+                # 库存音色没有转写就给空串 —— 服务端会自动退回说话人向量模式
+                data={"refText": ref_text},
                 timeout=self.settings.tts_ref_upload_timeout_seconds,
             )
         except httpx.HTTPError as exc:

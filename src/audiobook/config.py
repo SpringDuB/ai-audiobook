@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     tts_timeout_seconds: float = 180.0
     tts_connect_timeout_seconds: float = 5.0
     tts_ref_upload_timeout_seconds: float = 120.0
+    # 音色设计（Qwen3-TTS VoiceDesign）：首次要把 Base 换成 VoiceDesign 权重再生成，
+    # 慢是正常的；超时给足，别让一个角色设计到一半就被判失败
+    tts_design_timeout_seconds: float = 900.0
     synth_concurrency_max: int = 16
     # 情绪控制通道：vector（8 维向量，当前唯一开放的通道）| text（文本描述，暂时关闭）
     emotion_mode: Literal["text", "vector"] = "vector"
@@ -84,7 +87,9 @@ class Settings(BaseSettings):
     lease_seconds: int = 30
 
     # 一键启动的本机 TTS 服务（tts/ 子项目）的启动参数
-    tts_backend: str = "indextts"  # IndexTTS-2.5（唯一后端）
+    # qwen3 = Qwen3-TTS（VoiceDesign 设计音色 + Base 克隆，当前主线）
+    # indextts = IndexTTS-2.5（情绪向量通道，保留可选）
+    tts_backend: str = "qwen3"
     tts_model_source: str = "local"  # modelscope | huggingface | local
     tts_model_dir: str = "checkpoints"
     tts_hf_endpoint: str = ""

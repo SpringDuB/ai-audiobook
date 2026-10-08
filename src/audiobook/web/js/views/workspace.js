@@ -324,15 +324,25 @@ function lineRow(line, ctx) {
 /* ---------------------------------------------------------------- 选角面板 */
 
 function roleRow(role, scope, ctx) {
-  const voiceName = role.voice_name || role.voice_id || "未绑定";
-  const bound = role.voice_id && role.voice_id !== "default";
-  // 绑了但音色库里找不到（被停用/删掉）——不早点提示，合成时会一片红
-  const boundVoice = bound ? ctx.voiceById.get(role.voice_id) : null;
-  const missing = Boolean(bound && !boundVoice);
   const chapters = role.chapters || [];
-  const recommendations = (role.recommendations || []).filter((item) => item.voice_id);
-  const picked = recommendations.findIndex((item) => item.voice_id === role.voice_id);
-  const badge = role.source === "manual" ? "已手选" : picked === 0 ? "按推荐" : picked > 0 ? "推荐备选" : "";
+  const described = Boolean((role.description || "").trim());
+  const isLibrary = role.voice_source === "library";
+  // 试听状态：没生成过 / 生成过但描述改了（过期）
+  const stale = described && role.has_preview && role.preview_current === false;
+  const never = described && !role.has_preview;
+  const editor = h("textarea", {
+    class: "cast-row__desc",
+    rows: "3",
+    value: role.description || "",
+    placeholder: "这个角色的音色：年龄、音色质地、说话习惯、气质……（逐句生成时和每句话的表演描述拼在一起）",
+    "aria-label": `${role.name} 的音色描述`,
+    onKeydown: (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        ctx.saveDescription(role, editor.value, event.currentTarget);
+      }
+    },
+  });
   return h(
     "article",
     { class: "cast-row", dataset: { roleId: role.role_id } },
@@ -344,73 +354,89 @@ function roleRow(role, scope, ctx) {
         "div",
         { class: "cast-row__head" },
         h("span", { class: "cast-row__name" }, role.name),
-        h(
-          "span",
-          {
-            class: bound && !missing ? "tag" : "tag tag--alert",
-            title: missing ? `${voiceName} 已停用或不在音色库里：换一个音色再生成` : voiceName,
-          },
-          missing ? `${voiceName}（已停用）` : voiceName,
-        ),
-        badge ? h("span", { class: "tag tag--rec" }, badge) : null,
+        isLibrary
+          ? h(
+              "span",
+              { class: "tag", title: "这个角色手工绑定了库存音色：合成走克隆，不用描述" },
+              `库存音色 ${role.voice_name || role.voice_id}`,
+            )
+          : h(
+              "span",
+              {
+                class: described ? "tag tag--rec" : "tag tag--alert",
+                title: described ? "音色描述已就绪" : "还没有音色描述：点「让模型写一版」或自己写",
+              },
+              described ? "设计音色" : "待写描述",
+            ),
+        stale
+          ? h("span", { class: "tag tag--alert", title: "描述改过了：重新生成试听才生效" }, "试听过期")
+          : never
+            ? h("span", { class: "tag", title: "还没生成过试听：点「试听」按当前描述生成一段" }, "未试听")
+            : null,
       ),
       h(
         "p",
         { class: "cast-row__meta mono" },
         scope === "chapter" ? `${role.lines} 句（本章）` : `${role.lines} 句 · ${chapters.length} 章`,
-        picked >= 0 && recommendations[picked].reason ? ` · ${recommendations[picked].reason}` : "",
       ),
-      recommendations.length
-        ? h(
+      isLibrary
+        ? null
+        : h(
             "div",
-            { class: "cast-row__recs" },
-            ...recommendations.map((item, position) => {
-              const voice = ctx.voiceById.get(item.voice_id);
-              const playable = Boolean(voice?.has_ref);
-              return h(
-                "span",
-                { class: "rec-chip" },
-                h(
-                  "button",
-                  {
-                    class: "chip",
-                    type: "button",
-                    title: item.reason || "",
-                    "aria-pressed": String(item.voice_id === role.voice_id),
-                    onClick: () => ctx.pickRecommended(role, item),
-                  },
-                  `${position + 1}. ${item.voice_name || item.voice_id}`,
-                  item.confidence
-                    ? h("span", { class: "chip__num mono" }, ` ${Math.round(Number(item.confidence) * 100)}%`)
-                    : null,
-                ),
-                h(
-                  "button",
-                  {
-                    class: "rec-play",
-                    type: "button",
-                    disabled: !playable,
-                    title: playable ? `试听「${voice.name}」的参考音频` : "这个音色没有参考音频，试听不了",
-                    "aria-label": `试听 ${item.voice_name || item.voice_id}`,
-                    onClick: (event) => ctx.preview(item.voice_id, event.currentTarget),
-                  },
-                  icon("play", { size: 12 }),
-                ),
-              );
-            }),
-          )
-        : null,
+            { class: "cast-row__design" },
+            editor,
+            role.sample ? h("p", { class: "cast-row__sample" }, `试音台词：${role.sample}`) : null,
+            h(
+              "div",
+              { class: "cast-row__actions" },
+              h(
+                "button",
+                {
+                  class: "btn btn-sm",
+                  type: "button",
+                  title: "按当前描述生成一段试听（角色第一次试听要等几秒）",
+                  onClick: (event) => ctx.previewRole(role, editor.value, event.currentTarget),
+                },
+                icon("play", { size: 12 }),
+                "试听",
+              ),
+              h(
+                "button",
+                {
+                  class: "btn btn-sm",
+                  type: "button",
+                  title: "保存描述（Ctrl+Enter）：保存后这个角色的旧音频会按新描述重生成",
+                  onClick: (event) => ctx.saveDescription(role, editor.value, event.currentTarget),
+                },
+                icon("check", { size: 12 }),
+                "保存描述",
+              ),
+              h(
+                "button",
+                {
+                  class: "btn btn-sm",
+                  type: "button",
+                  title: "让大模型根据这个角色的台词重写一版描述",
+                  onClick: (event) => ctx.rewriteDescription(role, editor, event.currentTarget),
+                },
+                icon("refresh-cw", { size: 12 }),
+                "让模型写一版",
+              ),
+              h(
+                "button",
+                {
+                  class: "btn btn-sm cast-row__bind",
+                  type: "button",
+                  title: "改用音色库里的一段参考音频克隆这个角色（备用通道）",
+                  onClick: (event) => ctx.pick(role, event.currentTarget),
+                },
+                icon("library", { size: 12 }),
+                "绑库存音色",
+              ),
+            ),
+          ),
     ),
-    h(
-      "button",
-      {
-        class: "btn btn-sm",
-        type: "button",
-        onClick: (event) => ctx.pick(role, event.currentTarget),
-      },
-      icon("mic", { size: 12 }),
-      "换音色",
-    ),
+    null,
   );
 }
 
@@ -593,6 +619,91 @@ async function build(route, host) {
     });
   };
 
+  // 保存角色的基础音色描述：描述变了 → 这个角色的旧音频会按新描述重生成
+  const saveDescription = async (role, value, button) => {
+    const description = (value || "").trim();
+    if (!description) {
+      toast("音色描述不能为空", "error");
+      return;
+    }
+    if (description === (role.description || "").trim()) {
+      toast("描述没变");
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      await api.saveRoleDescription(state.bookId, role.role_id, { description });
+      toast(`「${role.name}」的音色描述已保存；重新生成音频时会用新描述`);
+      await reloadCasting();
+      await refreshChapters();
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  };
+
+  // 让大模型重写一版描述（异步任务）
+  const rewriteDescription = async (role, editor, button) => {
+    if (button) button.disabled = true;
+    try {
+      await api.rewriteRoleDescription(state.bookId, role.role_id);
+      toast(`已让模型重写「${role.name}」的音色描述，跑完自动刷新`);
+      const timer = window.setInterval(async () => {
+        const payload = await api.casting(state.bookId).catch(() => null);
+        if (!payload) return;
+        const latest = (payload.roles || []).find((item) => item.role_id === role.role_id);
+        if (latest && (latest.description || "") !== (role.description || "")) {
+          window.clearInterval(timer);
+          state.casting = payload.roles || [];
+          paintCast();
+          toast(`「${role.name}」的新描述已写好`);
+        }
+      }, 2000);
+      onTeardown(() => window.clearInterval(timer));
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  };
+
+  // 角色试听：按当前描述生成一段（没生成过才真的跑模型，之后直接听缓存文件）
+  const previewRole = async (role, value, button) => {
+    const description = (value || "").trim() || role.description || "";
+    if (!description) {
+      toast("先写一段音色描述再试听", "error");
+      return;
+    }
+    // 描述没动过、试听又是按这份描述生成的就直接放缓存文件，别再跑一遍模型
+    const fresh = role.has_preview && role.preview_current && description === (role.description || "").trim();
+    if (fresh) {
+      resetPreviewButtons();
+      previewAudio.src = api.rolePreviewUrl(state.bookId, role.role_id, role.updated_at || Date.now());
+      await previewAudio.play().catch(() => toast("浏览器拦住了播放，再点一次", "error"));
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.dataset.label = button.textContent;
+      button.replaceChildren(icon("hourglass", { size: 12 }), "生成中…");
+    }
+    try {
+      const result = await api.previewRole(state.bookId, role.role_id, { description });
+      resetPreviewButtons();
+      previewAudio.src = api.rolePreviewUrl(state.bookId, role.role_id, result.updated_at);
+      await previewAudio.play().catch(() => toast("浏览器拦住了播放，再点一次", "error"));
+      await reloadCasting();
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.replaceChildren(icon("play", { size: 12 }), "试听");
+      }
+    }
+  };
+
   // 点推荐音色：直接用这一条（不打开悬浮窗），用户不选时用的就是第一条
   const pickRecommended = (role, item) => {
     Promise.resolve(
@@ -643,7 +754,17 @@ async function build(route, host) {
     const roles = state.scope === "chapter" ? chapterRoles() : state.casting;
     castList.replaceChildren(
       ...(roles.length
-        ? roles.map((role) => roleRow(role, state.scope, { pick, pickRecommended, preview: previewVoice, voiceById }))
+        ? roles.map((role) =>
+            roleRow(role, state.scope, {
+              pick,
+              pickRecommended,
+              preview: previewVoice,
+              voiceById,
+              saveDescription,
+              rewriteDescription,
+              previewRole,
+            }),
+          )
         : [h("p", { class: "muted" }, state.scope === "chapter" ? "这一章还没有标注结果。" : "全书还没有选角结果。")]),
     );
   };
@@ -1108,7 +1229,8 @@ async function build(route, host) {
         h(
           "p",
           { class: "cast__foot muted" },
-          "点推荐音色直接选中，点试听按钮先听这段参考音频；换完的章节要重新生成才生效。",
+          "每个角色一段音色描述：点「试听」按当前描述生成一段，改完描述点「保存描述」；"
+            + "描述一改，这个角色的旧音频会在下次生成时按新描述重跑。",
           h("a", { class: "row", href: "#/voices" }, icon("audio-lines", { size: 12 }), "去音色库上传 / 停用音色"),
         ),
       ),

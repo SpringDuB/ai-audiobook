@@ -6,4 +6,5 @@ from . import (  # noqa: F401  导入即注册 handler
     post,
     split,
     synthesize,
+    voice_design,
 )

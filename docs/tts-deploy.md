@@ -1,6 +1,64 @@
-# TTS 服务部署与验收（IndexTTS-2.5）
+# TTS 服务部署与验收
 
-本文覆盖：GPU 机器准备 → 模型三选一 → 起服务 → 后端接线 → 显存共享 → 验收清单。
+本项目有两个可选的合成后端：
+
+| 后端 | 怎么发声 | venv | 状态 |
+|---|---|---|---|
+| **qwen3**（默认） | 逐句按"音色描述"生成（Qwen3-TTS VoiceDesign），参考音频克隆备用 | `tts/.venv-qwen`（Python 3.12） | 主线 |
+| indextts | 参考音频零样本克隆 + 8 维情绪向量（IndexTTS-2.5） | `tts/.venv`（Python 3.11） | 保留可选 |
+
+---
+
+## 0. qwen3 后端（主线）
+
+```powershell
+cd tts
+uv sync                                                    # 服务框架（fastapi/uvicorn/pydantic/httpx）
+powershell -ExecutionPolicy Bypass -File scripts/install_qwen3.ps1
+```
+
+脚本做的事、以及为什么这么做：
+
+1. **独立 venv `tts/.venv-qwen`（Python 3.12）**：qwen-tts 钉 `transformers==4.57.3`，
+   而 index-tts 钉 `4.52.1 / py<3.12`，两套塞一个 venv 会互相拆台；主项目按后端自动选 venv
+   （见 `src/audiobook/tts_service.py` 的 `venv_python(backend)`）。
+2. **CUDA 版 torch**：Windows 上 PyPI 的 torch 是 CPU 版，脚本用
+   `--find-links https://mirrors.aliyun.com/pytorch-wheels/cu128/` 装 `torch==2.8.0+cu128`；
+   自查：`tts/.venv-qwen/Scripts/python.exe -c "import torch;print(torch.__version__, torch.cuda.is_available())"`
+   期望 `2.8.0+cu128 True`。
+3. **权重**：`modelscope download` 到 `tts/checkpoints/`：
+   - `Qwen3-TTS-12Hz-1.7B-VoiceDesign`（3.8 GB）—— 按描述生成，主力；
+   - `Qwen3-TTS-12Hz-1.7B-Base`（3.9 GB）—— 参考音频克隆，备用通道；
+   两个都下是因为"手工给角色绑库存音色"那条路要用 Base；只用描述可以不装 Base。
+
+起服务与自查：
+
+```powershell
+uv run --project tts aiab-tts serve --backend qwen3 --port 8020
+uv run --project tts aiab-tts check --url http://127.0.0.1:8020
+# 期望：engine=qwen3-tts 按描述生成=True 音色设计=True
+curl http://127.0.0.1:8020/v1/design -H "Content-Type: application/json" `
+  -d '{"text":"你先坐下，慢慢说。","instruct":"三十多岁的男性，嗓音低沉略带沙哑，语速偏慢。","lang":"ZH"}' -o design.wav
+```
+
+**验收清单（qwen3）**
+
+| 项 | 期望 |
+|---|---|
+| 加载 | 日志 `Qwen3-TTS design 加载完成`，用时约 6 s；`/health` `vramUsedMB ≈ 4000–4500` |
+| 试听 | `POST /v1/design` 返回的 WAV 可播放，采样率 24000 |
+| 逐句 | `POST /v1/synthesize` 带 `voicePrompt`、不带 `refId` → 返回 WAV；`instruct` 变了音频也变 |
+| 批量 | `POST /v1/synthesize_batch` 4 条一包，`X-Elapsed-Ms` 约为 4 条单发之和的 1/2；显存峰值 < 6 GB |
+| 换模型 | 手工绑库存音色后合成：日志出现 `已卸载 design 模型并归还显存` + `加载 Qwen3-TTS base`，显存不超 8 GB |
+| 卸载 | `POST /unload` 后 `/health` `modelLoaded=false`、`vramUsedMB` 回到桌面占用 |
+
+主项目侧：设置页把「推理后端」选成 `qwen3`，点「一键启动 TTS 服务」；`AB_TTS_BACKEND=qwen3` 同理。
+
+---
+
+## IndexTTS-2.5 后端（保留）
+
+本文以下部分覆盖：GPU 机器准备 → 模型三选一 → 起服务 → 后端接线 → 显存共享 → 验收清单。
 
 ## 1. 环境准备（GPU 机器）
 

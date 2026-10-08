@@ -7,6 +7,8 @@ class SynthItem(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     text: str
+    # 这一句的音色描述（角色基础描述 + 本句语气）：Qwen3-TTS 走"按描述生成"的通道
+    voicePrompt: str | None = None  # noqa: N815
     emoVector: list[float] | None = None  # noqa: N815
     # 两条情绪通道二选一：emoText（文本描述，需服务端 use_qwen_emo）优先于 emoVector
     emoText: str | None = None  # noqa: N815
@@ -33,6 +35,18 @@ class SynthItem(BaseModel):
             raise ValueError("emoText 太长了（≤120 字），请写一句简短的情绪描述")
         return text
 
+    @field_validator("voicePrompt")
+    @classmethod
+    def _voice_prompt_len(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) > 400:
+            raise ValueError("voicePrompt 太长了（≤400 字）")
+        return text
+
     @field_validator("rate")
     @classmethod
     def _rate_range(cls, value: float) -> float:
@@ -56,7 +70,8 @@ class SynthItem(BaseModel):
 class SynthPayload(SynthItem):
     """POST /v1/synthesize 的请求体（字段名与冻结契约一致）。"""
 
-    refId: str  # noqa: N815 - 线上字段名固定为驼峰
+    # 参考音频（克隆通道）。纯描述生成（voicePrompt）时可以不传
+    refId: str | None = None  # noqa: N815 - 线上字段名固定为驼峰
     lang: str = "ZH"
     format: str = "wav"
 
@@ -67,12 +82,16 @@ class SynthPayload(SynthItem):
             raise ValueError("目前只支持 wav")
         return value
 
+    @property
+    def needs_ref(self) -> bool:
+        return bool(self.refId)
+
 class BatchSynthPayload(BaseModel):
     """POST /v1/synthesize_batch 的请求体：同一个音色的多条文本一起解码。"""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    refId: str  # noqa: N815
+    refId: str | None = None  # noqa: N815 - 纯描述生成时为空
     lang: str = "ZH"
     items: list[SynthItem]
 

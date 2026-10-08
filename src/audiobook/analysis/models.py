@@ -1,13 +1,14 @@
-"""分析链的数据模型：提取（整章一次）/ 角色整合 / 音色推荐。
+"""分析链的数据模型：提取（整章一次）/ 角色整合 / 音色描述 / 音色推荐。
 
 分析结果全部由大模型直出，这里的模型只负责严格校验与归一化：
-提取阶段出「每句话 + 说话人 + 对白情绪」；整合阶段出「主名 + 别名」；
-推荐阶段出「1–3 个音色 id + 置信度 + 理由」。
+提取阶段出「每句话 + 说话人」；整合阶段出「主名 + 别名」；
+音色描述阶段出「音色描述 + 试音台词」（喂 Qwen3-TTS VoiceDesign）；
+推荐阶段（库存音色，旁白用）出「1–3 个音色 id + 置信度 + 理由」。
 """
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
 
-# 情绪枚举：中文名，落盘与 UI 用它；合成时再翻成引擎的 8 维向量维度名
+# 情绪枚举：老数据的兼容位（IndexTTS 那套 8 维向量用），Qwen3-TTS 不再用
 EMOTIONS = ("喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静")
 DELIVERIES = ("normal", "shout", "whisper", "sneer")
 NARRATOR_NAMES = ("旁白", "叙述", "旁白叙述")
@@ -31,16 +32,19 @@ def is_unknown(name: str | None) -> bool:
 
 
 class SpokenLine(BaseModel):
-    """提取阶段的一行：原文句子 + 说话人 + （仅人物话术的）情绪。
+    """提取阶段的一行：原文句子 + 说话人 + 这一句的表演描述。
 
     extra="ignore"：一整章会输出上百条记录，多一个字段不该让整段白跑；
     缺字段/写错类型的记录会在落盘阶段按可见的降级规则处理。
+    voice 是"这一句怎么说"（语气/语速/情绪），和角色基础音色描述拼起来喂给 TTS；
+    emotion 等字段是历史数据的兼容位：新提取不再输出，也不参与合成。
     """
 
     model_config = ConfigDict(extra="ignore")
 
     text: str = ""
     role: str = "未知"
+    voice: str | None = None
     emotion: str | None = None
     intensity: float | None = None
     secondary: str | None = None
@@ -55,6 +59,12 @@ class SpokenLine(BaseModel):
     @classmethod
     def _strip_role(cls, value):
         return str(value or "").strip() or "未知"
+
+    @field_validator("voice", mode="before")
+    @classmethod
+    def _clean_voice(cls, value):
+        text = str(value or "").strip()
+        return text[:80] or None
 
     @field_validator("emotion", "secondary", mode="before")
     @classmethod
@@ -133,3 +143,22 @@ class RecommendOutput(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     recommendations: list[VoiceRecommendation] = Field(default_factory=list)
+
+
+class VoiceDesignOutput(BaseModel):
+    """音色描述阶段的返回值：给 VoiceDesign 的一句话描述 + 一句试音台词。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    description: str = ""
+    sample: str = ""
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _clean_description(cls, value):
+        return str(value or "").strip()[:200]
+
+    @field_validator("sample", mode="before")
+    @classmethod
+    def _clean_sample(cls, value):
+        return str(value or "").strip()[:80]

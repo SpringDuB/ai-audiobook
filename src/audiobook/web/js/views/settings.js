@@ -22,7 +22,15 @@ const EMOTION_FIELD = {
 };
 
 const LAUNCH_FIELDS = [
-  { key: "tts_backend", label: "推理后端", type: "select", options: [["indextts", "indextts（IndexTTS-2.5）"]] },
+  {
+    key: "tts_backend",
+    label: "推理后端",
+    type: "select",
+    options: [
+      ["qwen3", "qwen3（Qwen3-TTS，按音色描述逐句生成）"],
+      ["indextts", "indextts（IndexTTS-2.5，参考音频克隆）"],
+    ],
+  },
   {
     key: "tts_model_source",
     label: "模型来源",
@@ -33,7 +41,7 @@ const LAUNCH_FIELDS = [
       ["huggingface", "huggingface（首次启动自动下载）"],
     ],
   },
-  { key: "tts_model_dir", label: "模型目录", type: "text", hint: "相对 tts/ 目录；local 时指向已有的 IndexTTS-2.5 权重" },
+  { key: "tts_model_dir", label: "模型目录", type: "text", hint: "相对 tts/ 目录；qwen3 用 Qwen3-TTS-12Hz-1.7B-* 子目录" },
   { key: "tts_hf_endpoint", label: "HF 镜像（可空）", type: "text", hint: "例如 https://hf-mirror.com" },
   { key: "tts_port", label: "端口", type: "number", min: "1024" },
 ];
@@ -124,12 +132,14 @@ async function build() {
     ...launchFields.map((field) => fieldNode(field, settings[field.key])),
   );
 
-  // 只剩 indextts；这里要说清楚"点下去会发生什么"，免得用户以为它不干活
+  // 这里要说清楚"点下去会发生什么"，免得用户以为它不干活
   const backendHint = h("p", { class: "field__hint muted" });
   const backendSelect = launchGrid.querySelector("#f-tts_backend");
   const paintBackendHint = () => {
     backendHint.textContent =
-      "启动时会先按「模型来源」下载/校验权重，再加载模型；进度和报错都打在下面的运行日志里。";
+      backendSelect.value === "qwen3"
+        ? "qwen3 跑在 tts/.venv-qwen（先执行 tts/scripts/install_qwen3.ps1 建环境+下权重）；启动后模型按需加载，日志在下面。"
+        : "indextts 跑在 tts/.venv；启动时会先按「模型来源」下载/校验权重，再加载模型。";
   };
   backendSelect.addEventListener("change", paintBackendHint);
   paintBackendHint();
@@ -276,8 +286,8 @@ async function build() {
         h("span", { class: "mono muted" }, `backend ${service.backend || settings.tts_backend}`),
         service.pid ? h("span", { class: "mono muted" }, `pid ${service.pid}`) : null,
         info.engine ? h("span", { class: "mono muted" }, `合成引擎 ${info.engine}`) : null,
-        service.running && service.backend !== "indextts"
-          ? h("span", { class: "tag tag--alert" }, "跑着的不是 indextts，点「一键启动」会重启它")
+        service.running && (service.backend || "").toLowerCase() !== (settings.tts_backend || "qwen3").toLowerCase()
+          ? h("span", { class: "tag tag--alert" }, "跑着的后端和设置不一致，点「一键启动」会按设置重启它")
           : null,
       ].filter(Boolean),
     );

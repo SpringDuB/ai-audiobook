@@ -1,19 +1,20 @@
-"""选角：音色推荐由大模型给出（1–3 个），本地只做校验、兜底与手选保留。
+"""选角登记：角色表 → voices/casting.json（角色 → 基础音色描述的登记表）。
 
-推荐不能用规则打分：提示词把「角色 + 台词样本 + 音色库（id/名称/标签）」交给模型，
-返回的 voiceId 必须落在音色库里；模型失败时按音色库顺序兜底并写异常清单。
-用户手选过的角色（source=manual）在重跑选角时保持不动。
+换 Qwen3-TTS 之后，角色音色不再从音色库里挑：
+  - 每个角色（旁白也算一个角色）在这里登记一条 voice_source=design；
+  - 具体"声音长什么样"由 analysis/design.py 让大模型写成基础音色描述，
+    逐句合成时和该句的表演描述拼起来交给 VoiceDesign（见 analysis/voices.py）；
+  - 音色库仍然保留成一条备用通道：用户手工给某个角色绑库存音色时，
+    这条记录变成 voice_source=library，合成走克隆。
+
+这个模块只做登记与校验，不调大模型（描述生成在 voice_design 任务里）。
 """
 
 import json
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from ..llm.runner import LlmJsonError
-from .models import RecommendOutput
-from .prompts import RECOMMEND_SYSTEM, recommend_user
 from .roles import NARRATOR_ID
 
 RECOMMEND_PASS = "casting"
@@ -95,7 +96,7 @@ def load_voice_library(settings) -> list[VoiceProfile]:
 
 
 def voice_catalog_text(voices: list[VoiceProfile]) -> str:
-    """提示词里的音色库描述：每行「id｜名称(性别/年龄/语速/音色/性格、题材、用途)」。"""
+    """音色库的文本清单（手工选音色 / 老数据展示用）。"""
     lines = []
     for voice in voices:
         base = "/".join(part for part in (voice.gender, voice.age_group, voice.speech_rate) if part)
@@ -108,7 +109,6 @@ def voice_catalog_text(voices: list[VoiceProfile]) -> str:
             *voice.tags,
         ]
         deduped = list(dict.fromkeys(tag for tag in tags if tag))
-        # 上传音色往往只有一段介绍：截断后也喂给模型，否则模型只能靠名字猜
         intro = voice.description.strip().replace("\n", " ")
         if len(intro) > 60:
             intro = intro[:60] + "…"
@@ -135,62 +135,44 @@ def samples_by_role(
     return out
 
 
-def recommend_for_character(
-    runner, *, book_id: str, character: dict, samples: list[str], voices: list[VoiceProfile]
-) -> tuple[list[dict], list[dict]]:
-    catalog = voice_catalog_text(voices)
-    try:
-        output = runner.run(
-            system=RECOMMEND_SYSTEM,
-            user=recommend_user(character.get("name") or character["id"], samples, catalog),
-            model_cls=RecommendOutput,
-            pass_name=RECOMMEND_PASS,
-            book_id=book_id,
-        )
-    except LlmJsonError as exc:
-        return [], [
-            {
-                "kind": "voice_recommend_failed",
-                "reason": f"{character.get('name') or character['id']} 的音色推荐失败：{exc}",
-                "fallback": "按音色库顺序兜底",
-                "detail": {"role_id": character["id"]},
-            }
-        ]
-    known = {voice.id: voice for voice in voices}
-    picked: list[dict] = []
-    seen: set[str] = set()
-    for item in output.recommendations:
-        voice = known.get(item.voice_id)
-        if voice is None or voice.id in seen:
-            continue
-        seen.add(voice.id)
-        picked.append(
-            {
-                "voice_id": voice.id,
-                "voice_name": voice.name,
-                "confidence": item.confidence,
-                "reason": item.reason,
-            }
-        )
-        if len(picked) >= MAX_RECOMMENDATIONS:
-            break
-    if not picked:
-        return [], [
-            {
-                "kind": "voice_recommend_invalid",
-                "reason": f"{character.get('name') or character['id']} 的推荐里没有合法音色 id",
-                "fallback": "按音色库顺序兜底",
-                "detail": {"role_id": character["id"]},
-            }
-        ]
-    return picked, []
+def _is_narrator(character: dict) -> bool:
+    return bool(character.get("is_narrator")) or character.get("id") == NARRATOR_ID
 
 
-def _fallback_voice(voices: list[VoiceProfile], used: set[str]) -> VoiceProfile:
-    for voice in voices:
-        if voice.id not in used:
-            return voice
-    return voices[0]
+def _entry(character: dict, previous: dict | None = None) -> dict:
+    """登记一条角色音色记录：默认走"设计音色"，手选过库存音色的保持不动。"""
+    old = previous or {}
+    name = character.get("name") or character["id"]
+    entry = {
+        "role_id": character["id"],
+        "name": name,
+        "aliases": list(character.get("aliases") or []),
+        "is_narrator": _is_narrator(character),
+        "voice_source": "design",
+        "voice_id": character["id"],
+        "voice_name": f"{name}（设计音色）",
+        "source": "design",
+        # 基础音色描述：由 voice_design 任务写、用户可改
+        "description": str(old.get("description") or ""),
+        "description_source": old.get("description_source"),
+        "sample": str(old.get("sample") or ""),
+        "recommendations": [],
+        "overrides": old.get("overrides") or {},
+    }
+    if old.get("updated_at"):
+        entry["updated_at"] = old["updated_at"]
+    if old.get("source") == "manual" and old.get("voice_id"):
+        # 用户手工绑过库存音色：尊重手选（合成走克隆通道）
+        entry.update(
+            {
+                "voice_source": "library",
+                "voice_id": old["voice_id"],
+                "voice_name": old.get("voice_name") or old["voice_id"],
+                "source": "manual",
+                "recommendations": old.get("recommendations") or [],
+            }
+        )
+    return entry
 
 
 def _names_map(characters: dict) -> dict[str, str]:
@@ -202,242 +184,57 @@ def _names_map(characters: dict) -> dict[str, str]:
     return names
 
 
-def _casting_payload(book_id: str, roles: dict, characters: dict, voices: list[VoiceProfile]) -> dict:
-    narrator = roles.get(NARRATOR_ID)
+def _payload(book_id: str, roles: dict, characters: dict, voices: list[VoiceProfile]) -> dict:
+    narrator = roles.get(NARRATOR_ID) or {}
     return {
         "book_id": book_id,
         "generated_at": _now_ms(),
         "voice_library_size": len(voices),
-        "narrator_voice": narrator["voice_id"] if narrator else None,
+        "narrator_voice": narrator.get("voice_id"),
         "roles": roles,
         "names": _names_map(characters),
     }
 
 
-def _role_entry(character: dict, *, voice_id: str, voice_name: str, source: str,
-                recommendations: list[dict], overrides: dict | None = None) -> dict:
-    return {
-        "role_id": character["id"],
-        "name": character["name"],
-        "aliases": list(character.get("aliases") or []),
-        "voice_id": voice_id,
-        "voice_name": voice_name,
-        "source": source,
-        "recommendations": recommendations,
-        "overrides": overrides or {},
-    }
-
-
-def fill_casting_for_characters(
-    runner,
-    *,
-    book_id: str,
-    characters: dict,
-    samples: dict[str, list[str]],
-    voices: list[VoiceProfile],
-    previous: dict | None = None,
-    concurrency: int = 4,
-    on_progress=None,
-) -> tuple[dict, list[dict]]:
-    """给"还没有推荐"的角色补音色推荐（单章分析后的增量选角）。
-
-    与 build_casting 的区别：只对缺推荐的角色调大模型，已经选过/已有推荐的
-    角色原样保留（含用户手选），所以点一次「分析本章台词」只会为本章新冒出来的
-    角色补 1–3 个推荐，不会把整本书的选角重算一遍。
-    """
-    definitions = list(characters.get("characters") or [])
-    previous_payload = previous or {}
-    roles = {role_id: dict(role) for role_id, role in (previous_payload.get("roles") or {}).items()}
-
-    pending: list[dict] = []
-    for character in definitions:
-        existing = roles.get(character["id"]) or {}
-        if existing.get("recommendations"):
-            continue  # 已经有推荐（或手选）的角色不动
-        pending.append(character)
-
-    if not voices:
-        for character in pending:
-            roles[character["id"]] = _role_entry(
-                character,
-                voice_id="default",
-                voice_name="未配置音色库",
-                source="default",
-                recommendations=[],
-            )
-        issues = (
-            [
-                {
-                    "kind": "voice_library_empty",
-                    "reason": "音色库为空，这些角色回落到 default（请先迁移音色库）",
-                    "fallback": "default",
-                    "detail": {"roles": len(pending)},
-                }
-            ]
-            if pending
-            else []
-        )
-        return _casting_payload(book_id, roles, characters, voices), issues
-
-    results: dict[str, tuple[list[dict], list[dict]]] = {}
-    if pending:
-        with ThreadPoolExecutor(max_workers=max(1, int(concurrency))) as pool:
-            futures = {
-                pool.submit(
-                    recommend_for_character,
-                    runner,
-                    book_id=book_id,
-                    character=character,
-                    samples=samples.get(character["name"]) or samples.get(character["id"]) or [],
-                    voices=voices,
-                ): character
-                for character in pending
-            }
-            done = 0
-            for future in as_completed(futures):
-                character = futures[future]
-                try:
-                    results[character["id"]] = future.result()
-                except Exception as exc:  # noqa: BLE001 - 单个角色失败不拖垮本章
-                    results[character["id"]] = (
-                        [],
-                        [
-                            {
-                                "kind": "voice_recommend_failed",
-                                "reason": f"{character['name']} 的音色推荐异常：{type(exc).__name__}: {exc}",
-                                "fallback": "按音色库顺序兜底",
-                                "detail": {"role_id": character["id"]},
-                            }
-                        ],
-                    )
-                done += 1
-                if on_progress is not None:
-                    on_progress(done, len(pending), character["name"])
-
-    issues: list[dict] = []
-    used = {role.get("voice_id") for role in roles.values() if role.get("voice_id")}
-    for character in pending:
-        recs, rec_issues = results.get(character["id"], ([], []))
-        issues.extend(rec_issues)
-        old = roles.get(character["id"]) or {}
-        manual = old.get("source") == "manual" and old.get("voice_id")
-        if manual:
-            voice_id, source = old["voice_id"], "manual"
-        elif recs:
-            voice_id, source = recs[0]["voice_id"], "llm"
-        else:
-            voice_id, source = _fallback_voice(voices, used).id, "fallback"
-        used.add(voice_id)
-        voice = next((item for item in voices if item.id == voice_id), None)
-        roles[character["id"]] = _role_entry(
-            character,
-            voice_id=voice_id,
-            voice_name=voice.name if voice else voice_id,
-            source=source,
-            recommendations=recs or old.get("recommendations") or [],
-            overrides=old.get("overrides") or {},
-        )
-    return _casting_payload(book_id, roles, characters, voices), issues
+def register_roles(
+    *, book_id: str, characters: dict, previous: dict | None = None, voices: list[VoiceProfile] | None = None
+) -> dict:
+    """把所有角色登记进 casting.json（新角色补条目，老条目保留描述与手选）。"""
+    old_roles = {role_id: dict(role) for role_id, role in ((previous or {}).get("roles") or {}).items()}
+    roles: dict[str, dict] = {}
+    for character in characters.get("characters") or []:
+        roles[character["id"]] = _entry(character, old_roles.get(character["id"]))
+    # 角色表里删掉的人不留在选角表里（避免幽灵角色）
+    return _payload(book_id, roles, characters, voices or [])
 
 
 def build_casting(
-    runner,
+    runner,  # noqa: ARG001 - 保留签名：登记本身不再调大模型
     *,
     book_id: str,
     characters: dict,
-    samples: dict[str, list[str]],
-    voices: list[VoiceProfile],
+    samples: dict | None = None,  # noqa: ARG001 - 同上（样本由 voice_design 用）
+    voices: list[VoiceProfile] | None = None,
     previous: dict | None = None,
-    concurrency: int = 4,
-    on_progress=None,
+    concurrency: int = 4,  # noqa: ARG001
+    on_progress=None,  # noqa: ARG001
 ) -> tuple[dict, list[dict]]:
-    definitions = list(characters.get("characters") or [])
-    previous_roles = (previous or {}).get("roles") or {}
-    if not voices:
-        roles = {
-            character["id"]: _role_entry(
-                character,
-                voice_id="default",
-                voice_name="未配置音色库",
-                source="default",
-                recommendations=[],
-            )
-            for character in definitions
-        }
-        return (
-            {
-                **_casting_payload(book_id, roles, characters, voices),
-                "narrator_voice": "default",
-            },
-            [
-                {
-                    "kind": "voice_library_empty",
-                    "reason": "音色库为空，所有角色回落到 default（请先迁移音色库）",
-                    "fallback": "default",
-                    "detail": {"roles": len(definitions)},
-                }
-            ],
-        )
+    return register_roles(book_id=book_id, characters=characters, previous=previous, voices=voices), []
 
-    results: dict[str, tuple[list[dict], list[dict]]] = {}
-    with ThreadPoolExecutor(max_workers=max(1, int(concurrency))) as pool:
-        futures = {
-            pool.submit(
-                recommend_for_character,
-                runner,
-                book_id=book_id,
-                character=character,
-                samples=samples.get(character["name"]) or samples.get(character["id"]) or [],
-                voices=voices,
-            ): character
-            for character in definitions
-        }
-        done = 0
-        for future in as_completed(futures):
-            character = futures[future]
-            try:
-                results[character["id"]] = future.result()
-            except Exception as exc:  # noqa: BLE001 - 单个角色失败不拖垮选角
-                results[character["id"]] = (
-                    [],
-                    [
-                        {
-                            "kind": "voice_recommend_failed",
-                            "reason": f"{character['name']} 的音色推荐异常：{type(exc).__name__}: {exc}",
-                            "fallback": "按音色库顺序兜底",
-                            "detail": {"role_id": character["id"]},
-                        }
-                    ],
-                )
-            done += 1
-            if on_progress is not None:
-                on_progress(done, len(definitions), character["name"])
 
-    roles: dict[str, dict] = {}
-    issues: list[dict] = []
-    used: set[str] = set()
-    for character in definitions:
-        recs, rec_issues = results.get(character["id"], ([], []))
-        issues.extend(rec_issues)
-        manual = previous_roles.get(character["id"]) or {}
-        manual_voice = manual.get("voice_id") if manual.get("source") == "manual" else None
-        if manual_voice and any(voice.id == manual_voice for voice in voices):
-            voice_id, source = manual_voice, "manual"
-        elif recs:
-            voice_id, source = recs[0]["voice_id"], "llm"
-        else:
-            voice_id, source = _fallback_voice(voices, used).id, "fallback"
-        used.add(voice_id)
-        voice = next((item for item in voices if item.id == voice_id), None)
-        roles[character["id"]] = _role_entry(
-            character,
-            voice_id=voice_id,
-            voice_name=voice.name if voice else voice_id,
-            source=source,
-            recommendations=recs,
-            overrides=manual.get("overrides") or {},
-        )
-    return _casting_payload(book_id, roles, characters, voices), issues
+def fill_casting_for_characters(
+    runner=None,  # noqa: ARG001
+    *,
+    book_id: str,
+    characters: dict,
+    samples: dict | None = None,  # noqa: ARG001
+    voices: list[VoiceProfile] | None = None,
+    previous: dict | None = None,
+    concurrency: int = 4,  # noqa: ARG001
+    on_progress=None,  # noqa: ARG001
+) -> tuple[dict, list[dict]]:
+    """单章分析后的增量登记：老角色的描述与手选原样保留。"""
+    return register_roles(book_id=book_id, characters=characters, previous=previous, voices=voices), []
 
 
 def _now_ms() -> int:
@@ -451,5 +248,5 @@ def voice_for_speaker(casting: dict, speaker: str) -> str | None:
     key = (speaker or "").strip()
     role_id = key if key in roles else names.get(key)
     if role_id and role_id in roles:
-        return roles[role_id]["voice_id"]
+        return roles[role_id].get("voice_id")
     return None

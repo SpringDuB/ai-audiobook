@@ -1,4 +1,4 @@
-"""落盘阶段：把「说话人名字 + 情绪」物化成行记录（id / 音色键 / 停顿 / 语速）。"""
+"""落盘阶段：把「说话人名字 + 本句表演描述」物化成行记录（id / role_id / 语速 / 注音）。"""
 
 from audiobook.analysis.materialize import materialize
 from audiobook.analysis.models import SpokenLine
@@ -20,7 +20,7 @@ def test_materialize_maps_names_to_role_ids_and_keeps_ids_stable():
         chapter_index=7,
         spoken=_spoken(
             {"text": "苏锐站在门口。", "role": "旁白"},
-            {"text": "老苏，你怎么看？", "role": "老苏", "emotion": "惊讶", "intensity": 0.65},
+            {"text": "老苏，你怎么看？", "role": "老苏", "voice": "提高音量，语速偏快"},
         ),
         characters_payload=CHARACTERS,
         pronounce_table={},
@@ -29,8 +29,8 @@ def test_materialize_maps_names_to_role_ids_and_keeps_ids_stable():
     assert [row["id"] for row in lines] == ["c0007-s01-l001", "c0007-s01-l002"]
     assert [row["kind"] for row in lines] == ["narration", "dialogue"]
     assert [row["speaker"] for row in lines] == ["narrator", "role_0001"]
-    assert lines[1]["emotion"]["dominant"] == "惊讶"
-    assert lines[1]["emotion"]["mix"] == [{"name": "惊讶", "weight": 0.65}]
+    assert lines[1]["voice_prompt"] == "提高音量，语速偏快"
+    assert lines[0]["voice_prompt"] == ""
     assert lines[1]["addressee"] is None
 
 
@@ -65,17 +65,16 @@ def test_unknown_role_falls_back_to_narrator_and_is_visible():
     assert issues[0]["fallback"] == "按旁白音色处理"
 
 
-def test_dialogue_without_emotion_is_flagged_and_defaults_to_calm():
+def test_dialogue_without_voice_prompt_is_not_an_issue():
+    """Qwen3-TTS 不再要情绪：没写本句表演描述也不报异常（合成时按角色描述走）。"""
     lines, issues = materialize(
         chapter_index=1,
-        spoken=_spoken({"text": "随便吧。", "role": "苏锐", "emotion": None}),
+        spoken=_spoken({"text": "随便吧。", "role": "苏锐"}),
         characters_payload=CHARACTERS,
         pronounce_table={},
     )
-    assert lines[0]["emotion"]["dominant"] == "平静"
-    assert lines[0]["emotion"]["source"] == "default"
-    assert [issue["kind"] for issue in issues] == ["emotion_missing"]
-    assert issues[0]["detail"]["count"] == 1
+    assert issues == []
+    assert lines[0]["voice_prompt"] == ""
 
 
 def test_materialize_applies_pronunciation_table():

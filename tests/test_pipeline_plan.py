@@ -1,4 +1,5 @@
 from audiobook import store
+from audiobook.analysis.voices import description_key
 from audiobook.pipeline import plan_book, resume_book
 from audiobook.render.chapter import RENDER_VERSION
 
@@ -106,20 +107,30 @@ def test_plan_rerenders_chapters_without_render_meta(settings, conn):
 
 
 def test_plan_resynthesizes_chapters_after_a_voice_change(settings, conn):
-    """换过音色：章节成品要重合成（只重跑缓存键变了的行），不能拿旧片段重渲染。"""
+    """换过音色描述：章节成品要重合成（只重跑缓存键变了的行），不能拿旧片段重渲染。"""
     _chapters(settings, "b1", indexes=(1,))
     store.atomic_replace_json(store.characters_path(settings, "b1"), {"characters": []})
     store.write_jsonl_atomic(
         store.lines_path(settings, "b1", 1),
         [{"id": "c0001-s01-l001", "speaker": "role_0001", "text": "第一句。"}],
     )
+    description = "三十多岁的女性，嗓音低哑，语速缓慢。"
     store.atomic_replace_json(
         store.casting_path(settings, "b1"),
-        {"roles": {"role_0001": {"role_id": "role_0001", "voice_id": "v_new"}}},
+        {
+            "roles": {
+                "role_0001": {
+                    "role_id": "role_0001",
+                    "voice_source": "design",
+                    "source": "design",
+                    "description": description,
+                }
+            }
+        },
     )
     store.atomic_replace_json(
         store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.meta.json",
-        {"voice_id": "v_old", "cache_key": "x", "duration": 1.0},
+        {"voice_key": "design:role_0001:old", "cache_key": "x", "duration": 1.0},
     )
     store.atomic_write_bytes(store.chapter_wav_path(settings, "b1", 1), b"RIFF")
     store.atomic_write_bytes(store.chapter_srt_path(settings, "b1", 1), b"1\n")
@@ -129,7 +140,11 @@ def test_plan_resynthesizes_chapters_after_a_voice_change(settings, conn):
     # 已经按新音色合成过 → 不再重复入队，正常收尾合本
     store.atomic_replace_json(
         store.audio_dir(settings, "b1", 1) / "c0001-s01-l001.meta.json",
-        {"voice_id": "v_new", "cache_key": "y", "duration": 1.0},
+        {
+            "voice_key": f"design:role_0001:{description_key(description)}",
+            "cache_key": "y",
+            "duration": 1.0,
+        },
     )
     assert plan_book(settings, conn, "b1") == [("book_export", None)]
 

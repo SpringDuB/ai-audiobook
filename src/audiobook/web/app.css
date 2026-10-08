@@ -437,6 +437,24 @@
 .cast-row__meta { margin: 0; color: var(--text-faint); font-size: var(--text-xs); }
 .cast-row__body { display: grid; gap: var(--space-1); min-inline-size: 0; }
 .cast-row__recs { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-block-start: var(--space-1); }
+/* 角色音色描述：可编辑的一段话 + 试听/保存/重写三个动作 */
+.cast-row__design { display: grid; gap: var(--space-2); margin-block-start: var(--space-1); }
+.cast-row__desc {
+  inline-size: 100%;
+  min-block-size: 4.5em;
+  resize: vertical;
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface-2);
+  border: var(--line);
+  border-radius: var(--radius-sm, 6px);
+  padding: var(--space-2);
+}
+.cast-row__desc:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cast-row__sample { margin: 0; color: var(--text-faint); font-size: var(--text-xs); }
+.cast-row__actions { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .chip__num { color: var(--text-faint); }
 .rec-chip { display: inline-flex; align-items: stretch; }
 .rec-play {

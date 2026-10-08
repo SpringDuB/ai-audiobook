@@ -85,15 +85,25 @@ class LocalTtsService:
         return state
 
     # ---------------------------------------------------------------- 启动命令
-    def venv_python(self) -> Path | None:
-        python = TTS_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        return python if python.exists() else None
+    def venv_python(self, backend: str | None = None) -> Path | None:
+        """按后端挑 venv：qwen3 用 .venv-qwen（python 3.12 + qwen-tts）。
+
+        两套依赖互相打架（indextts 钉 transformers 4.52 / py3.11，qwen-tts 要 4.57 / py3.12），
+        所以各住各的 venv；找不到对应的就退回 .venv，让后端自己在启动日志里报缺依赖。
+        """
+        name = (backend or self.settings.tts_backend or "").strip().lower()
+        candidates = [".venv-qwen", ".venv"] if name in ("qwen3", "qwen3-tts", "qwen") else [".venv"]
+        for candidate in candidates:
+            python = TTS_DIR / candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            if python.exists():
+                return python
+        return None
 
     def build_command(self, *, backend: str, port: int) -> list[str]:
         if self._command:
             return list(self._command)
         args = ["serve", "--backend", backend, "--host", "127.0.0.1", "--port", str(port)]
-        python = self.venv_python()
+        python = self.venv_python(backend)
         if python is not None:
             # 直接用 venv 的解释器跑，绕开 `uv run` 的自动同步：
             # 正在跑的服务会锁住 venv 里的扩展模块，自动同步会以 os error 5 失败。
@@ -243,9 +253,12 @@ class LocalTtsService:
 
     def _prepare_environment(self, handle, env: dict) -> None:
         """venv 缺失或缺少基础依赖时补一下；只装基础依赖，不自动拉 torch 这类大件。"""
-        python = self.venv_python()
+        python = self.venv_python(env.get("AIAB_TTS_BACKEND"))
         if python is None:
-            handle.write("tts/.venv 不存在：交给 uv 创建并安装基础依赖（真后端依赖见 docs/tts-deploy.md）\n")
+            handle.write(
+                "tts/.venv（或 qwen3 用的 tts/.venv-qwen）不存在："
+                "交给 uv 创建并安装基础依赖（真后端依赖见 docs/tts-deploy.md 与 tts/scripts/install_qwen3.ps1）\n"
+            )
             return
         probe = subprocess.run(
             [str(python), "-c", "import fastapi, uvicorn"],

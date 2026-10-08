@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # 只有这些字段影响音频；标注重跑但内容没变时不该作废已合成的成品
 SYNTHESIS_KEYS = (
     "id", "kind", "speaker", "speaker_name", "text",
-    "emotion", "delivery", "rate", "lang", "pronounce",
+    "voice_prompt", "emotion", "delivery", "rate", "lang", "pronounce",
 )
 
 

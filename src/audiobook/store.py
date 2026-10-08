@@ -115,6 +115,21 @@ def casting_path(settings, book_id: str) -> Path:
     return book_dir(settings, book_id) / "voices" / "casting.json"
 
 
+def role_voice_dir(settings, book_id: str, role_id: str) -> Path:
+    """角色设计音色的目录（VoiceDesign 造出来的参考音频就放这儿，跟着书走）。"""
+    return book_dir(settings, book_id) / "voices" / role_id
+
+
+def role_design_path(settings, book_id: str, role_id: str) -> Path:
+    """角色音色设计档案：描述文本 + 试音台词 + 版本号（前端改描述/重生成都看它）。"""
+    return role_voice_dir(settings, book_id, role_id) / "design.json"
+
+
+def role_ref_path(settings, book_id: str, role_id: str) -> Path:
+    """角色设计出来的参考音频（克隆全文用的那一段）。"""
+    return role_voice_dir(settings, book_id, role_id) / "ref.wav"
+
+
 def voice_library_dir(settings) -> Path:
     return settings.voices_dir
 
