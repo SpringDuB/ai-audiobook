@@ -77,14 +77,17 @@ def test_concurrency_gate_serializes_when_capacity_is_one(tmp_path):
     assert backend.max_inflight == 1
 
 
-def test_oom_is_mapped_to_service_error(tmp_path):
+def test_oom_is_healed_inside_the_request(tmp_path):
+    """OOM 不再直接把请求判死：服务端清显存 + 把台词切小重试，最后照样交付音频。
+
+    （怎么救都救不回来的情况仍然返回 503 + code=oom，见 test_oom_self_heal.py）
+    """
     state = _state(tmp_path, StubBackend(oom_on={"爆炸"}), max_concurrency=1)
     state.warmup()
     ref_id = _ref(state)
-    with pytest.raises(ServiceError) as excinfo:
-        state.synthesize({"text": "会爆炸的句子", "refId": ref_id})
-    assert excinfo.value.code == "oom"
-    assert excinfo.value.status_code == 503
+    result = state.synthesize({"text": "会爆炸的句子", "refId": ref_id})
+    assert result.duration_sec > 0
+    assert state.inflight == 0
 
 
 def test_unload_then_synthesize_reloads_automatically(tmp_path):

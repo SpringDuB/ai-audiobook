@@ -113,13 +113,13 @@ def test_local_voice_missing_does_not_take_endpoint_down(settings):
     assert endpoints[0].calls == 3
 
 
-def test_successes_restore_limit_gradually(settings):
+def test_success_restores_limit_immediately(settings):
+    """服务端已在请求内自愈，客户端降档只是临时让路：成功一次就立刻开回满档。"""
     pool, _ = _pool(settings, [FakeEndpoint(4)])
     pool.refresh()
     pool.states[0].limit = 2
-    for index in range(9):
-        pool.synthesize(f"第{index}句。", "v", SynthParams(), _out(settings, f"{index}.wav"))
-    assert pool.states[0].limit == 3
+    pool.synthesize("第一句。", "v", SynthParams(), _out(settings))
+    assert pool.states[0].limit == 4
 
 
 def test_capacity_change_reopens_the_gate(settings):

@@ -8,7 +8,6 @@ from .http_tts import HttpTtsEngine
 logger = logging.getLogger(__name__)
 
 BUSY_COOLDOWN_SECONDS = 5.0
-RESTORE_AFTER = 8
 
 
 @dataclass
@@ -28,7 +27,11 @@ class EndpointState:
 
 
 class TtsPool:
-    """多端点 TTS 池：并发上限来自服务端自报，OOM/5xx 降档熔断后逐级恢复。"""
+    """多端点 TTS 池：并发上限来自服务端自报，降档后一旦成功立刻恢复满档。
+
+    服务端已经在请求内自愈（清显存 + 包减半重试），真正冒到这里的 OOM 是"连单条都过不去"，
+    所以降档只是临时让路：成功一次就立刻把闸门开回满档，不做"连续 N 次才 +1"的爬坡。
+    """
 
     def __init__(self, endpoints, settings, engine_factory=None, clock=time.monotonic, sleep=time.sleep):
         if not endpoints:
@@ -242,10 +245,13 @@ class TtsPool:
         logger.warning("TTS 端点 %s 降档至 %s（冷却 %.0fs）：%s", state.base_url, state.limit, cooldown, reason)
 
     def _restore(self, state: EndpointState) -> None:
+        """成功后直接恢复满档（不做逐级爬坡）。"""
         state.success_streak += 1
-        if state.success_streak >= RESTORE_AFTER and state.limit < state.capacity:
-            state.limit += 1
-            state.success_streak = 0
+        if state.limit < state.capacity:
+            logger.info(
+                "TTS 端点 %s 恢复满档：%s → %s", state.base_url, state.limit, state.capacity
+            )
+            state.limit = state.capacity
 
     def _endpoint_summary(self) -> str:
         return "; ".join(f"{state.base_url}={state.last_error}" for state in self.states)

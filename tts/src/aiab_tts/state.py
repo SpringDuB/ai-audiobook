@@ -1,12 +1,16 @@
+import gc
 import io
 import json
 import logging
+import math
+import re
 import tempfile
 import threading
 import time
 import uuid
 import wave
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 from .backends.base import SynthesisRequest, SynthesisResult
@@ -89,6 +93,82 @@ def _cuda_pool_mb() -> tuple[float, float] | None:
     except Exception:  # noqa: BLE001 - 统计拿不到不该影响服务
         return None
     return allocated, reserved
+
+
+_OOM_MARKERS = ("out of memory", "outofmemoryerror", "cuda_error_out_of_memory")
+
+
+def is_oom_error(exc: BaseException) -> bool:
+    """显存不足判定：torch 的 OutOfMemoryError、驱动抛的 AcceleratorError、老式 RuntimeError 都要认出来。
+
+    认不出来的话请求会直接变成 500，客户端拿不到 ``code=oom``，只能把端点整个熔断
+    （上一轮故障链就是「清理阶段 OOM → 500 → 客户端熔断 60s → 整批任务连锁阵亡」）。
+    """
+    if type(exc).__name__ in ("OutOfMemoryError", "CudaOutOfMemoryError"):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _OOM_MARKERS)
+
+
+_SENTENCE_BOUNDARY = re.compile(r"[^。！？!?；;…\.\n]+[。！？!?；;…\.\n]*")
+
+
+def split_text_for_retry(text: str, max_parts: int = 2) -> list[str]:
+    """把一条长台词切成最多 ``max_parts`` 段，供「单条一包也 OOM」时降级。
+
+    优先按句末标点均衡切；整句没有标点就按长度硬切（尽量落在逗号/空格上，
+    别把词切开）。切不动时原样返回一段，调用方据此放弃切分。
+    """
+    source = (text or "").strip()
+    if len(source) < 2:
+        return [text or ""]
+    pieces = [piece.strip() for piece in _SENTENCE_BOUNDARY.findall(source) if piece.strip()]
+    if len(pieces) < 2:
+        middle = len(source) // 2
+        window_start = max(0, middle - 8)
+        window = source[window_start : middle + 8]
+        offset = max((window.rfind(mark) for mark in "，,、 "), default=-1)
+        cut = window_start + offset + 1 if offset >= 0 else middle
+        head, tail = source[:cut].strip(), source[cut:].strip()
+        return [head, tail] if head and tail else [source]
+    total = sum(len(piece) for piece in pieces)
+    target = max(1, math.ceil(total / max_parts))
+    groups: list[list[str]] = []
+    current: list[str] = []
+    current_len = 0
+    for piece in pieces:
+        if current and current_len + len(piece) > target and len(groups) < max_parts - 1:
+            groups.append(current)
+            current, current_len = [], 0
+        current.append(piece)
+        current_len += len(piece)
+    if current:
+        groups.append(current)
+    return ["".join(group) for group in groups] or [source]
+
+
+def _concat_wav(chunks: list[bytes]) -> tuple[bytes, float]:
+    """把同一模型产出的多段 WAV 字节首尾拼成一段，返回 (字节, 时长秒)。"""
+    buffer = io.BytesIO()
+    params = None
+    total_frames = 0
+    with wave.open(buffer, "wb") as out:
+        for chunk in chunks:
+            with wave.open(io.BytesIO(chunk), "rb") as handle:
+                current = handle.getparams()
+                if params is None:
+                    params = current
+                    out.setparams(current)
+                elif (
+                    current.nchannels,
+                    current.sampwidth,
+                    current.framerate,
+                ) != (params.nchannels, params.sampwidth, params.framerate):
+                    raise ValueError("分段音频参数不一致，无法拼接")
+                out.writeframes(handle.readframes(handle.getnframes()))
+                total_frames += handle.getnframes()
+    duration = total_frames / float(params.framerate) if params else 0.0
+    return buffer.getvalue(), duration
 
 
 class ServiceError(Exception):
@@ -303,6 +383,188 @@ class ServiceState:
             )
         return freed
 
+    # --- 请求内自愈（OOM：只留模型权重，其余显存全还掉后降档重试）---
+
+    def _oom_retry_budget(self) -> int:
+        return max(0, int(getattr(self.settings, "oom_max_retries", 3) or 0))
+
+    def _safe_release_after_request(self, *, stage: str) -> None:
+        """请求边界的显存清理：清理失败只记日志，绝不能顶掉本次请求的结果。
+
+        实录：一次 500 就是这里 ``empty_cache`` 抛 CUDA OOM，异常穿透 ``finally``
+        顶掉了正常响应，客户端拿不到 ``code=oom`` 只能把端点熔断 60s。
+        """
+        for attempt in (1, 2):
+            try:
+                self.release_after_request()
+                return
+            except Exception as exc:  # noqa: BLE001 - 清理失败不影响本次请求成败
+                if attempt == 2:
+                    logger.warning(
+                        "请求边界归还显存失败（已忽略，%s，不影响本次请求）：%s", stage, exc
+                    )
+                else:
+                    time.sleep(0.05)
+
+    def _clear_cuda_graphs(self) -> int:
+        """丢掉后端捕获过的 CUDA Graph：图池是常驻显存，``empty_cache`` 还不了它。"""
+        clear = getattr(self.backend, "clear_cuda_graphs", None)
+        if not callable(clear):
+            return 0
+        try:
+            return int(clear() or 0)
+        except Exception:  # noqa: BLE001 - 清图失败不该挡住重试
+            logger.warning("OOM 自愈：清理 CUDA Graph 失败（忽略）", exc_info=True)
+            return 0
+
+    def _recover_after_oom(self, *, stage: str, holder: BaseException | None = None) -> None:
+        """OOM 自愈：模型权重留着，把其余占用的显存尽量还给驱动。
+
+        顺序是有讲究的：
+          1. 断开异常对象持有的 traceback —— 它会钉住当次推理的激活值/KV cache，
+             不松手的话后面 ``empty_cache`` 也还不了这些块（这是"越跑越涨"的元凶之一）；
+          2. 清 CUDA Graph 图池（每张图自带静态缓冲，常驻且不归 empty_cache 管）；
+          3. ``gc.collect()`` 收掉没有引用的张量；
+          4. ``empty_cache()`` 把缓存池里的空闲块还给驱动。
+        """
+        if holder is not None and getattr(holder, "__traceback__", None) is not None:
+            try:
+                holder.__traceback__ = None  # 松手后激活值才会真的被 free
+            except Exception:  # noqa: BLE001 - 个别异常对象不可写，忽略
+                pass
+        before = _cuda_pool_mb()
+        graphs = self._clear_cuda_graphs()
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:  # noqa: BLE001 - 上下文可能已经脏了，继续 empty_cache
+                    logger.debug("OOM 自愈：cuda synchronize 失败（继续）", exc_info=True)
+        except ImportError:
+            pass
+        try:
+            _empty_cuda_cache()
+        except Exception as exc:  # noqa: BLE001 - 还不动就算了，降档重试本身还有机会成功
+            logger.warning("OOM 自愈：empty_cache 失败（继续重试）：%s", exc)
+        wait = float(getattr(self.settings, "oom_retry_wait_seconds", 0.2) or 0)
+        if wait > 0:
+            time.sleep(min(wait, 2.0))
+        after = _cuda_pool_mb()
+        freed = max(0.0, before[1] - after[1]) if before and after else 0.0
+        logger.warning(
+            "OOM 自愈：清掉 %s 张 CUDA Graph、归还 %.0fMB 空闲块（allocated %.0f→%.0fMB，%s）",
+            graphs,
+            freed,
+            before[0] if before else -1.0,
+            after[0] if after else -1.0,
+            stage,
+        )
+
+    def _synthesize_with_heal(self, request: SynthesisRequest, depth: int = 0) -> SynthesisResult:
+        """单条合成：OOM 时先还显存再重试；仍不行就按句切分，各段跑完拼回一条。"""
+        budget = self._oom_retry_budget()
+        attempt = 0
+        while True:
+            try:
+                return self.backend.synthesize(request)
+            except Exception as exc:  # noqa: BLE001 - 非 OOM 原样抛出，交给调用方分类
+                if not is_oom_error(exc) or attempt >= budget:
+                    raise
+                attempt += 1
+                self._recover_after_oom(
+                    stage=f"单条第 {attempt}/{budget} 次重试：{request.text[:16]}",
+                    holder=exc,
+                )
+                if depth >= 4:
+                    continue
+                pieces = split_text_for_retry(request.text)
+                if len(pieces) < 2:
+                    continue
+                logger.warning("OOM 自愈：单条切成 %d 段重试（%s）", len(pieces), request.text[:16])
+                results = [
+                    self._synthesize_with_heal(replace(request, text=piece), depth + 1)
+                    for piece in pieces
+                ]
+                audio, duration = _concat_wav([item.audio for item in results])
+                first = results[0]
+                return SynthesisResult(
+                    audio=audio,
+                    duration_sec=duration,
+                    sample_rate=first.sample_rate,
+                    engine=first.engine,
+                    engine_version=first.engine_version,
+                    elapsed_ms=sum(item.elapsed_ms for item in results),
+                )
+
+    def _run_chunk(self, requests, out_paths, chunk: list[int], batch_fn) -> list[float]:
+        selected = [requests[index] for index in chunk]
+        paths = [out_paths[index] for index in chunk]
+        if batch_fn is not None and len(selected) > 1:
+            return [float(value) for value in batch_fn(selected, paths)]
+        values: list[float] = []
+        for request, path in zip(selected, paths):
+            result = self.backend.synthesize(request)
+            Path(path).write_bytes(result.audio)
+            values.append(float(result.duration_sec))
+        return values
+
+    def _synthesize_chunks(self, requests, out_paths, batch_fn) -> list[float]:
+        """批量合成的 OOM 自愈循环（整包 → 减半 → … → 单条 → 按句切分）。
+
+        自愈只作用于本次请求内部：任何一次成功之后立刻回到客户端要的整包大小，
+        不做跨请求的降档记忆（成功后直接升回满档）。
+        """
+        durations = [0.0] * len(requests)
+        budget = self._oom_retry_budget()
+        full_pack = max(1, len(requests))
+        pack = full_pack
+        retries = 0
+        index = 0
+        while index < len(requests):
+            chunk = list(range(index, min(index + pack, len(requests))))
+            try:
+                values = self._run_chunk(requests, out_paths, chunk, batch_fn)
+            except Exception as exc:  # noqa: BLE001 - 非 OOM 原样抛出
+                if not is_oom_error(exc) or retries >= budget:
+                    raise
+                retries += 1
+                self._recover_after_oom(
+                    stage=f"{len(chunk)} 条一包，第 {retries}/{budget} 次重试",
+                    holder=exc,
+                )
+                if pack > 1:
+                    pack = max(1, pack // 2)
+                    logger.warning("OOM 自愈：%d 条整包失败 → 降到 %d 条重试", full_pack, pack)
+                    continue
+                values = self._retry_single_split(requests, out_paths, chunk[0])
+            for position, value in zip(chunk, values):
+                durations[position] = value
+            index += len(chunk)
+            retries = 0
+            if pack != full_pack:  # 成功后直接升回整包
+                logger.info("OOM 自愈：自第 %d 条起恢复 %d 条整包", index, full_pack)
+                pack = full_pack
+        return durations
+
+    def _retry_single_split(self, requests, out_paths, position: int) -> list[float]:
+        """单条一包也 OOM：把这条台词按句切小分别合成，再把音频拼回一条。"""
+        request = requests[position]
+        pieces = split_text_for_retry(request.text)
+        if len(pieces) < 2:
+            raise ServiceError("oom", f"显存不足且台词无法再切分：{request.text[:40]}", 503)
+        logger.warning("OOM 自愈：单条仍失败 → 按句切成 %d 段重试", len(pieces))
+        audio_chunks: list[bytes] = []
+        for piece in pieces:
+            # 每段仍走同一套自愈：段还是太长（继续 OOM）就再往下切，最多 4 层
+            result = self._synthesize_with_heal(replace(request, text=piece), depth=1)
+            audio_chunks.append(result.audio)
+        merged, duration = _concat_wav(audio_chunks)
+        Path(out_paths[position]).write_bytes(merged)
+        return [duration]
+
     def health(self) -> dict:
         average = (self.total_elapsed_ms / 1000.0) / self.total_audio_sec if self.total_audio_sec else 0.0
         return {
@@ -407,11 +669,11 @@ class ServiceState:
                 pronunciation=request_payload.pronunciation,
                 seed=request_payload.seed,
             )
-            result = self.backend.synthesize(request)
+            result = self._synthesize_with_heal(request)
         except ServiceError:
             raise
         except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
+            if is_oom_error(exc):
                 logger.exception("TTS 引擎显存不足")
                 raise ServiceError("oom", f"显存不足: {exc}", 503) from exc
             # 引擎 500 以前只有一句 message，堆栈被吞掉；出问题根本没法定位，这里必须留痕
@@ -422,7 +684,7 @@ class ServiceState:
                 self.inflight -= 1
             self._gate.release()
             self._touch()
-            self.release_after_request()
+            self._safe_release_after_request(stage="单条合成")
         with self._lock:
             self.total_audio_sec += result.duration_sec
             self.total_elapsed_ms += result.elapsed_ms
@@ -463,11 +725,18 @@ class ServiceState:
             design_fn = getattr(self.backend, "design", None)
             if design_fn is None:
                 raise ServiceError("bad_request", "后端没有实现 design()", 400)
-            audio, sample_rate, _spoken = design_fn(text=text, instruct=instruct, lang=lang)
+            try:
+                audio, sample_rate, _spoken = design_fn(text=text, instruct=instruct, lang=lang)
+            except Exception as exc:  # noqa: BLE001 - 只有 OOM 才自愈重试
+                if not is_oom_error(exc) or self._oom_retry_budget() <= 0:
+                    raise
+                logger.warning("音色设计 OOM：清显存后重试一次")
+                self._recover_after_oom(stage="音色设计重试", holder=exc)
+                audio, sample_rate, _spoken = design_fn(text=text, instruct=instruct, lang=lang)
         except ServiceError:
             raise
         except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
+            if is_oom_error(exc):
                 logger.exception("音色设计显存不足")
                 raise ServiceError("oom", f"显存不足: {exc}", 503) from exc
             logger.exception("音色设计失败")
@@ -477,7 +746,7 @@ class ServiceState:
                 self.inflight -= 1
             self._gate.release()
             self._touch()
-            self.release_after_request()
+            self._safe_release_after_request(stage="音色设计")
         duration = 0.0
         try:
             with wave.open(io.BytesIO(audio)) as handle:
@@ -557,14 +826,9 @@ class ServiceState:
             use_batch = batch_fn is not None and not any(item.emoText for item in items)
             with tempfile.TemporaryDirectory() as tmp_dir:
                 out_paths = [Path(tmp_dir) / f"{index:03d}.wav" for index in range(len(requests))]
-                if use_batch:
-                    durations = [float(value) for value in batch_fn(requests, out_paths)]
-                else:
-                    durations = []
-                    for index, request in enumerate(requests):
-                        result = self.backend.synthesize(request)
-                        out_paths[index].write_bytes(result.audio)
-                        durations.append(float(result.duration_sec))
+                durations = self._synthesize_chunks(
+                    requests, out_paths, batch_fn if use_batch else None
+                )
                 buffer = io.BytesIO()
                 with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
                     for index, path in enumerate(out_paths):
@@ -584,7 +848,7 @@ class ServiceState:
         except ServiceError:
             raise
         except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
+            if is_oom_error(exc):
                 logger.exception("TTS 批量合成显存不足")
                 raise ServiceError("oom", f"显存不足: {exc}", 503) from exc
             logger.exception("TTS 批量合成失败")
@@ -594,7 +858,7 @@ class ServiceState:
                 self.inflight -= 1
             self._gate.release()
             self._touch()
-            self.release_after_request()
+            self._safe_release_after_request(stage="批量合成")
         elapsed_ms = int((time.monotonic() - started) * 1000)
         with self._lock:
             self.total_audio_sec += sum(durations)

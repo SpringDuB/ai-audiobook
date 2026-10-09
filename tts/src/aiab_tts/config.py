@@ -63,6 +63,13 @@ class TtsSettings(BaseSettings):
     release_under_load_min_free_mb: int = 1536
     # 两次归还之间的最小间隔：避免每跑完一个请求就 empty_cache 造成抖动
     release_min_interval_seconds: float = 3.0
+    # ---- OOM 自愈（请求内）----
+    # 一次请求里显存不足时：断开异常持有的激活值引用 → 清 CUDA Graph 图池 → gc → empty_cache，
+    # 然后把批量包减半重试（8→4→2→1），单条仍不行就按句切分再拼回。
+    # 自愈只作用于本次请求：一旦成功立刻回到整包，不做跨请求的降档记忆。
+    oom_max_retries: int = 3
+    # 每次自愈重试前的短暂等待：给驱动真正回收显存留一点时间
+    oom_retry_wait_seconds: float = 0.2
     allow_download: bool = True
     verify_manifest: bool = True
     # ---- 速度旋钮（实测可查：/debug/tuning 能在不重载模型的情况下挨个试）----

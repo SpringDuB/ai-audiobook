@@ -222,6 +222,34 @@ class Qwen3TtsBackend:
             self._models[kind] = model
             return model
 
+    def clear_cuda_graphs(self) -> int:
+        """丢掉捕获过的 code_predictor CUDA Graph，返回清掉的图池数量。
+
+        图池是常驻显存（每张图自带静态输入/输出缓冲），``empty_cache`` 管不到它；
+        OOM 自愈时先清它，往往就能把几百 MB 还给驱动，再降档重试。
+        """
+        if not self._switch_lock.acquire(timeout=5.0):
+            logger.warning("OOM 自愈：模型正在换入换出，跳过清理 CUDA Graph")
+            return 0
+        try:
+            cleared = 0
+            for kind, model in list(self._models.items()):
+                inner = getattr(model, "model", None)
+                predictor = getattr(getattr(inner, "talker", None), "code_predictor", None)
+                if predictor is None:
+                    continue
+                generators = predictor.__dict__.get("_aiab_graph_generators")
+                if generators is None:
+                    continue
+                try:
+                    generators.clear()
+                    cleared += 1
+                except Exception:  # noqa: BLE001 - 清图失败不影响后面的降档重试
+                    logger.exception("清理 %s 的 CUDA Graph 失败", kind)
+            return cleared
+        finally:
+            self._switch_lock.release()
+
     def load(self) -> None:
         """预热 = 加载 VoiceDesign（主路径就是它）。"""
         self._model("design")

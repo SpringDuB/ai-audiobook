@@ -153,6 +153,28 @@ GPU 占空               30~61%
 `AIAB_TTS_MAX_TEXT_CHARS`（默认 300，超长由客户端分块）、`AIAB_TTS_FAST_PREDICTOR`
 （`graph` / `loop` / `pad` / `off`）、`AIAB_TTS_DECODE_CHUNK`（默认 2，0 = 不分块）。
 
+### 第三种慢/挂：整包 8 条长台词撞 OOM（请求内自愈）
+
+8 条一起解码时 `reserved` 会摸到物理上限（实测 `reserved 8266MB → 4980MB`，物理只有
+8188MiB），再高一点就是 CUDA OOM。以前一次 OOM 会这样连锁：`finally` 里的
+`empty_cache()` 也抛 OOM → 异常顶掉响应变 500（没有 `code=oom`）→ 客户端认不出是显存问题，
+把端点整个熔断 60s → 后续请求秒失败、整章任务报废。
+
+现在 OOM 在**请求内自愈**，模型权重之外的东西全还回去再降档重试：
+
+1. 断开异常对象的 traceback（它会钉住当次的激活值/KV cache，不放就等于没还显存）；
+2. 清 `code_predictor` 的 CUDA Graph 图池（每张图自带静态缓冲，`empty_cache` 管不到）；
+3. `gc.collect()` + `torch.cuda.synchronize()` + `torch.cuda.empty_cache()`；
+4. 批量包减半重试：**8 → 4 → 2 → 1**；单条仍 OOM 就按句末标点把这一条切小，
+   各段跑完再拼回一条（文本一字不丢，`manifest.json` 里的时长是拼接后的总长）；
+5. 成功一次就立刻回到客户端要的整包（不做跨请求的降档记忆）；
+6. 重试预算用尽才返回 `503 + {"code":"oom"}`，客户端据此降档而不是判死端点。
+
+请求边界（`finally`）的清理失败也吞掉只记日志——清理动作不能再影响请求成败。
+
+开关：`AIAB_TTS_OOM_MAX_RETRIES`（默认 3）、`AIAB_TTS_OOM_RETRY_WAIT_SECONDS`（默认 0.2）。
+自愈日志形如 `OOM 自愈：清掉 1 张 CUDA Graph、归还 486MB 空闲块（8 条一包，第 1/3 次重试）`。
+
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
@@ -170,6 +192,8 @@ GPU 占空               30~61%
 | `AIAB_TTS_MAX_BATCH_ITEMS` | `8` | 一个批量包最多几条（8G 卡建议 4） |
 | `AIAB_TTS_QUEUE_TIMEOUT_SECONDS` | `600` | 排队超时 → 返回 `busy` |
 | `AIAB_TTS_USE_BF16` | `true` | 推理精度（bf16 权重 3.9GB，fp32 会翻倍） |
+| `AIAB_TTS_OOM_MAX_RETRIES` | `3` | 请求内 OOM 自愈次数（8→4→2→1，单条再按句切分） |
+| `AIAB_TTS_OOM_RETRY_WAIT_SECONDS` | `0.2` | 每次自愈重试前等待驱动回收显存的时间 |
 
 ## 命令
 
