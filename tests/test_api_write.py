@@ -22,6 +22,28 @@ def test_patch_line_writes_file_and_invalidates(settings, narrator_lines):
     assert bad.status_code == 400 and "不可修改的字段" in bad.json()["detail"]
 
 
+def test_patch_line_edits_voice_prompt(settings, narrator_lines):
+    """本分支的逐句编辑：表演描述能改写、能清空，并且真的落盘。"""
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    body = client.patch(
+        f"/api/books/{book_id}/lines/c0000-s01-l001",
+        json={"voice_prompt": "  压低声音，语速放慢，带一点试探  "},
+    ).json()
+    assert body["line"]["voice_prompt"] == "压低声音，语速放慢，带一点试探"
+    assert store.read_jsonl(store.lines_path(settings, book_id, 0))[0]["voice_prompt"] == "压低声音，语速放慢，带一点试探"
+
+    cleared = client.patch(
+        f"/api/books/{book_id}/lines/c0000-s01-l001", json={"voice_prompt": "   "}
+    ).json()
+    assert cleared["line"]["voice_prompt"] == ""
+
+    too_long = client.patch(
+        f"/api/books/{book_id}/lines/c0000-s01-l001", json={"voice_prompt": "啊" * 201}
+    )
+    assert too_long.status_code == 400 and "最多" in too_long.json()["detail"]
+
+
 def test_patch_line_keeps_speaker_when_name_is_sent_back(settings, narrator_lines):
     """界面上把当前说话人原样提交（角色名）时，不能把 speaker 字段写坏。"""
     client = _client(settings)
@@ -94,12 +116,37 @@ def test_role_description_can_be_edited_and_rewritten(settings, narrator_lines):
     assert body["role"]["description"].startswith("五十岁的女性")
     assert body["role"]["description_source"] == "manual"
 
+    # 默认 refine：在上一版描述上微调，音色不会大变
     job_id = client.post(f"/api/books/{book_id}/roles/narrator/rewrite").json()["job_id"]
     job = jobs.get_job(_conn(settings), job_id)
-    assert (job.kind, job.payload) == ("voice_design", {"roles": ["narrator"], "force": True})
+    assert (job.kind, job.payload) == ("voice_design", {"roles": ["narrator"], "force": True, "mode": "refine"})
+
+    # reroll：整个换一版音色
+    reroll_id = client.post(
+        f"/api/books/{book_id}/roles/narrator/rewrite", json={"mode": "reroll"}
+    ).json()["job_id"]
+    reroll = jobs.get_job(_conn(settings), reroll_id)
+    assert reroll.payload["mode"] == "reroll"
+
+    assert client.post(f"/api/books/{book_id}/roles/narrator/rewrite", json={"mode": "乱写"}).status_code == 400
 
     assert client.put(f"/api/books/{book_id}/roles/nope/description", json={"description": "x"}).status_code == 404
     assert client.put(f"/api/books/{book_id}/roles/narrator/description", json={"description": " "}).status_code == 400
+
+
+def test_preview_all_enqueues_job_and_job_can_be_polled(settings, narrator_lines):
+    """一键生成全部试听：入队 voice_preview 任务，前端靠 /api/jobs/{id} 轮询进度。"""
+    client = _client(settings)
+    book_id = _seed_book(settings, narrator_lines)
+    _seed_role(settings, book_id)
+
+    job_id = client.post(f"/api/books/{book_id}/roles/preview_all", json={}).json()["job_id"]
+    job = jobs.get_job(_conn(settings), job_id)
+    assert (job.kind, job.payload) == ("voice_preview", {"force": False})
+
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["job"]["id"] == job_id and body["job"]["kind"] == "voice_preview"
+    assert client.get("/api/jobs/999999").status_code == 404
 
 
 def test_role_preview_generates_and_serves_audio(settings, narrator_lines, monkeypatch):

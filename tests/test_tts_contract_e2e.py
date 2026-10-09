@@ -70,6 +70,19 @@ def _route_voice_design(user: str) -> dict:
     return {"description": "二十出头的年轻男性，嗓音偏低，语速不快，冷静克制。", "sample": "走。"}
 
 
+def _route_cast_sheet(user: str) -> dict:
+    archetypes = {
+        "旁白": "三十多岁男性，中低音区，嗓音厚实",
+        "苏锐": "二十出头男性，中高音区，音色清亮",
+        "王胖子": "二十多岁男性，低音区，嗓音洪亮",
+    }
+    return {
+        "characters": [
+            {"name": name, "archetype": text} for name, text in archetypes.items() if name in user
+        ]
+    }
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -146,6 +159,7 @@ def test_chapter_synthesis_over_http_service(settings, tmp_path):
             routes={
                 "【EXTRACT】": _route_extract,
                 "【MERGE_ROLES】": _route_merge,
+                "【CAST_SHEET】": _route_cast_sheet,
                 "【VOICE_DESIGN】": _route_voice_design,
             }
         )

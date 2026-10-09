@@ -15,6 +15,33 @@ class JobCancelled(Exception):
     """handler 察觉到用户在任务界面点了取消：任务落成 canceled，不算失败、不重试。"""
 
 
+class CancelWatcher:
+    """任务的取消检查：自带一条 sqlite 连接 + 锁，可安全地在任务的任意线程里调用。
+
+    worker 给每个任务单独开一条 conn（跨线程共用事务会交错），而整章提取、音色描述
+    这类任务本身是线程池并发跑的 —— 取消检查会从那些线程里发起，所以这里再开一条
+    只读连接专门查 cancel_requested。取消要在几秒内打断正在跑的 LLM 请求，
+    不能等整个任务自己跑完。
+    """
+
+    def __init__(self, db_path, job_id: int):
+        self.job_id = int(job_id)
+        self._conn = connect(db_path)
+        self._lock = threading.Lock()
+
+    def requested(self) -> bool:
+        with self._lock:
+            if self._conn is None:
+                return False
+            return jobs.is_canceled(self._conn, self.job_id)
+
+    def close(self) -> None:
+        with self._lock:
+            conn, self._conn = self._conn, None
+        if conn is not None:
+            conn.close()
+
+
 # 这些键变了就必须重建引擎 / LLM 客户端；其余的（停顿、响度、导出格式）改了下个任务自然生效
 ENGINE_KEYS = (
     "engine",
@@ -55,17 +82,33 @@ class WorkerContext:
     reload_settings: Callable[[], Settings] | None = None
     engine_factory: Callable[[Settings], object] | None = None
     llm_factory: Callable[[Settings], object] | None = None
+    # 每个任务自己的取消检查（run_job 里装上），跨线程可用
+    watcher: "CancelWatcher | None" = None
 
     def progress(self, job, done: int, total: int, message: str = "", extra: dict | None = None) -> None:
         jobs.set_progress(self.conn, job.id, done, total, message, extra=extra)
 
     def cancelled(self, job) -> bool:
         """任务是不是被点了取消（队列里的取消会直接把状态改成 canceled）。"""
+        watcher = self.watcher
+        if watcher is not None and watcher.job_id == job.id:
+            return watcher.requested()
         return jobs.is_canceled(self.conn, job.id)
 
     def raise_if_cancelled(self, job) -> None:
         if self.cancelled(job):
             raise JobCancelled(f"任务 {job.id} 已取消")
+
+    def cancel_check(self, job) -> Callable[[], None]:
+        """给 LLM 层用的取消回调：取消时抛 JobCancelled。
+
+        返回的函数可以安全地在任务的线程池里调用（走 CancelWatcher 的专用连接）。
+        """
+
+        def check() -> None:
+            self.raise_if_cancelled(job)
+
+        return check
 
     def refresh(self) -> bool:
         """每轮任务前重读设置：改并发/端点/引擎、点了一键启动 TTS，都不用重启 worker。"""
@@ -151,6 +194,7 @@ def run_job(ctx: WorkerContext, job, *, lease_seconds: int | None = None, gate=N
     期间心跳继续续租，任务不会被别的 worker 抢走。
     """
     lease = lease_seconds or ctx.settings.lease_seconds
+    ctx.watcher = CancelWatcher(ctx.settings.db_path, job.id)
     stop = threading.Event()
     hb = threading.Thread(target=_heartbeat_loop, args=(ctx, job.id, lease, stop), daemon=True)
     hb.start()
@@ -179,6 +223,8 @@ def run_job(ctx: WorkerContext, job, *, lease_seconds: int | None = None, gate=N
             gate.release()
         stop.set()
         hb.join(timeout=1.0)
+        ctx.watcher.close()
+        ctx.watcher = None
 
 
 def run_once(ctx: WorkerContext, lease_seconds: int | None = None) -> bool:

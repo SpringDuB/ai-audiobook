@@ -55,6 +55,21 @@ def test_json_mode_can_be_disabled():
     assert "response_format" not in seen["body"]
 
 
+def test_json_mode_can_be_overridden_per_call():
+    """顶层要数组的趟（extract）必须能按调用关掉 json_object 模式。"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "[]"}}]})
+
+    _client(handler).complete("s", "u", json_mode=False)
+    assert "response_format" not in seen["body"]
+
+    _client(handler, json_mode=False).complete("s", "u", json_mode=True)
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+
+
 def _sse(chunks: list[dict]) -> bytes:
     text = "".join(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" for chunk in chunks)
     return (text + "data: [DONE]\n\n").encode("utf-8")
@@ -92,6 +107,54 @@ def test_streaming_reply_is_accumulated_with_usage():
     assert seen["body"]["stream_options"] == {"include_usage": True}
     assert reply.text == '{"ok":true}'
     assert reply.input_tokens == 31 and reply.output_tokens == 42 and reply.reasoning_tokens == 17
+
+
+def test_streaming_call_aborts_mid_stream_when_cancelled(monkeypatch):
+    """用户点取消：流式响应不再读到底，异常直接抛给 worker（连接随 with 块关闭）。"""
+    from audiobook.llm import openai_compat
+
+    monkeypatch.setattr(openai_compat, "CANCEL_CHECK_INTERVAL", 0.0)
+    served = {"chunks": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        def body():
+            for index in range(50):
+                served["chunks"] += 1
+                yield f'data: {{"choices":[{{"delta":{{"content":"{index}"}}}}]}}\n\n'.encode("utf-8")
+
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body())
+
+    class Cancelled(RuntimeError):
+        pass
+
+    calls = {"n": 0}
+
+    def cancel_check():
+        calls["n"] += 1
+        if calls["n"] > 2:      # 第 1 次是发请求前、第 2 次是开流前，之后就是流里的检查
+            raise Cancelled("任务已取消")
+
+    with pytest.raises(Cancelled):
+        _client(handler).complete("系统", "用户", cancel_check=cancel_check)
+    assert served["chunks"] < 50, "取消后不该把整段流读完"
+
+
+def test_cancel_before_request_never_hits_the_network():
+    seen = {"calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["calls"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    class Cancelled(RuntimeError):
+        pass
+
+    def cancel_check():
+        raise Cancelled("任务已取消")
+
+    with pytest.raises(Cancelled):
+        _client(handler).complete("s", "u", cancel_check=cancel_check)
+    assert seen["calls"] == 0
 
 
 def test_stream_options_rejection_falls_back_to_plain_stream():

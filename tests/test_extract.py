@@ -4,6 +4,8 @@
 窗口切分、严格校验、失败兜底与原文完整性检查。
 """
 
+import pytest
+
 from audiobook.analysis.extract import (
     ChapterExtraction,
     dump_extraction,
@@ -78,6 +80,70 @@ def test_extract_chapter_uses_prefix_rule_and_emotion_from_the_model(settings):
     # 旁白不带情绪（模型给了也会被丢掉）
     assert result.lines[1].emotion is None
     assert result.issues == []
+
+
+def test_extract_stops_between_windows_when_cancelled(settings):
+    """提取途中点取消：下一段不再发请求，异常直接冒泡（不落盘、不兜底成旁白）。"""
+    state = {"cancelled": False}
+
+    def route(user: str) -> list[dict]:
+        state["cancelled"] = True      # 第一段跑完 = 用户此刻点了取消
+        return [{"text": "第一段。", "role": "旁白"}]
+
+    class Cancelled(RuntimeError):
+        pass
+
+    def cancel_check():
+        if state["cancelled"]:
+            raise Cancelled("任务已取消")
+
+    llm = FakeLLM(routes={"【EXTRACT】": route})
+    with pytest.raises(Cancelled):
+        _extract(
+            settings,
+            llm,
+            content="第一段。\n第二段。",
+            window_chars=5,
+            cancel_check=cancel_check,
+        )
+    assert len(llm.calls) == 1
+
+
+def test_extract_accepts_an_object_wrapped_array(settings):
+    """接口强制 JSON 对象时模型会把数组包一层：提取不该因此整段失败。"""
+
+    def route(user: str) -> dict:
+        return {
+            "type": "json_object",
+            "lines": [{"text": "他说。", "role": "旁白", "voice": "平静地陈述，语速中等"}],
+        }
+
+    llm = FakeLLM(routes={"【EXTRACT】": route})
+    result = _extract(settings, llm, content="他说。")
+
+    assert [line.text for line in result.lines] == ["他说。"]
+    assert result.lines[0].voice == "平静地陈述，语速中等"
+    assert result.issues == []
+
+
+def test_extract_turns_off_json_object_mode(settings):
+    """顶层要数组的趟不能带 response_format=json_object：网关会逼模型把数组包成对象。"""
+    seen = {}
+
+    class RecordingLLM(FakeLLM):
+        def complete(self, system, user, *, max_output_tokens=4096, cancel_check=None, json_mode=None):
+            seen["json_mode"] = json_mode
+            return super().complete(
+                system,
+                user,
+                max_output_tokens=max_output_tokens,
+                cancel_check=cancel_check,
+                json_mode=json_mode,
+            )
+
+    llm = RecordingLLM(routes={"【EXTRACT】": [{"text": "好。", "role": "旁白"}]})
+    _extract(settings, llm, content="好。")
+    assert seen["json_mode"] is False
 
 
 def test_extract_chapter_windows_carry_known_names_and_context(settings):

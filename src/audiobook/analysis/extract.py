@@ -87,6 +87,7 @@ def extract_chapter(
     window_chars: int,
     known_names: list[str] | None = None,
     on_window=None,
+    cancel_check=None,
 ) -> ChapterExtraction:
     windows = window_text(content, window_chars)
     if not windows:
@@ -95,6 +96,9 @@ def extract_chapter(
     lines: list[SpokenLine] = []
     issues: list[dict] = []
     for position, window in enumerate(windows, start=1):
+        if cancel_check is not None:
+            # 上一段跑完、下一段还没发：用户在这中间点了取消就直接停
+            cancel_check()
         try:
             output = runner.run(
                 system=EXTRACT_SYSTEM,
@@ -110,6 +114,10 @@ def extract_chapter(
                 pass_name=EXTRACT_PASS,
                 book_id=book_id,
                 chapter_index=chapter_index,
+                cancel_check=cancel_check,
+                # 顶层是数组：JSON mode（response_format=json_object）与它天然冲突，
+                # 网关会逼模型把数组包成对象、甚至回显 {"type":"json_object"}。
+                json_mode=False,
             )
         except LlmJsonError as exc:
             issues.append(

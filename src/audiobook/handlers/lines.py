@@ -41,6 +41,7 @@ def _spoken_of(ctx, job, chapter) -> list:
     # 本章还没提取过（例如单独点「分析本章」），或只有老格式结果（没有逐句表演描述）：
     # 这里补跑一次
     runner = require_llm(ctx)
+    check = ctx.cancel_check(job)
     existing = store.read_json(store.characters_path(ctx.settings, job.book_id), default={}) or {}
     result = extract_chapter(
         runner,
@@ -51,6 +52,7 @@ def _spoken_of(ctx, job, chapter) -> list:
         window_chars=ctx.settings.llm_line_window_chars,
         known_names=names_from_payload(existing),
         on_window=lambda done, total, span: ctx.progress(job, done, total, span),
+        cancel_check=check,
     )
     store.atomic_replace_json(path, dump_extraction(result))
     for issue in result.issues:
@@ -66,7 +68,9 @@ def _spoken_of(ctx, job, chapter) -> list:
     return result.lines
 
 
-def _characters_for(ctx, *, book_id: str, chapter_index: int, spoken, allow_llm: bool = True) -> dict:
+def _characters_for(
+    ctx, *, book_id: str, chapter_index: int, spoken, allow_llm: bool = True, cancel_check=None
+) -> dict:
     characters = store.read_json(store.characters_path(ctx.settings, book_id), default={}) or {}
     unknown = [
         item.role
@@ -80,6 +84,7 @@ def _characters_for(ctx, *, book_id: str, chapter_index: int, spoken, allow_llm:
         book_id=book_id,
         payload=characters,
         spoken=spoken,
+        cancel_check=cancel_check,
     )
     for issue in issues:
         record_issue(
@@ -95,14 +100,21 @@ def _characters_for(ctx, *, book_id: str, chapter_index: int, spoken, allow_llm:
     return characters
 
 
-def materialize_chapter(ctx, *, book_id: str, chapter_index: int, spoken, allow_llm: bool = True) -> list[dict]:
+def materialize_chapter(
+    ctx, *, book_id: str, chapter_index: int, spoken, allow_llm: bool = True, cancel_check=None
+) -> list[dict]:
     """把一章的提取结果落成行记录（role_id / 语速 / 注音），返回落盘的行。
 
     allow_llm=False：新称呼只本地补角色，不调大模型。整本提取时用它在每章提取完
     立刻落盘，前端就能一章一章看到角色文本，而不用等全书提取 + 整合跑完。
     """
     characters = _characters_for(
-        ctx, book_id=book_id, chapter_index=chapter_index, spoken=spoken, allow_llm=allow_llm
+        ctx,
+        book_id=book_id,
+        chapter_index=chapter_index,
+        spoken=spoken,
+        allow_llm=allow_llm,
+        cancel_check=cancel_check,
     )
     lines, issues = materialize(
         chapter_index=chapter_index,
@@ -146,7 +158,12 @@ def handle_lines(ctx, job) -> None:
     lines_path = store.lines_path(ctx.settings, book_id, chapter_index)
     previous = store.read_jsonl(lines_path)
     lines = materialize_chapter(
-        ctx, book_id=book_id, chapter_index=chapter_index, spoken=spoken, allow_llm=True
+        ctx,
+        book_id=book_id,
+        chapter_index=chapter_index,
+        spoken=spoken,
+        allow_llm=True,
+        cancel_check=ctx.cancel_check(job),
     )
     if _synthesis_signature(previous) != _synthesis_signature(lines):
         # 标注变了：本章与整本成品都不再可信，删掉让「生成有声书」重建

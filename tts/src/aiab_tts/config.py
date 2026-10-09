@@ -27,6 +27,19 @@ class TtsSettings(BaseSettings):
     qwen_attn: str = ""
     # 8G 显存放不下两个 1.7B：默认同一时刻只驻留一个，另一个按需换入
     qwen_keep_both: bool = False
+    # code_predictor 每条 codebook 都要跑一次 HF generate（一帧音频 = 15 次），
+    # 每帧 1.7 万次微内核、GPU 利用率只有 30~45%。这里换成等价快路径：
+    #   graph 手工 CUDA Graph（实测 1.75x，逐样本比特一致）—— 默认
+    #   loop  手写采样循环（去掉 HF 簿记，约 1.06x）
+    #   pad   定长前缀无 cache（形状恒定，可编译）
+    #   off   上游实现
+    fast_predictor: str = "graph"
+    # codec 解码分块：`speech_tokenizer.decode` 会把整包一起上采样，8 条长旁白时
+    # 单步峰值就能到 7GB（物理只有 8.2GB）→ 溢出共享显存，整包从 25s 变 46s。
+    # 实测（8 条 74~94 字旁白）：不分块 169.8 ms/帧、峰值 allocated 7.6GB/reserved 12.2GB；
+    # 每次解 2 条 → 88.4 ms/帧、峰值 5.0GB/7.3GB，且波形与不分块逐样本等长。
+    # 0 = 不分块。
+    decode_chunk: int = 2
     # True 时额外加载 QwenEmotion（约 1.2GB 显存），用于「用一句话描述情绪」的 emoText 通道；
     # False 时只有 8 维 emoVector 通道可用
     use_qwen_emo: bool = False
@@ -39,6 +52,17 @@ class TtsSettings(BaseSettings):
     idle_release_seconds: float = 20.0
     # 空闲块少于这个量就不值得归还：还回去下一批还得重新 cudaMalloc，得不偿失
     idle_release_min_free_mb: int = 256
+    # 请求边界归还：一个请求跑完、当前没有任何在飞请求时，如果池子里攒着这么多空闲块就还给驱动。
+    # 长任务里请求是背靠背来的，"空闲 20 秒"永远等不到 —— 没有这一条，缓存池会一直停在历史峰值
+    # （实测：空闲 5.2GB → 连跑几十批后 7.9GB 不回落）。False = 关闭，只保留空闲归还。
+    release_after_request: bool = True
+    after_request_release_min_free_mb: int = 256
+    # 并发跑着的时候也会攒空闲块：多路批量背靠背时"没有在飞请求"的窗口根本不存在。
+    # 空闲块堆到这个量就照样还给驱动（正在用的张量不受影响，代价只是别的请求重新 cudaMalloc）。
+    # 实测：2 路批量跑着，allocated 4.5GB、reserved 9.5GB（物理 8.2GB，已溢出到共享显存）。
+    release_under_load_min_free_mb: int = 1536
+    # 两次归还之间的最小间隔：避免每跑完一个请求就 empty_cache 造成抖动
+    release_min_interval_seconds: float = 3.0
     allow_download: bool = True
     verify_manifest: bool = True
     # ---- 速度旋钮（实测可查：/debug/tuning 能在不重载模型的情况下挨个试）----

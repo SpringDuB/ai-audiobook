@@ -102,9 +102,83 @@ def test_request_resets_idle_timer(tmp_path, pool):
 
     state.synthesize({"text": "第一句。", "refId": ref_id})
 
-    # 请求结束后计时被刷新 → 立刻触发归还应当被跳过
+    # 请求边界已经归还过一次（见 test_release_after_request_returns_idle_blocks），
+    # 空闲归还这里只看"计时被刷新"：刚跑完请求，不该再还第二次
+    assert pool.emptied == 1
     assert state._maybe_release_idle_memory() == 0.0
+    assert pool.emptied == 1
+
+
+def test_release_after_request_returns_idle_blocks(tmp_path, pool):
+    """长任务里请求背靠背来，"空闲 20 秒"永远等不到 —— 请求边界也要把空闲块还掉。"""
+    state = _state(tmp_path, idle_release_seconds=LONG_IDLE)
+    state.warmup()
+    ref_id = state.add_ref(b"RIFFfake", "参考")["refId"]
+
+    state.synthesize({"text": "第一句。", "refId": ref_id})
+
+    assert pool.emptied == 1
+    assert state.idle_released_mb == pytest.approx(2000.0)
+
+
+def test_release_after_request_releases_under_load_when_pool_is_fat(tmp_path, pool):
+    """并发跑着也照样归还：池子里攒着 2GB 空闲块（free=2000MB）时必须还。
+
+    回归背景：2 路批量背靠背时"没有在飞请求"的窗口根本不存在，只在空闲时归还
+    等于一次都不还 —— 池子涨到 9.5GB（物理 8.2GB，溢出到共享显存）也是这原因。
+    """
+    state = _state(tmp_path, idle_release_seconds=LONG_IDLE)
+    state.warmup()
+    state.inflight = 1
+    try:
+        freed = state.release_after_request()
+    finally:
+        state.inflight = 0
+    assert freed == pytest.approx(2000.0)
+    assert pool.emptied == 1
+
+
+def test_release_after_request_skips_under_load_when_pool_is_tight(tmp_path, monkeypatch):
+    """并发中但池子没虚胖（空闲块 500MB < 1536MB）→ 不还，别白白 churn。"""
+    fake = _Pool(allocated=1000.0, reserved=1500.0)
+    monkeypatch.setattr(state_mod, "_cuda_pool_mb", fake.read)
+    monkeypatch.setattr(state_mod, "_empty_cuda_cache", fake.empty)
+    state = _idle_state(tmp_path)
+    state.warmup()
+    state.inflight = 1
+    try:
+        assert state.release_after_request() == 0.0
+    finally:
+        state.inflight = 0
+    assert fake.emptied == 0
+
+
+def test_release_after_request_has_a_cooldown(tmp_path, pool):
+    state = _idle_state(tmp_path)
+    state.warmup()
+
+    assert state.release_after_request() == pytest.approx(2000.0)
+    pool.reserved = 3000.0      # 池子又涨回来了，但还在冷却窗口里 → 这一轮不还
+    assert state.release_after_request() == 0.0
+    assert pool.emptied == 1
+
+
+def test_release_after_request_can_be_turned_off(tmp_path, pool):
+    state = _state(tmp_path, idle_release_seconds=LONG_IDLE, release_after_request=False)
+    state.warmup()
+    assert state.release_after_request() == 0.0
     assert pool.emptied == 0
+
+
+def test_release_after_request_skips_small_free_pool(tmp_path, monkeypatch):
+    fake = _Pool(allocated=1000.0, reserved=1100.0)   # 空闲块只有 100MB
+    monkeypatch.setattr(state_mod, "_cuda_pool_mb", fake.read)
+    monkeypatch.setattr(state_mod, "_empty_cuda_cache", fake.empty)
+    state = _state(tmp_path, idle_release_seconds=LONG_IDLE, after_request_release_min_free_mb=256)
+    state.warmup()
+
+    assert state.release_after_request() == 0.0
+    assert fake.emptied == 0
 
 
 def test_unloaded_model_never_triggers_release(tmp_path, pool):

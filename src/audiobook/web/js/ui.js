@@ -143,6 +143,81 @@ export function confirmDialog({ title, message, confirmLabel = "确定", cancelL
   });
 }
 
+// 让用户写一段话再交给模型的弹窗（例如"换一版音色"要写清楚想要什么声音）。
+// 返回输入文本（未填 = 空串），Esc / 点遮罩取消 = null。Ctrl/Cmd+Enter 提交。
+export function promptDialog({
+  title,
+  message = "",
+  placeholder = "",
+  value = "",
+  confirmLabel = "生成",
+  maxLength = 300,
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey, true);
+      host.remove();
+      resolve(result);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        finish(null);
+      } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(field.value.trim());
+      }
+    };
+    const field = h("textarea", {
+      class: "modal__input",
+      rows: "4",
+      maxlength: String(maxLength),
+      placeholder,
+      "aria-label": title,
+    });
+    field.value = value;
+    const counter = h("span", { class: "modal__counter mono" }, `0/${maxLength}`);
+    const bump = () => {
+      counter.textContent = `${field.value.length}/${maxLength}`;
+    };
+    field.addEventListener("input", bump);
+    bump();
+    const panel = h(
+      "div",
+      { class: "modal modal--wide", role: "dialog", "aria-modal": "true", "aria-label": title },
+      h("h2", { class: "modal__title letterpress" }, title),
+      message ? h("p", { class: "modal__message" }, message) : null,
+      field,
+      h("div", { class: "modal__hint" }, counter, h("span", { class: "muted" }, "Ctrl+Enter 生成")),
+      h(
+        "div",
+        { class: "modal__actions" },
+        h("button", { class: "btn btn-ghost", type: "button", onClick: () => finish(null) }, "取消"),
+        h(
+          "button",
+          { class: "btn btn-primary", type: "button", onClick: () => finish(field.value.trim()) },
+          icon("wand-sparkles", { size: 13 }),
+          confirmLabel,
+        ),
+      ),
+    );
+    const host = h(
+      "div",
+      { class: "modal-host" },
+      h("div", { class: "modal-host__backdrop", onClick: () => finish(null) }),
+      panel,
+    );
+    document.body.append(host);
+    document.addEventListener("keydown", onKey, true);
+    field.focus();
+  });
+}
+
+
 // 章节多选：给「分析角色文本」这类按章跑的任务用；返回勾选的章节序号数组（取消为 null）
 export function chapterPickerDialog({
   title,

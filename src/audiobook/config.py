@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     # 一句一条记录，窗口太大输出会被 llm_max_output_tokens 截断，所以字符数与句数都要卡
     llm_line_window_chars: int = 1600
     llm_line_window_sentences: int = 80
+    # 选角表（跨角色音色协调）：一本书可能有 600+ 角色，一次全交给模型既不现实
+    # 也没效果 —— 只让"有戏份"的角色（台词数 ≥ min_lines）参与，按台词数排队；
+    # 每批最多 batch_size 个角色，后一批看得到前面已占用的原型（增量避让）。
+    cast_sheet_batch: int = 16
+    cast_sheet_max_roles: int = 120
+    cast_sheet_min_lines: int = 4
     synth_concurrency: int = 4
     # 同音色一次解码几条（批量合成）：1 = 关掉；服务端不支持批量时自动退回 1
     synth_batch_size: int = 4
@@ -103,7 +109,10 @@ class Settings(BaseSettings):
     export_container: str = "mkv"  # mkv | mp4
     export_mkv: bool = True  # 章节是否封装容器
     # 响度：lufs | rms | off
-    loudness_mode: str = "lufs"
+    # 响度归一：lufs（两遍 loudnorm，感知加权最准，但 42 分钟一章要 ~43s，占渲染 82%）
+    # | rms（volumedetect + 一次线性增益，~0.4s，按峰值夹一次防削顶）| off
+    # 默认 rms：章间响度照样对齐，把渲染时间还给导出；要最准可在设置页切回 lufs
+    loudness_mode: str = "rms"
     loudness_target_lufs: float = -16.0
     loudness_true_peak: float = -1.5
     loudness_rms_target_db: float = -20.0

@@ -74,8 +74,9 @@ class AdaptiveLimiter:
             return self._limit
 
     @contextmanager
-    def slot(self, timeout: float | None = None):
-        self._acquire(timeout)
+    def slot(self, timeout: float | None = None, cancel_check: Callable[[], None] | None = None):
+        """占一个并发槽；``cancel_check`` 会在等待期间反复调用，用户取消时立刻抛错退出。"""
+        self._acquire(timeout, cancel_check)
         try:
             yield
         finally:
@@ -83,10 +84,13 @@ class AdaptiveLimiter:
                 self._inflight -= 1
                 self._cond.notify_all()
 
-    def _acquire(self, timeout: float | None) -> None:
+    def _acquire(self, timeout: float | None, cancel_check: Callable[[], None] | None = None) -> None:
         deadline = None if timeout is None else self._clock() + timeout
         with self._cond:
             while True:
+                if cancel_check is not None:
+                    # 等槽可能等很久（并发打满时）：取消要在这里就能打断
+                    cancel_check()
                 if self._inflight < self._limit:
                     self._inflight += 1
                     return

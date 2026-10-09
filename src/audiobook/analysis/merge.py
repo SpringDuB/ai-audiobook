@@ -79,7 +79,9 @@ def _groups_from_output(output: MergeOutput, names: list[str], known: list[str])
     return groups, missing
 
 
-def _run_merge(runner, *, book_id: str, entries: list[dict], known: list[str]) -> tuple[list[dict], list[dict]]:
+def _run_merge(
+    runner, *, book_id: str, entries: list[dict], known: list[str], cancel_check=None
+) -> tuple[list[dict], list[dict]]:
     names = [entry["name"] for entry in entries]
     try:
         output = runner.run(
@@ -88,6 +90,7 @@ def _run_merge(runner, *, book_id: str, entries: list[dict], known: list[str]) -
             model_cls=MergeOutput,
             pass_name=MERGE_PASS,
             book_id=book_id,
+            cancel_check=cancel_check,
         )
     except LlmJsonError as exc:
         return (
@@ -188,12 +191,16 @@ def _payload(book_id: str, characters: list[dict]) -> dict:
     }
 
 
-def merge_roles(runner, *, book_id: str, entries: list[dict], known: list[str] = ()) -> tuple[dict, list[dict]]:
+def merge_roles(
+    runner, *, book_id: str, entries: list[dict], known: list[str] = (), cancel_check=None
+) -> tuple[dict, list[dict]]:
     """全书整合：entries 是 role_entries 的产出，known 是重跑时旧角色表里的名字。"""
     entries = [entry for entry in entries if entry.get("name")]
     if not entries:
         return _payload(book_id, [_narrator_entry()]), []
-    groups, issues = _run_merge(runner, book_id=book_id, entries=entries, known=list(known))
+    groups, issues = _run_merge(
+        runner, book_id=book_id, entries=entries, known=list(known), cancel_check=cancel_check
+    )
     characters = _apply_groups([], groups, entries)
     return _payload(book_id, characters), issues
 
@@ -205,6 +212,7 @@ def extend_characters(
     payload: dict,
     spoken: list[SpokenLine] | None = None,
     extractions: list[tuple[int, list[SpokenLine]]] | None = None,
+    cancel_check=None,
 ) -> tuple[dict, list[dict]]:
     """单章/多章重跑时用：把新冒出来的称呼并进已有角色表（是别名就并进老角色）。
 
@@ -223,6 +231,8 @@ def extend_characters(
     if runner is None:
         groups, issues = [{"name": entry["name"], "aliases": []} for entry in entries], []
     else:
-        groups, issues = _run_merge(runner, book_id=book_id, entries=entries, known=existing)
+        groups, issues = _run_merge(
+            runner, book_id=book_id, entries=entries, known=existing, cancel_check=cancel_check
+        )
     characters = _apply_groups(list(payload.get("characters") or []), groups, entries)
     return _payload(book_id, characters), issues

@@ -2,10 +2,10 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from audiobook import store
-from audiobook.llm.base import LLMDisconnected
+from audiobook.llm.base import LLMDisconnected, LLMReply
 from audiobook.llm.fake import FakeLLM
 from audiobook.llm.limiter import AdaptiveLimiter
-from audiobook.llm.runner import LlmJsonError, LlmJsonRunner
+from audiobook.llm.runner import LlmJsonError, LlmJsonRunner, clean_json_text
 
 
 class Demo(BaseModel):
@@ -35,6 +35,61 @@ def test_returns_model_and_logs_successful_call(settings):
     assert rows[0]["pass"] == "A" and rows[0]["chapter"] == 1
     assert rows[0]["ok"] is True and rows[0]["error"] is None
     assert rows[0]["model"] == "fake-llm"
+
+
+def test_cancel_check_stops_before_the_request_and_is_not_a_failure(settings):
+    """用户取消：请求不发、不记失败日志、异常原样抛给 worker（不重试）。"""
+
+    class Cancelled(RuntimeError):
+        pass
+
+    llm = FakeLLM(routes={"PASS_C": {"ok": True}})
+    runner = _runner(settings, llm)
+
+    def cancel_check():
+        raise Cancelled("任务已取消")
+
+    with pytest.raises(Cancelled):
+        runner.run(
+            system="s",
+            user="【PASS_C】正文",
+            model_cls=Demo,
+            pass_name="C",
+            book_id="b1",
+            cancel_check=cancel_check,
+        )
+    assert llm.calls == []
+    assert not store.llm_log_path(settings, "b1").exists()
+
+
+def test_runner_strips_code_fences_and_prose_before_validation(settings):
+    """模型爱把 JSON 包在 ```json 里或在前面写两句解释：剥掉再校验，别整段重跑。"""
+
+    class Fenced:
+        def complete(self, system, user, *, max_output_tokens=4096, cancel_check=None, json_mode=None):
+            return LLMReply(text='好的，结果如下：\n```json\n{"ok": true, "count": 2}\n```\n希望有帮助。', model="fake")
+
+    result = _runner(settings, Fenced()).run(
+        system="s", user="u", model_cls=Demo, pass_name="D", book_id="b1"
+    )
+    assert result.ok is True and result.count == 2
+    assert clean_json_text('[{"a":1}]') == '[{"a":1}]'
+    assert clean_json_text('```json\n{"ok": true}\n```') == '{"ok": true}'
+
+
+def test_runner_passes_json_mode_override_to_the_client(settings, monkeypatch):
+    """按趟覆盖 response_format：extract 这趟要关掉 json_object。"""
+    seen = {}
+
+    class Recording:
+        def complete(self, system, user, *, max_output_tokens=4096, cancel_check=None, json_mode=None):
+            seen["json_mode"] = json_mode
+            return LLMReply(text='{"ok": true}', model="fake")
+
+    _runner(settings, Recording()).run(
+        system="s", user="u", model_cls=Demo, pass_name="E", book_id="b1", json_mode=False
+    )
+    assert seen["json_mode"] is False
 
 
 def test_retries_once_with_repair_hint_when_json_is_invalid(settings):
@@ -92,7 +147,7 @@ class _Disconnected:
         self.duration_ms = duration_ms
         self.calls = 0
 
-    def complete(self, system: str, user: str, *, max_output_tokens: int = 4096):
+    def complete(self, system: str, user: str, *, max_output_tokens: int = 4096, cancel_check=None):
         self.calls += 1
         raise LLMDisconnected("LLM 连接被掐断: Server disconnected", duration_ms=self.duration_ms)
 

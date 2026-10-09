@@ -23,6 +23,8 @@ class Job:
     updated_at: int = 0
     # 任务参数（如批量分析的章节清单）；progress 是执行中的进度，会被覆盖，别把参数塞那里
     payload: dict | None = None
+    # 用户点了取消但 worker 还没停下来：前端据此显示"取消中"
+    cancel_requested: bool = False
 
 
 def _row_to_job(row: sqlite3.Row) -> Job:
@@ -39,6 +41,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         payload=json.loads(row["payload"]) if row["payload"] else None,
+        cancel_requested=bool(row["cancel_requested"]),
     )
 
 

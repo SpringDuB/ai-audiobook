@@ -28,7 +28,17 @@ class FakeLLM:
         data = value(user) if callable(value) else value
         return json.dumps(data, ensure_ascii=False)
 
-    def complete(self, system: str, user: str, *, max_output_tokens: int = 4096) -> LLMReply:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_output_tokens: int = 4096,
+        cancel_check=None,
+        json_mode: bool | None = None,
+    ) -> LLMReply:
+        if cancel_check is not None:
+            cancel_check()
         self.calls.append({"system": system, "user": user, "max_output_tokens": max_output_tokens})
         if any(token in user for token in self.fail_on):
             raise LLMError("FakeLLM 注入的失败")

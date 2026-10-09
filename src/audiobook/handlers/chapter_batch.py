@@ -102,6 +102,7 @@ def handle_chapters(ctx, job) -> None:
                 content=chapter["content"],
                 window_chars=ctx.settings.llm_line_window_chars,
                 known_names=known_names,
+                cancel_check=check,
             )
         finally:
             with inflight_lock:
@@ -109,6 +110,7 @@ def handle_chapters(ctx, job) -> None:
 
     cancelled = False
     if pending:
+        check = ctx.cancel_check(job)
         max_workers = max(1, min(len(pending), int(ctx.settings.llm_concurrency)))
         # 不用 with：取消时要立刻返回，不能让在跑的请求把任务拖到跑完
         pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -193,7 +195,11 @@ def handle_chapters(ctx, job) -> None:
     ctx.raise_if_cancelled(job)
     # 整批只调一次整合：LLM 只看到"新称呼"，老角色表原样保留
     characters, issues = extend_characters(
-        runner, book_id=book_id, payload=existing, extractions=results
+        runner,
+        book_id=book_id,
+        payload=existing,
+        extractions=results,
+        cancel_check=ctx.cancel_check(job),
     )
     for issue in issues:
         record_issue(

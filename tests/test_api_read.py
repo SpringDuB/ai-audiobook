@@ -75,12 +75,14 @@ def test_lines_endpoint_404s_for_unknown_chapter(settings, narrator_lines):
     assert client.get(f"/api/books/{book_id}/chapters/9/lines").status_code == 404
 
 
-def test_lines_endpoint_exposes_audio_url_and_emotion(settings, narrator_lines):
+def test_lines_endpoint_exposes_audio_url_and_voice_prompt(settings, narrator_lines):
     client = _client(settings)
     book_id = _seed_book(settings, narrator_lines)
     lines = client.get(f"/api/books/{book_id}/chapters/0/lines").json()["lines"]
     assert [line["id"] for line in lines] == ["c0000-s01-l001", "c0000-s01-l002"]
     assert lines[0]["speaker_name"] == "旁白"
+    # 这个分支前端只认「本句表演描述」；emotion 是历史字段，留在 payload 里只为兼容老数据
+    assert lines[0]["voice_prompt"] == ""
     assert lines[0]["emotion"]["dominant"] == "平静"      # 夹具不注入场景基调 → source=none
     assert lines[0]["has_audio"] is False and lines[0]["duration_sec"] == 0.0
     assert lines[0]["audio_mtime"] is None

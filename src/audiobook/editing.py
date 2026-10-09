@@ -4,7 +4,12 @@ from pathlib import Path
 from . import store
 from .analysis.models import DELIVERIES, EMOTIONS, clamp01
 
-EDITABLE_FIELDS = ("text", "speaker", "addressee", "emotion", "intensity", "delivery")
+# voice_prompt 是本分支的核心：这一句怎么演（语气/语速/音量/气息），合成时和角色基础音色描述拼在一起。
+# emotion / intensity / delivery 是 IndexTTS 时代的遗留字段，保留只为兼容老数据，前端不再暴露。
+EDITABLE_FIELDS = ("text", "speaker", "addressee", "voice_prompt", "emotion", "intensity", "delivery")
+
+# 单句表演描述上限：太长会被 TTS 端截断（voicePrompt ≤400 字），这里留出角色基础描述的位置
+MAX_VOICE_PROMPT_CHARS = 200
 
 
 def _role_name(names: dict[str, str], role_id: str) -> str:
@@ -48,6 +53,11 @@ def apply_line_patch(row: dict, patch: dict, names: dict[str, str]) -> dict:
                 raise ValueError(f"未知受话人：{target}")
             updated["addressee"] = role_id
             updated["addressee_name"] = _role_name(names, role_id)
+    if "voice_prompt" in patch:
+        voice_prompt = str(patch["voice_prompt"] or "").strip()
+        if len(voice_prompt) > MAX_VOICE_PROMPT_CHARS:
+            raise ValueError(f"本句表演描述最多 {MAX_VOICE_PROMPT_CHARS} 字")
+        updated["voice_prompt"] = voice_prompt
     if "emotion" in patch or "intensity" in patch:
         dominant = str(patch.get("emotion") or (updated.get("emotion") or {}).get("dominant") or "平静")
         if dominant not in EMOTIONS:

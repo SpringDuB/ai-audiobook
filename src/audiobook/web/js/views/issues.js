@@ -11,6 +11,8 @@ const FAIL_KINDS = new Set([
   "chapter_window_failed",
   "tts_line_failed",
   "tts_endpoint_down",
+  "cast_sheet_failed",
+  "voice_design_failed",
   "render_duration_mismatch",
 ]);
 

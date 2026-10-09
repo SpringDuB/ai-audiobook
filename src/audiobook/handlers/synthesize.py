@@ -116,20 +116,31 @@ def batch_plan(ctx, rows: list[dict]) -> tuple[int, int]:
 
 
 def group_batches(rows: list[dict], targets: dict, size: int, chunk_limit: int) -> list[list[dict]]:
-    """按音色打包：同一个音色的行排在一起，每 size 条一包。
+    """打包规则：克隆通道按音色分组，纯描述通道跨角色按长度聚堆，每 size 条一包。
 
-    太长的文本（客户端本来就要分块）单独成包，走原来的逐行路径，时序与以前一致。
+    - 克隆（库存音色/参考音频）：一个请求只能一个音色（服务端按第一个 item 的 refId 取参考音频），
+      所以必须按 voice_id 分组；
+    - 纯描述（VoiceDesign，主线）：每条自带 voicePrompt，**跨角色也能一包解码**。
+      按角色分组会让每个角色最后剩几句凑不满一包、只能发单条 —— 实测单条吞吐只有
+      4 条一包的三分之一（0.69 vs 2.04 音频秒/墙钟秒）。
+    太长的文本（客户端本来就要分块）单独成包，时序与以前一致。
     包内按文本长度排序：批量解码会把一个包补齐到最长那条，长短混在一起会白白多算。
     """
     groups: list[list[dict]] = []
-    by_voice: dict[str, list[dict]] = {}
+    by_key: dict[tuple, list[dict]] = {}
     for row in rows:
         if len(row["text"]) > chunk_limit:
             groups.append([row])
             continue
-        by_voice.setdefault(targets[row["id"]]["voice_id"], []).append(row)
-    for voice_rows in by_voice.values():
-        ordered = sorted(voice_rows, key=lambda row: len(row["text"]))
+        target = targets[row["id"]]
+        if target.get("voice_source") == "library":
+            key: tuple = ("clone", target["voice_id"])
+        else:
+            # 语言是请求级参数（服务端 payload.lang 取第一条），别把不同语言混进一包
+            key = ("design", getattr(target.get("params"), "lang", None) or "ZH")
+        by_key.setdefault(key, []).append(row)
+    for key_rows in by_key.values():
+        ordered = sorted(key_rows, key=lambda row: len(row["text"]))
         for start in range(0, len(ordered), size):
             groups.append(ordered[start : start + size])
     return groups

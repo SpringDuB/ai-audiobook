@@ -9,6 +9,9 @@ import { h, progressBar, renderWithState, toast } from "../ui.js";
 const COLUMNS = ["任务", "对象", "进度", "状态", ""];
 
 function statusTag(job) {
+  if (job.status === "running" && job.cancel_requested) {
+    return h("span", { class: "tag tag--danger" }, `取消中… ${job.attempts}/${job.max_attempts}`);
+  }
   if (job.status === "running") return h("span", { class: "tag tag--accent" }, `运行中 ${job.attempts}/${job.max_attempts}`);
   if (job.status === "failed") return h("span", { class: "tag tag--danger" }, `失败 ${job.attempts}/${job.max_attempts}`);
   if (job.status === "canceled") return h("span", { class: "tag" }, `已取消 ${job.attempts}/${job.max_attempts}`);
@@ -19,13 +22,24 @@ function statusTag(job) {
 function jobRow(job, refresh) {
   const progress = job.progress || null;
   const actions = [];
-  if (job.status === "running" || job.status === "queued") {
+  if (job.status === "running" && job.cancel_requested) {
+    // 取消请求已发出：worker 会在几秒内停下来（LLM 流会在数据块之间被打断）
+    actions.push(
+      h(
+        "button",
+        { class: "btn btn-sm", type: "button", disabled: true, title: "已请求取消，等 worker 停下来" },
+        icon("hourglass", { size: 12 }),
+        "取消中…",
+      ),
+    );
+  } else if (job.status === "running" || job.status === "queued") {
     actions.push(
       h(
         "button",
         {
           class: "btn btn-sm btn-danger",
           type: "button",
+          title: "立刻停下这个任务（正在跑的模型请求会被打断）",
           onClick: async () => {
             try {
               await api.cancelJob(job.id);

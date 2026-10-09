@@ -6,15 +6,16 @@ import { duration, kindLabel } from "../format.js";
 import { icon } from "../icons.js";
 import { store } from "../store.js";
 import { closeVoicePicker, loadVoices, openVoicePicker } from "../voicepicker.js";
-import { chapterPickerDialog, emptyState, h, onTeardown, renderWithState, seal, toast } from "../ui.js";
-
-const EMOTIONS = ["喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静"];
-const DELIVERIES = [
-  ["normal", "正常"],
-  ["shout", "喊叫"],
-  ["whisper", "低语"],
-  ["sneer", "冷笑"],
-];
+import {
+  chapterPickerDialog,
+  emptyState,
+  h,
+  onTeardown,
+  promptDialog,
+  renderWithState,
+  seal,
+  toast,
+} from "../ui.js";
 
 // 页签顺序就是显示顺序：默认停在「原文」，想看逐句标注再切「角色文本」
 const TAB_LABELS = {
@@ -135,7 +136,7 @@ function chapterItem(chapter, state, onSelect, activity) {
             "span",
             {
               class: `chapter-item__status${analyzing === "running" ? " chapter-item__status--busy" : ""}`,
-              title: analyzing === "running" ? "大模型正在提取这一章的说话人与情绪" : "已排进分析队列，等前面的章跑完",
+              title: analyzing === "running" ? "大模型正在提取这一章的说话人与本句表演描述" : "已排进分析队列，等前面的章跑完",
             },
             icon(analyzing === "running" ? "hourglass" : "ellipsis", { size: 12 }),
             analyzing === "running" ? "正在分析台词" : "等待分析",
@@ -159,15 +160,21 @@ function roleHue(roleId) {
 }
 
 function metaChips(line) {
-  const emotion = line.emotion || {};
+  // 这个分支的情绪向量已经退场：每句只有「本句表演描述」（这一句怎么演）
+  const voice = String(line.voice_prompt || "").trim();
   return [
     h(
       "span",
       { class: "line__who" },
       line.speaker_name || line.speaker,
     ),
-    emotion.dominant ? h("span", { class: "tone-tag" }, `${emotion.dominant} ${emotion.intensity ?? ""}`.trim()) : null,
-    line.delivery && line.delivery !== "normal" ? h("span", { class: "tag" }, line.delivery) : null,
+    voice
+      ? h(
+          "span",
+          { class: "line__voice", title: `本句表演描述：${voice}` },
+          `表演：${voice}`,
+        )
+      : null,
     line.duration_sec ? h("span", { class: "tag mono" }, duration(line.duration_sec)) : null,
   ].filter(Boolean);
 }
@@ -175,17 +182,11 @@ function metaChips(line) {
 function lineEditor(line, bookId, onSaved, onCancel) {
   const text = h("textarea", { rows: 3, value: line.text });
   const speaker = h("input", { type: "text", value: line.speaker_name || line.speaker, placeholder: "说话人" });
-  const emotion = h(
-    "select",
-    {},
-    ...EMOTIONS.map((name) => h("option", { value: name, selected: (line.emotion || {}).dominant === name }, name)),
-  );
-  const intensity = h("input", { type: "number", min: "0", max: "1", step: "0.05", value: String((line.emotion || {}).intensity ?? 0.5) });
-  const delivery = h(
-    "select",
-    {},
-    ...DELIVERIES.map(([value, label]) => h("option", { value, selected: line.delivery === value }, label)),
-  );
+  const voice = h("textarea", {
+    rows: 2,
+    value: line.voice_prompt || "",
+    placeholder: "这一句怎么演：语气、情绪、语速、音量、气息……留空则只用角色的基础音色描述",
+  });
   const error = h("p", { class: "inline-error" });
   const save = h(
     "button",
@@ -199,11 +200,9 @@ function lineEditor(line, bookId, onSaved, onCancel) {
           const result = await api.patchLine(bookId, line.id, {
             text: text.value,
             speaker: speaker.value.trim(),
-            emotion: emotion.value,
-            intensity: Number(intensity.value),
-            delivery: delivery.value,
+            voice_prompt: voice.value.trim(),
           });
-          toast("已保存；本章成品已失效，重渲染后生效");
+          toast("已保存；本章成品已失效，重新生成后这一句会按新描述合成");
           onSaved(result.line);
         } catch (err) {
           error.textContent = err.message;
@@ -218,18 +217,8 @@ function lineEditor(line, bookId, onSaved, onCancel) {
     "div",
     { class: "line__edit" },
     h("div", { class: "field" }, h("label", {}, "台词"), text),
-    h(
-      "div",
-      { class: "grid-3" },
-      h("div", { class: "field" }, h("label", {}, "说话人"), speaker),
-      h("div", { class: "field" }, h("label", {}, "情绪"), emotion),
-      h("div", { class: "field" }, h("label", {}, "强度 0–1"), intensity),
-    ),
-    h(
-      "div",
-      { class: "grid-3" },
-      h("div", { class: "field" }, h("label", {}, "语气"), delivery),
-    ),
+    h("div", { class: "field" }, h("label", {}, "说话人"), speaker),
+    h("div", { class: "field" }, h("label", {}, "本句表演描述"), voice),
     h("div", { class: "row" }, save, h("button", { class: "btn btn-sm", type: "button", onClick: onCancel }, "取消"), error),
   );
 }
@@ -334,7 +323,7 @@ function roleRow(role, scope, ctx) {
     class: "cast-row__desc",
     rows: "3",
     value: role.description || "",
-    placeholder: "这个角色的音色：年龄、音色质地、说话习惯、气质……（逐句生成时和每句话的表演描述拼在一起）",
+    placeholder: "这个角色的音色：性别年龄感、音区、音色质地、咬字……（语速与情绪由每句话的表演描述负责）",
     "aria-label": `${role.name} 的音色描述`,
     onKeydown: (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -416,12 +405,25 @@ function roleRow(role, scope, ctx) {
                 {
                   class: "btn btn-sm",
                   type: "button",
-                  title: "让大模型根据这个角色的台词重写一版描述",
-                  onClick: (event) => ctx.rewriteDescription(role, editor, event.currentTarget),
+                  title: "让大模型在上一版基础上微调（音色不变，只补维度、修矛盾）；没有描述时等于新写一版",
+                  onClick: (event) => ctx.rewriteDescription(role, editor, event.currentTarget, "refine"),
                 },
                 icon("refresh-cw", { size: 12 }),
-                "让模型写一版",
+                described ? "让模型微调" : "让模型写一版",
               ),
+              described
+                ? h(
+                    "button",
+                    {
+                      class: "btn btn-sm",
+                      type: "button",
+                      title: "换一版音色：先写一段你想要的音色描述（年龄/音区/质地/气质），模型按它重新设计；不写就是直接重掷",
+                      onClick: (event) => ctx.rerollDescription(role, editor, event.currentTarget),
+                    },
+                    icon("shuffle", { size: 12 }),
+                    "换一版音色",
+                  )
+                : null,
               h(
                 "button",
                 {
@@ -550,6 +552,8 @@ async function build(route, host) {
   const scriptBody = h("section", { class: "script__body", "aria-live": "polite" });
   const castList = h("div", { class: "cast__list" });
   const castTabs = h("div", { class: "tabs tabs--sm" });
+  // 角色面板右上角的状态行：平时显示音色库数量，"生成全部试听"时改成进度
+  const castStatus = h("span", { class: "mono muted" }, `音色库 ${voiceLibrary.length}`);
   const scriptTabs = h("div", { class: "tabs", role: "tablist" });
   const progress = h("span", { class: "workbench__progress mono", dataset: { book: bookId } }, "");
   // 逐句试听按钮的两种状态：▶ 试听 / ■ 停止
@@ -644,11 +648,23 @@ async function build(route, host) {
   };
 
   // 让大模型重写一版描述（异步任务）
-  const rewriteDescription = async (role, editor, button) => {
+  // mode=refine：把上一版当锚点微调（默认，音色不会大变）
+  // mode=reroll：重掷一版音色；带 instruction 时按用户写的要求设计（"换成四十岁低沉男声"）
+  const rewriteDescription = async (role, editor, button, mode = "refine", instruction = "") => {
     if (button) button.disabled = true;
     try {
-      await api.rewriteRoleDescription(state.bookId, role.role_id);
-      toast(`已让模型重写「${role.name}」的音色描述，跑完自动刷新`);
+      await api.rewriteRoleDescription(
+        state.bookId,
+        role.role_id,
+        instruction ? { mode, instruction } : { mode },
+      );
+      toast(
+        mode === "reroll"
+          ? instruction
+            ? `已让模型按你的要求重做「${role.name}」的音色，跑完自动刷新`
+            : `已让模型重掷「${role.name}」的音色（会换成另一个声音），跑完自动刷新`
+          : `已让模型微调「${role.name}」的音色描述（保持音色不变），跑完自动刷新`,
+      );
       const timer = window.setInterval(async () => {
         const payload = await api.casting(state.bookId).catch(() => null);
         if (!payload) return;
@@ -657,7 +673,11 @@ async function build(route, host) {
           window.clearInterval(timer);
           state.casting = payload.roles || [];
           paintCast();
-          toast(`「${role.name}」的新描述已写好`);
+          toast(
+            mode === "reroll"
+              ? `「${role.name}」的新音色已写好：试听确认后再重新生成音频`
+              : `「${role.name}」的音色描述已更新`,
+          );
         }
       }, 2000);
       onTeardown(() => window.clearInterval(timer));
@@ -666,6 +686,19 @@ async function build(route, host) {
     } finally {
       if (button) button.disabled = false;
     }
+  };
+
+  // 换一版音色：先让用户写清楚想要什么声音，再交给模型（不写就是普通重掷）
+  const rerollDescription = async (role, editor, button) => {
+    const instruction = await promptDialog({
+      title: `换一版音色：${role.name}`,
+      message:
+        "写清楚你想要的声音：年龄感、音区高低、音色质地（沙哑/清亮/厚实…）、说话的气质都可以写。模型会按这段要求重新设计这个角色的音色描述。",
+      placeholder: "例如：换成四十岁左右的中年男声，音区更低、嗓音沙哑些，语速不快，带一点江湖气",
+      confirmLabel: "按这段要求生成",
+    });
+    if (instruction === null) return;
+    await rewriteDescription(role, editor, button, "reroll", instruction);
   };
 
   // 角色试听：按当前描述生成一段（没生成过才真的跑模型，之后直接听缓存文件）
@@ -701,6 +734,40 @@ async function build(route, host) {
         button.disabled = false;
         button.replaceChildren(icon("play", { size: 12 }), "试听");
       }
+    }
+  };
+
+  // 一键生成全部角色试听：交给 worker 队列跑（已生成且描述没变的服务端自动跳过），
+  // 前端只轮询这一个任务的进度并实时刷新角色卡片。
+  const previewAllRoles = async (button) => {
+    if (button) button.disabled = true;
+    try {
+      const { job_id: jobId } = await api.previewAllRoles(state.bookId, { force: false });
+      castStatus.textContent = "全部试听：排队中…";
+      const timer = window.setInterval(async () => {
+        const payload = await api.job(jobId).catch(() => null);
+        const job = payload && payload.job;
+        if (!job) return;
+        const progress = job.progress || {};
+        castStatus.textContent = `全部试听 ${progress.done || 0}/${progress.total || 0} ${progress.message || ""}`.trim();
+        if (!["done", "failed", "canceled"].includes(job.status)) return;
+        window.clearInterval(timer);
+        if (button) button.disabled = false;
+        const castingPayload = await api.casting(state.bookId).catch(() => null);
+        if (castingPayload) {
+          state.casting = castingPayload.roles || [];
+          paintCast();
+        }
+        if (job.status === "done") {
+          toast(`全部试听完成：${progress.message || ""}`.trim());
+        } else {
+          toast(`全部试听${job.status === "failed" ? "失败" : "已取消"}：${job.error || progress.message || ""}`, "error");
+        }
+      }, 1500);
+      onTeardown(() => window.clearInterval(timer));
+    } catch (error) {
+      toast(error.message, "error");
+      if (button) button.disabled = false;
     }
   };
 
@@ -762,6 +829,7 @@ async function build(route, host) {
               voiceById,
               saveDescription,
               rewriteDescription,
+              rerollDescription,
               previewRole,
             }),
           )
@@ -840,7 +908,7 @@ async function build(route, host) {
         activity
           ? emptyState(
               activity === "running" ? "正在分析这一章的台词…" : "这一章已排进分析队列",
-              "大模型在逐句判定说话人与情绪，跑完这里会自动出现角色文本，不用刷新页面。",
+              "大模型在逐句判定说话人与本句表演描述，跑完这里会自动出现角色文本，不用刷新页面。",
             )
           : emptyState("这一章还没做逐句标注", "点上面的「分析本章台词」，worker 跑完就有了。"),
       );
@@ -1145,7 +1213,7 @@ async function build(route, host) {
       { class: "workbench__actions" },
       action("分析本章台词", async () => queued(await api.analyzeChapter(bookId, state.index), "本章分析"), {
         glyph: "scan-text",
-        title: "只重跑当前这一章的逐句标注（谁说的 + 什么情绪），其他章不动；已人工改过的这一章会被覆盖",
+        title: "只重跑当前这一章的逐句标注（谁说的 + 这一句怎么演），其他章不动；已人工改过的这一章会被覆盖",
       }),
       action("生成本章音频", async () => queued(await api.generateChapter(bookId, state.index), "本章合成"), {
         glyph: "file-audio",
@@ -1175,7 +1243,7 @@ async function build(route, host) {
         },
         {
           glyph: "book-open-text",
-          title: "补跑逐句标注（说话人 + 情绪）；已分析好的章节自动跳过，弹窗里可以只勾几章，或勾「覆盖重跑」返工",
+          title: "补跑逐句标注（说话人 + 本句表演描述）；已分析好的章节自动跳过，弹窗里可以只勾几章，或勾「覆盖重跑」返工",
         },
       ),
       action("生成整本音频", async () => queued(await api.generateBook(bookId), "合成"), {
@@ -1222,7 +1290,22 @@ async function build(route, host) {
           "div",
           { class: "cast__head" },
           h("h3", { class: "letterpress" }, "角色音色"),
-          h("span", { class: "mono muted" }, `音色库 ${voiceLibrary.length}`),
+          h(
+            "div",
+            { class: "cast__headTools" },
+            castStatus,
+            h(
+              "button",
+              {
+                class: "btn btn-sm",
+                type: "button",
+                title: "给所有角色生成试听音频（已经生成过、描述又没改的自动跳过），跑完可以一个个点着听",
+                onClick: (event) => previewAllRoles(event.currentTarget),
+              },
+              icon("play", { size: 12 }),
+              "生成全部试听",
+            ),
+          ),
         ),
         castTabs,
         castList,

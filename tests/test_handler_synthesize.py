@@ -3,6 +3,7 @@ import time
 from dataclasses import replace
 
 from audiobook import jobs, store
+from audiobook.engines.base import SynthParams
 from fake_engine import FakeEngine
 from audiobook.engines.errors import TtsVoiceMissing
 from audiobook.handlers import synthesize  # noqa: F401  导入即注册
@@ -278,7 +279,9 @@ def test_group_batches_packs_same_voice_and_keeps_long_text_alone():
         {"id": "c", "text": "另一句。"},
         {"id": "d", "text": "第三句。"},
     ]
-    targets = {row["id"]: {"voice_id": "v1"} for row in rows}
+    targets = {
+        row["id"]: {"voice_id": "v1", "voice_source": "design", "params": SynthParams()} for row in rows
+    }
     groups = group_batches(rows, targets, 4, 300)
     assert [[row["id"] for row in group] for group in groups] == [["b"], ["a", "c", "d"]]
 
@@ -290,9 +293,46 @@ def test_group_batches_sorts_by_length_to_avoid_padding_waste():
         {"id": "mid", "text": "中" * 12},
         {"id": "short", "text": "短"},
     ]
-    targets = {row["id"]: {"voice_id": "v1"} for row in rows}
+    targets = {
+        row["id"]: {"voice_id": "v1", "voice_source": "design", "params": SynthParams()} for row in rows
+    }
     groups = group_batches(rows, targets, 3, 300)
     assert [[row["id"] for row in group] for group in groups] == [["short", "mid", "long"]]
+
+
+def test_group_batches_packs_design_lines_across_roles():
+    """纯描述通道每条自带 voicePrompt：跨角色也能一包解码，别按角色分组剩下单条。"""
+    rows = [
+        {"id": "n1", "text": "旁白一。"},
+        {"id": "a1", "text": "甲的一句话。"},
+        {"id": "n2", "text": "旁白二。"},
+        {"id": "a2", "text": "甲的另一句。"},
+    ]
+    targets = {
+        "n1": {"voice_id": "narrator", "voice_source": "design", "params": SynthParams()},
+        "n2": {"voice_id": "narrator", "voice_source": "design", "params": SynthParams()},
+        "a1": {"voice_id": "role_0001", "voice_source": "design", "params": SynthParams()},
+        "a2": {"voice_id": "role_0001", "voice_source": "design", "params": SynthParams()},
+    }
+    groups = group_batches(rows, targets, 4, 300)
+    assert [[row["id"] for row in group] for group in groups] == [["n1", "n2", "a1", "a2"]]
+
+
+def test_group_batches_keeps_clone_lines_per_voice():
+    """克隆通道一个请求只能一个音色（服务端按第一条的 refId 取参考音频），必须分开。"""
+    rows = [
+        {"id": "a1", "text": "甲。"},
+        {"id": "b1", "text": "乙。"},
+        {"id": "a2", "text": "甲又说。"},
+    ]
+    targets = {
+        "a1": {"voice_id": "lib_a", "voice_source": "library", "params": SynthParams()},
+        "a2": {"voice_id": "lib_a", "voice_source": "library", "params": SynthParams()},
+        "b1": {"voice_id": "lib_b", "voice_source": "library", "params": SynthParams()},
+    }
+    groups = group_batches(rows, targets, 4, 300)
+    packed = sorted(sorted(row["id"] for row in group) for group in groups)
+    assert packed == [["a1", "a2"], ["b1"]]
 
 
 def test_synthesize_packs_same_voice_into_one_batch(conn, settings, narrator_lines):

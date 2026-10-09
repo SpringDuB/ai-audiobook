@@ -1,8 +1,18 @@
 import threading
 import time
 
+import pytest
+
 from audiobook import jobs
-from audiobook.worker import HANDLERS, WorkerContext, register, run_forever, run_once
+from audiobook.worker import (
+    HANDLERS,
+    CancelWatcher,
+    JobCancelled,
+    WorkerContext,
+    register,
+    run_forever,
+    run_once,
+)
 
 
 def make_ctx(conn, settings, engine=None) -> WorkerContext:
@@ -84,6 +94,34 @@ def test_cancel_requested_mid_run_is_not_marked_done(conn, settings):
         assert jobs.get_job(conn, job_id).status == "canceled"
     finally:
         HANDLERS.pop("unit_cancel_late", None)
+
+
+def test_cancel_check_works_from_any_thread(conn, settings):
+    """取消检查要能在任务的线程池里调用：CancelWatcher 自带连接 + 锁。"""
+    job_id = jobs.enqueue(conn, "lines", "book1", 1)
+    job = jobs.claim(conn, "w-test", lease_seconds=30)
+    ctx = WorkerContext(settings=settings, conn=conn, worker_id="w-test")
+    ctx.watcher = CancelWatcher(settings.db_path, job.id)
+    try:
+        check = ctx.cancel_check(job)
+        check()      # 还没取消：不抛
+        jobs.request_cancel(conn, job.id)
+        errors: list[BaseException] = []
+
+        def run():
+            try:
+                check()
+            except BaseException as exc:  # noqa: BLE001 - 线程里收集异常
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert isinstance(errors[0] if errors else None, JobCancelled)
+        assert jobs.get_job(conn, job_id).cancel_requested is True
+    finally:
+        ctx.watcher.close()
 
 
 def test_long_handler_keeps_lease_alive(conn, settings):

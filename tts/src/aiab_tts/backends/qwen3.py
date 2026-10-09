@@ -45,6 +45,36 @@ LANGUAGE_NAMES = {
 DEFAULT_SAMPLE_RATE = 24000
 # 描述为空时兜底：VoiceDesign 允许空 instruct，但什么都别说容易"漂"，给个中性描述
 FALLBACK_INSTRUCT = "自然清晰的声音，语速适中，语气平稳。"
+# 尾部静音裁剪：批量解码时同一包是同步跑的，先说完的句子会陪跑到最长那条结束，
+# 中间那些帧解码出来是**数字静音**（实测：5 个字的一句生成 16.3s，其中 15s 是静音）。
+# 只裁尾巴、保留自然收束；头部不动（怕吃掉起音的气口）。
+TAIL_SILENCE_KEEP_SECONDS = 0.35
+TAIL_SILENCE_RATIO = 0.01          # 相对峰值的 -40dB
+TAIL_SILENCE_MIN_TRIM_SECONDS = 0.5  # 尾巴不到半秒就别动它
+
+
+def _trim_tail(waveform, sample_rate: int):
+    """裁掉波形尾部的静音，返回（可能变短的）波形；不是数值数组时原样返回。"""
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - 没 numpy 的部署不存在
+        return waveform
+    data = np.asarray(waveform)
+    if data.size == 0:
+        return waveform
+    mono = np.abs(data if data.ndim == 1 else data.reshape(len(data), -1).max(axis=1))
+    peak = float(mono.max())
+    if peak <= 0:
+        return waveform
+    loud = np.nonzero(mono >= peak * TAIL_SILENCE_RATIO)[0]
+    if loud.size == 0:
+        return waveform
+    keep = int(int(sample_rate) * TAIL_SILENCE_KEEP_SECONDS)
+    end = int(loud[-1]) + keep + 1
+    min_trim = int(int(sample_rate) * TAIL_SILENCE_MIN_TRIM_SECONDS)
+    if end >= len(mono) or (len(mono) - end) < min_trim:
+        return waveform
+    return data[:end]
 
 
 def language_name(code: str | None) -> str:
@@ -63,6 +93,7 @@ def _wav_bytes(waveform, sample_rate: int) -> bytes:
     """numpy 波形 → WAV 字节（后端只依赖 soundfile，不引额外编码器）。"""
     import soundfile as sf
 
+    waveform = _trim_tail(waveform, sample_rate)
     buffer = io.BytesIO()
     sf.write(buffer, waveform, int(sample_rate), format="WAV", subtype="PCM_16")
     return buffer.getvalue()
@@ -160,6 +191,22 @@ class Qwen3TtsBackend:
         logger.info("加载 Qwen3-TTS %s：%s（dtype=%s）", kind, path, dtype)
         model = Qwen3TTSModel.from_pretrained(path, **kwargs)
         logger.info("Qwen3-TTS %s 加载完成，用时 %.1fs", kind, time.monotonic() - started)
+        mode = str(getattr(self.settings, "fast_predictor", "") or "").strip().lower()
+        if mode not in ("", "off", "none", "0", "false"):
+            try:
+                from .qwen3_fast import install_fast_predictor
+
+                logger.info(install_fast_predictor(model.model, mode=mode))
+            except Exception:  # noqa: BLE001 - 加速失败必须退回原路径，不能拖垮服务
+                logger.exception("启用 code_predictor 快路径失败，继续用上游实现")
+        chunk = int(getattr(self.settings, "decode_chunk", 0) or 0)
+        if chunk > 0:
+            try:
+                from .qwen3_cache import install_chunked_decode
+
+                logger.info(install_chunked_decode(model.model, chunk=chunk))
+            except Exception:  # noqa: BLE001
+                logger.exception("codec 解码分块失败，继续用原始解码")
         return model
 
     def _model(self, kind: str):

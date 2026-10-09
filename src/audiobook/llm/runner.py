@@ -1,6 +1,8 @@
 import logging
 import random
+import re
 import time
+from typing import Callable
 
 from pydantic import ValidationError
 
@@ -9,9 +11,27 @@ from .base import LLMDisconnected, LLMError, LLMRateLimit, LLMTimeout
 
 logger = logging.getLogger(__name__)
 
+
+def clean_json_text(text: str) -> str:
+    """剥掉模型回复的常见包装：```json 代码围栏、JSON 前后的解释文字。
+
+    关掉 JSON mode 的趟（顶层要数组的 extract）最容易见到这两种；
+    剥完再交给 pydantic，能少一次"整段重跑"。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    starts = [index for index in (raw.find("{"), raw.find("[")) if index >= 0]
+    end = max(raw.rfind("}"), raw.rfind("]"))
+    if starts and end > min(starts):
+        raw = raw[min(starts) : end + 1]
+    return raw.strip()
+
+
 REPAIR_HINT = (
     "\n\n上一次输出不是合法 JSON，错误信息：{error}\n"
-    "只输出一个 JSON 对象：不要解释、不要 Markdown 代码块、不要多余文字。"
+    "只输出题目要求的那份 JSON（题目要求数组就是数组、要求对象就是对象）："
+    "不要解释、不要 Markdown 代码块、不要多余文字。"
 )
 
 
@@ -42,14 +62,31 @@ class LlmJsonRunner:
         book_id: str,
         chapter_index: int | None = None,
         scene_id: str | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        json_mode: bool | None = None,
     ):
+        """跑一趟 LLM。
+
+        cancel_check 是"用户取消了吗"的回调：它在**每次尝试前、等并发槽时、以及流式
+        响应的每个数据块之间**被调用，取消时直接抛错（JobCancelled），不重试、不记失败。
+
+        json_mode 按趟覆盖接口的 response_format（None = 用客户端默认）。
+        """
         last_error = ""
         for attempt in range(1, self.max_attempts + 1):
             prompt = user if attempt == 1 else user + REPAIR_HINT.format(error=last_error)
+            if cancel_check is not None:
+                cancel_check()
             try:
-                with self.limiter.slot():
+                with self.limiter.slot(cancel_check=cancel_check):
+                    extra = {"cancel_check": cancel_check} if cancel_check is not None else {}
+                    if json_mode is not None:
+                        extra["json_mode"] = json_mode
                     reply = self.client.complete(
-                        system, prompt, max_output_tokens=self.settings.llm_max_output_tokens
+                        system,
+                        prompt,
+                        max_output_tokens=self.settings.llm_max_output_tokens,
+                        **extra,
                     )
             except LLMError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -98,7 +135,7 @@ class LlmJsonRunner:
                 continue
             self.limiter.record_success()
             try:
-                model = model_cls.model_validate_json(reply.text)
+                model = model_cls.model_validate_json(clean_json_text(reply.text))
             except ValidationError as exc:
                 last_error = f"JSON 校验失败: {exc}"[:800]
                 self._log(book_id, pass_name, chapter_index, scene_id, attempt, False, reply, last_error)
@@ -121,6 +158,12 @@ class LlmJsonRunner:
     ) -> None:
         if not book_id:
             return
+        preview = getattr(reply, "text", None)
+        if ok or not preview:
+            preview = None
+        else:
+            # 失败时留一小段原始输出：JSON 结构问题（数组被包成对象之类）不看原文很难查
+            preview = preview[:400]
         store.append_jsonl(
             store.llm_log_path(self.settings, book_id),
             {
@@ -137,5 +180,6 @@ class LlmJsonRunner:
                 "output_tokens": getattr(reply, "output_tokens", None),
                 "reasoning_tokens": getattr(reply, "reasoning_tokens", None),
                 "error": error,
+                "output_preview": preview,
             },
         )

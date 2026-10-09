@@ -157,8 +157,8 @@ def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
                     key: row.get(key)
                     for key in (
                         "id", "scene", "speaker", "speaker_name",
-                        "addressee", "addressee_name", "text", "emotion", "delivery",
-                        "rate", "lang",
+                        "addressee", "addressee_name", "text", "voice_prompt",
+                        "emotion", "delivery", "rate", "lang",
                     )
                 },
                 "duration_sec": duration,
@@ -562,12 +562,32 @@ def create_app(settings, conn) -> FastAPI:
         return {"role": entry}
 
     @app.post("/api/books/{book_id}/roles/{role_id}/rewrite")
-    def rewrite_role_description(book_id: str, role_id: str):
-        """让大模型重新写一版音色描述（异步任务，跑完前端刷新就能看到）。"""
+    def rewrite_role_description(book_id: str, role_id: str, payload: dict | None = None):
+        """让大模型重新写一版音色描述（异步任务，跑完前端刷新就能看到）。
+
+        mode=refine（默认）：上一版当锚点微调，音色基本不变，只修缺维度/自相矛盾；
+        mode=reroll：重掷一版音色；带 instruction 时按用户写的要求设计
+        （"换成四十岁左右的低沉男声"这种，硬性生效）。
+        """
         casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
         if role_id not in (casting.get("roles") or {}):
             raise HTTPException(status_code=404, detail="role not found")
-        job_id = jobs.enqueue(conn, "voice_design", book_id, payload={"roles": [role_id], "force": True})
+        payload = payload or {}
+        mode = str(payload.get("mode") or "refine").strip().lower()
+        if mode not in ("refine", "reroll"):
+            raise HTTPException(status_code=400, detail="mode 只能是 refine 或 reroll")
+        instruction = str(payload.get("instruction") or "").strip()[:300]
+        wanted = {"roles": [role_id], "force": True, "mode": mode}
+        if instruction:
+            wanted["instruction"] = instruction
+        job_id = jobs.enqueue(
+            conn, "voice_design", book_id, payload=wanted
+        )
+        # enqueue 对同 (kind, book, chapter) 幂等：上一次还在排队时会把 payload 换成
+        # 这一次的（例如上次点"微调"、这次点"换一版音色"），否则用户的新意图会被丢掉。
+        job = jobs.get_job(conn, job_id)
+        if job is not None and job.status == "queued" and (job.payload or {}) != wanted:
+            jobs.set_payload(conn, job_id, wanted)
         return {"job_id": job_id}
 
     @app.post("/api/books/{book_id}/roles/{role_id}/preview")
@@ -629,6 +649,23 @@ def create_app(settings, conn) -> FastAPI:
             "sample": sample,
             "updated_at": int(time.time() * 1000),
         }
+
+    @app.post("/api/books/{book_id}/roles/preview_all")
+    def generate_all_role_previews(book_id: str, payload: dict | None = None):
+        """一键生成全部角色试听（异步任务）：已生成且描述没变的自动跳过。"""
+        casting = store.read_json(store.casting_path(settings, book_id), default={}) or {}
+        if not (casting.get("roles") or {}):
+            raise HTTPException(status_code=404, detail="role not found")
+        payload = payload or {}
+        wanted = {"force": bool(payload.get("force"))}
+        roles = [str(item) for item in payload.get("roles") or [] if item]
+        if roles:
+            wanted["roles"] = roles
+        job_id = jobs.enqueue(conn, "voice_preview", book_id, payload=wanted)
+        job = jobs.get_job(conn, job_id)
+        if job is not None and job.status == "queued" and (job.payload or {}) != wanted:
+            jobs.set_payload(conn, job_id, wanted)
+        return {"job_id": job_id}
 
     @app.get("/api/books/{book_id}/roles/{role_id}/preview.wav")
     def role_preview_audio(book_id: str, role_id: str):
@@ -785,6 +822,14 @@ def create_app(settings, conn) -> FastAPI:
     @app.get("/api/jobs")
     def list_jobs(book_id: str | None = None):
         return {"jobs": [j.__dict__ for j in jobs.list_jobs(conn, book_id)]}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: int):
+        """单个任务：前端轮询"生成全部试听"这种小批量任务的进度用。"""
+        job = jobs.get_job(conn, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return {"job": job.__dict__}
 
     @app.get("/api/tts/status")
     def tts_status():

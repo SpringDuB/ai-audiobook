@@ -45,7 +45,15 @@ class SlowFakeLLM(FakeLLM):
         self.inflight = 0
         self.peak = 0
 
-    def complete(self, system: str, user: str, *, max_output_tokens: int = 4096):
+    def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_output_tokens: int = 4096,
+        cancel_check=None,
+        json_mode: bool | None = None,
+    ):
         with self._lock:
             self.inflight += 1
             self.peak = max(self.peak, self.inflight)

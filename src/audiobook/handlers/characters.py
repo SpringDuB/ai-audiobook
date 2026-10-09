@@ -91,6 +91,7 @@ def handle_characters(ctx, job) -> None:
                 content=chapter["content"],
                 window_chars=ctx.settings.llm_line_window_chars,
                 known_names=known_names,
+                cancel_check=check,
             )
         finally:
             with inflight_lock:
@@ -98,6 +99,7 @@ def handle_characters(ctx, job) -> None:
 
     cancelled = False
     if pending:
+        check = ctx.cancel_check(job)
         # 不用 with：取消时要立刻返回，不能让在跑的请求把任务拖到跑完
         pool = ThreadPoolExecutor(max_workers=max(1, min(len(pending), int(ctx.settings.llm_concurrency))))
         try:
@@ -180,7 +182,11 @@ def handle_characters(ctx, job) -> None:
     results.sort(key=lambda item: item[0])
     ctx.raise_if_cancelled(job)
     payload, issues = merge_roles(
-        runner, book_id=book_id, entries=role_entries(results), known=known_names
+        runner,
+        book_id=book_id,
+        entries=role_entries(results),
+        known=known_names,
+        cancel_check=ctx.cancel_check(job),
     )
     for issue in issues:
         record_issue(

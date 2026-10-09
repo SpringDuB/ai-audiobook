@@ -6,7 +6,9 @@
 推荐阶段（库存音色，旁白用）出「1–3 个音色 id + 置信度 + 理由」。
 """
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
+from typing import ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 # 情绪枚举：老数据的兼容位（IndexTTS 那套 8 维向量用），Qwen3-TTS 不再用
 EMOTIONS = ("喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "忧郁", "惊讶", "平静")
@@ -84,7 +86,32 @@ class SpokenLine(BaseModel):
 
 
 class ExtractionOutput(RootModel[list[SpokenLine]]):
-    """整章提取的返回值：严格的 JSON 数组。"""
+    """整章提取的返回值：JSON 数组（也兼容被包成对象的数组）。
+
+    提示词要求顶层是数组，但 OpenAI 兼容接口的 JSON mode（response_format=
+    {"type":"json_object"}）强制顶层必须是对象 —— 模型只能把数组塞进某个字段，
+    实测出现过 {"type":"json_object","lines":[...]} 这种回显式包装。这里统一拆包，
+    别让一层包装白白废掉整段提取（30k tokens 的重跑代价）。
+    """
+
+    # 常见的包装字段名，优先按这些取；没有就退化成"取第一个数组值"
+    WRAPPER_KEYS: ClassVar[tuple[str, ...]] = (
+        "lines", "items", "data", "result", "list", "array", "segments", "output",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_array(cls, value):
+        if not isinstance(value, dict):
+            return value
+        for key in cls.WRAPPER_KEYS:
+            inner = value.get(key)
+            if isinstance(inner, list):
+                return inner
+        for inner in value.values():
+            if isinstance(inner, list):
+                return inner
+        return value
 
 
 class CharacterMerge(BaseModel):
@@ -162,3 +189,30 @@ class VoiceDesignOutput(BaseModel):
     @classmethod
     def _clean_sample(cls, value):
         return str(value or "").strip()[:80]
+
+
+class VoiceArchetype(BaseModel):
+    """选角表的一行：角色名 + 音色原型（音区/质地/年龄感）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+    archetype: str = ""
+
+    @field_validator("name", "archetype", mode="before")
+    @classmethod
+    def _strip(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("archetype", mode="after")
+    @classmethod
+    def _short(cls, value):
+        return value[:80]
+
+
+class CastSheetOutput(BaseModel):
+    """选角表的返回值：整本书的角色 → 音色原型。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    characters: list[VoiceArchetype] = Field(default_factory=list)

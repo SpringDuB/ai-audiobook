@@ -6,7 +6,8 @@ from audiobook.config import get_settings
 
 def test_export_settings_defaults(tmp_path):
     s = get_settings(data_dir=tmp_path / "data")
-    assert (s.loudness_mode, s.loudness_target_lufs, s.loudness_true_peak) == ("lufs", -16.0, -1.5)
+    # 默认 rms：章的响度照样对齐，但渲染只要 ~0.4s（lufs 两遍 loudnorm 要 ~43s/42分钟章）
+    assert (s.loudness_mode, s.loudness_target_lufs, s.loudness_true_peak) == ("rms", -16.0, -1.5)
     assert (s.export_target_sample_rate, s.export_container, s.export_mkv) == (0, "mkv", True)
     assert (s.loudness_rms_target_db, s.ffmpeg_path) == (-20.0, "")
     assert s.ffmpeg_timeout_seconds == 1800.0

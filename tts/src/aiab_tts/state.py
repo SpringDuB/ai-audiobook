@@ -42,13 +42,27 @@ def gpu_info(settings) -> dict:
 
 
 def _empty_cuda_cache() -> None:
-    """把 PyTorch 缓存池里没人用的块还给驱动（绝不碰在用张量）。"""
+    """把 PyTorch 缓存池里没人用的块还给驱动（绝不碰在用张量）。
+
+    有线程正在捕获 CUDA Graph 时必须让路：捕获窗口里任何一次 cudaFree
+    （empty_cache 就是干这个的）都会让捕获方报
+    "CUDA error: operation not permitted when stream is capturing"。
+    捕获只发生在某个 batch 形状第一次出现时，让这一次归还错过窗口没有任何代价。
+    """
     try:
         import torch
     except ImportError:
         return
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if not torch.cuda.is_available():
+        return
+    try:
+        from .backends.qwen3_fast import capture_active
+    except Exception:  # noqa: BLE001 - 不是 qwen3 后端 / 模块缺失：照常归还
+        capture_active = None
+    if capture_active is not None and capture_active():
+        logger.debug("跳过 empty_cache：有线程正在捕获 CUDA Graph")
+        return
+    torch.cuda.empty_cache()
 
 
 def _release_gpu_memory() -> None:
@@ -114,6 +128,7 @@ class ServiceState:
         # 空闲归还显存：_last_activity 任何请求进来（含还在闸门外排队的）都会刷新
         self._last_activity = time.monotonic()
         self._last_idle_release = 0.0
+        self._last_pool_release = 0.0
         self.idle_released_mb = 0.0
         self._start_idle_reclaimer()
 
@@ -182,6 +197,9 @@ class ServiceState:
         while True:
             time.sleep(interval)
             try:
+                # 并发跑着的时候也要盯着池子：多路批量背靠背时请求边界永远"不空闲"，
+                # 池子会在几分钟内虚胖到 9~10GB（物理 8.2GB，溢出到共享显存，越跑越慢）
+                self.release_after_request()
                 self._maybe_release_idle_memory()
             except Exception:  # noqa: BLE001 - 后台线程不能因为一次失败就退出
                 logger.exception("空闲归还显存失败")
@@ -226,6 +244,65 @@ class ServiceState:
         )
         return freed
 
+    def release_after_request(self) -> float:
+        """请求边界归还：把池子里攒着没人用的块还给驱动。
+
+        长任务里请求是背靠背来的（并发跑时更是永远有请求在飞），"空闲 20 秒"和
+        "没有任何在飞请求"这两个窗口都等不到，PyTorch 缓存池就会一直停在历史峰值，
+        实测能堆到 9.5GB（物理只有 8.2GB，多出来的部分已经溢出到共享显存，速度还慢）。
+
+        两条放行条件：
+          - 没有请求在飞：空闲块 ≥ after_request_release_min_free_mb 就还；
+          - 还有请求在飞：空闲块 ≥ release_under_load_min_free_mb（默认 1.5GB）也还 ——
+            这时池子明显是"虚胖"，还给驱动不会动任何在用张量。
+        再加一个最小间隔（默认 3s）防止抖动。
+        """
+        if not bool(getattr(self.settings, "release_after_request", True)):
+            return 0.0
+        if not self.backend.is_loaded():
+            return 0.0
+        now = time.monotonic()
+        with self._lock:
+            busy = self.inflight > 0
+            since_last = now - self._last_pool_release
+        cooldown = float(getattr(self.settings, "release_min_interval_seconds", 3.0) or 0)
+        if since_last < cooldown:
+            return 0.0
+        before = _cuda_pool_mb()
+        if before is None:
+            return 0.0
+        free = before[1] - before[0]
+        threshold = float(
+            (
+                getattr(self.settings, "release_under_load_min_free_mb", 1536)
+                if busy
+                else getattr(self.settings, "after_request_release_min_free_mb", 256)
+            )
+            or 0
+        )
+        if free < threshold:
+            # 池子没有虚胖：这次不还（也把冷却时间推开，别每个请求都去读一次显存）
+            with self._lock:
+                self._last_pool_release = now
+                return 0.0
+        with self._lock:
+            self._last_pool_release = now
+        _empty_cuda_cache()
+        after = _cuda_pool_mb() or before
+        freed = max(0.0, before[1] - after[1])
+        if freed > 0:
+            with self._lock:
+                self.idle_released_mb += freed
+            logger.info(
+                "请求边界归还显存：reserved %.0fMB → %.0fMB（归还 %.0fMB，allocated %.0fMB，%s）",
+                before[1],
+                after[1],
+                freed,
+                after[0],
+                "并发中" if busy else "空闲",
+            )
+        return freed
+
     def health(self) -> dict:
         average = (self.total_elapsed_ms / 1000.0) / self.total_audio_sec if self.total_audio_sec else 0.0
         return {
@@ -250,9 +327,21 @@ class ServiceState:
     def memory_report(self) -> dict:
         """内存/显存自检（模型在哪个设备、主机里有没有留副本）。"""
         reporter = getattr(self.backend, "memory_report", None)
-        if reporter is None:
-            return {"backend": self.backend.name, "loaded": self.backend.is_loaded()}
-        return reporter()
+        report = (
+            {"backend": self.backend.name, "loaded": self.backend.is_loaded()}
+            if reporter is None
+            else reporter()
+        )
+        pool = _cuda_pool_mb()
+        if pool is not None:
+            allocated, reserved = pool
+            report["cudaPool"] = {
+                "allocatedMB": round(allocated, 1),
+                "reservedMB": round(reserved, 1),
+                "freeBlocksMB": round(max(0.0, reserved - allocated), 1),
+            }
+        report["idleReleasedMB"] = round(self.idle_released_mb, 1)
+        return report
 
     def tuning(self) -> dict:
         from .indextts_compat import effective_tuning
@@ -333,6 +422,7 @@ class ServiceState:
                 self.inflight -= 1
             self._gate.release()
             self._touch()
+            self.release_after_request()
         with self._lock:
             self.total_audio_sec += result.duration_sec
             self.total_elapsed_ms += result.elapsed_ms
@@ -387,6 +477,7 @@ class ServiceState:
                 self.inflight -= 1
             self._gate.release()
             self._touch()
+            self.release_after_request()
         duration = 0.0
         try:
             with wave.open(io.BytesIO(audio)) as handle:
@@ -503,6 +594,7 @@ class ServiceState:
                 self.inflight -= 1
             self._gate.release()
             self._touch()
+            self.release_after_request()
         elapsed_ms = int((time.monotonic() - started) * 1000)
         with self._lock:
             self.total_audio_sec += sum(durations)

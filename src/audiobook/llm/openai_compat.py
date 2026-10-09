@@ -14,6 +14,15 @@ class _UnsupportedStreaming(RuntimeError):
         self.body = body
 
 
+# 流式响应里查询取消状态的间隔（秒）：每个 SSE 块都查一次太浪费，太慢又打断不及时
+CANCEL_CHECK_INTERVAL = 0.3
+
+
+def _check_cancel(cancel_check) -> None:
+    if cancel_check is not None:
+        cancel_check()
+
+
 def _ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 
@@ -58,15 +67,59 @@ class OpenAICompatClient:
     def close(self) -> None:
         self._client.close()
 
-    def complete(self, system: str, user: str, *, max_output_tokens: int = 4096) -> LLMReply:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_output_tokens: int = 4096,
+        cancel_check=None,
+        json_mode: bool | None = None,
+    ) -> LLMReply:
+        """发一次请求。
+
+        cancel_check 取消时抛错，异常会直接穿过（不吞、不重试）。
+        json_mode 按趟覆盖 response_format：顶层要数组的趟（extract）必须关掉
+        json_object 模式，否则模型只能把数组包成对象、甚至回显 {"type":"json_object"}。
+        """
+        _check_cancel(cancel_check)
         if not self.stream:
-            return self._request(system, user, max_output_tokens, streaming=False)
+            return self._request(
+                system,
+                user,
+                max_output_tokens,
+                streaming=False,
+                cancel_check=cancel_check,
+                json_mode=json_mode,
+            )
         try:
-            return self._request(system, user, max_output_tokens, streaming=True)
+            return self._request(
+                system,
+                user,
+                max_output_tokens,
+                streaming=True,
+                cancel_check=cancel_check,
+                json_mode=json_mode,
+            )
         except _UnsupportedStreaming as exc:
             if "stream_options" in exc.body:
-                return self._request(system, user, max_output_tokens, streaming=True, include_usage=False)
-            return self._request(system, user, max_output_tokens, streaming=False)
+                return self._request(
+                    system,
+                    user,
+                    max_output_tokens,
+                    streaming=True,
+                    include_usage=False,
+                    cancel_check=cancel_check,
+                    json_mode=json_mode,
+                )
+            return self._request(
+                system,
+                user,
+                max_output_tokens,
+                streaming=False,
+                cancel_check=cancel_check,
+                json_mode=json_mode,
+            )
 
     def _request(
         self,
@@ -76,6 +129,8 @@ class OpenAICompatClient:
         *,
         streaming: bool,
         include_usage: bool = True,
+        cancel_check=None,
+        json_mode: bool | None = None,
     ) -> LLMReply:
         payload = {
             "model": self.model,
@@ -86,13 +141,14 @@ class OpenAICompatClient:
             "temperature": self.temperature,
             "max_tokens": max_output_tokens,
         }
-        if self.json_mode:
+        if self.json_mode if json_mode is None else json_mode:
             payload["response_format"] = {"type": "json_object"}
         if streaming:
             payload["stream"] = True
             if include_usage:
                 payload["stream_options"] = {"include_usage": True}
         started = time.monotonic()
+        _check_cancel(cancel_check)
         try:
             with self._client.stream("POST", "chat/completions", json=payload) as resp:
                 content_type = resp.headers.get("content-type", "")
@@ -107,7 +163,8 @@ class OpenAICompatClient:
                         f"LLM 返回 {resp.status_code}: {body[:200]}", duration_ms=_ms(started)
                     )
                 if streaming and "text/event-stream" in content_type:
-                    return self._parse_stream(resp, started, max_output_tokens)
+                    return self._parse_stream(resp, started, max_output_tokens, cancel_check)
+                _check_cancel(cancel_check)
                 raw = resp.read().decode("utf-8", "replace")
                 return self._parse_body(_json(raw, started), started, max_output_tokens)
         except httpx.TimeoutException as exc:
@@ -117,13 +174,25 @@ class OpenAICompatClient:
                 f"LLM 连接被掐断: {type(exc).__name__}: {exc}", duration_ms=_ms(started)
             ) from exc
 
-    def _parse_stream(self, resp: httpx.Response, started: float, max_output_tokens: int) -> LLMReply:
-        """累积 SSE 增量。usage 由 stream_options 的最后一帧带回（网关不支持就没有）。"""
+    def _parse_stream(
+        self, resp: httpx.Response, started: float, max_output_tokens: int, cancel_check=None
+    ) -> LLMReply:
+        """累积 SSE 增量。usage 由 stream_options 的最后一帧带回（网关不支持就没有）。
+
+        每个数据块之间（最多隔 CANCEL_CHECK_INTERVAL）查一次取消：用户点取消后
+        立刻抛错，with 块退出时把连接关掉，不再等模型把这一大段生成完。
+        """
         parts: list[str] = []
         model = self.model
         usage: dict = {}
         finish = None
+        last_check = time.monotonic()
         for line in resp.iter_lines():
+            if cancel_check is not None:
+                now = time.monotonic()
+                if now - last_check >= CANCEL_CHECK_INTERVAL:
+                    last_check = now
+                    cancel_check()
             if not line:
                 continue
             if line.startswith("data:"):

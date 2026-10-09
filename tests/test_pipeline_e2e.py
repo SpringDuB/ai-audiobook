@@ -32,6 +32,10 @@ SAMPLE = (
     "“老苏，你怎么看？”王胖子问道。\n\n"
     "第二章 死党王胖子\n\n"
     "苏锐说：“胖子，别废话。”\n"
+    "\n第三章 夜路\n\n"
+    "苏锐说：“跟着我走。”\n\n"
+    "苏锐说：“前面就是渡口。”\n\n"
+    "苏锐说：“别出声。”\n"
 )
 
 
@@ -85,6 +89,20 @@ def _route_voice_design(user: str) -> dict:
     }
 
 
+def _route_cast_sheet(user: str) -> dict:
+    """假模型：给每个角色一个互不相同的音色原型（音区 + 质地）。"""
+    archetypes = {
+        "旁白": "三十多岁男性，中低音区，嗓音厚实，吐字清楚",
+        "苏锐": "二十出头男性，中高音区，音色清亮，咬字利落",
+        "王胖子": "二十多岁男性，低音区，嗓音洪亮带颗粒感",
+    }
+    return {
+        "characters": [
+            {"name": name, "archetype": text} for name, text in archetypes.items() if name in user
+        ]
+    }
+
+
 def _seed_voices(settings) -> None:
     for voice_id, name, usage in (("v_nar", "沉稳旁白", "旁白叙述"), ("v_hero", "冷峻男声", "角色对话")):
         store.atomic_replace_json(
@@ -110,6 +128,7 @@ def _ctx(settings, conn, engine=None) -> WorkerContext:
         routes={
             "【EXTRACT】": _route_extract,
             "【MERGE_ROLES】": _route_merge,
+            "【CAST_SHEET】": _route_cast_sheet,
             "【VOICE_DESIGN】": _route_voice_design,
         }
     )
@@ -187,7 +206,7 @@ def test_full_pipeline_offline_produces_chapter_and_book_artifacts(settings, tmp
     assert all(j.status == "done" for j in jobs.list_jobs(conn, book_id))
 
     passes = {row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))}
-    assert passes == {"extract", "merge", "voice_design"}
+    assert passes == {"extract", "merge", "cast_sheet", "voice_design"}
 
 
 def test_rerun_after_line_change_only_regenerates_changed_line(settings, tmp_path):

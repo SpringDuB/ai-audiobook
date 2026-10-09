@@ -14,6 +14,9 @@ ISSUE_KINDS = (
     "voice_library_empty",
     "voice_recommend_failed",
     "voice_recommend_invalid",
+    "cast_sheet_failed",
+    "voice_design_failed",
+    "voice_design_incomplete",
     # 合成 / 渲染
     "tts_line_failed",
     "tts_ref_missing",

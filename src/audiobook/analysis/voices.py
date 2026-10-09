@@ -1,11 +1,12 @@
 """这一行要怎么说：角色基础音色描述 + 本句表演描述 → 合成用的 VoicePlan。
 
 角色音色不再依赖参考音频：
-  - **角色基础描述**（年龄/性别/音色质地/说话习惯/气质）由大模型按角色写，存在
+  - **角色基础描述**（性别/年龄感/音区/音色质地/咬字）由大模型按角色写，存在
     casting.json 里，用户能改、能让模型重写；
   - **本句表演描述**（语气/情绪/语速/音量/气息）由提取阶段的大模型逐句直出，
     落在行记录的 voice_prompt 上；
-  - 合成时两段拼成一句交给 Qwen3-TTS 的 VoiceDesign（generate_voice_design）。
+  - 合成时两段拼成一句交给 Qwen3-TTS 的 VoiceDesign（generate_voice_design），
+    冲突以本句为准（语速这类会变的维度只由本句负责，不写进基础描述）。
 
 这样每条台词都按自己的语气演，不会被一段参考音频的固定语气"传染"（IndexTTS 的老毛病）。
 代价是同一角色的音色会有轻微浮动 —— 这是明确接受的取舍。
@@ -45,7 +46,14 @@ def description_key(description: str) -> str:
 
 
 def compose_instruct(description: str, line_prompt: str) -> str:
-    """角色基础描述 + 本句表演描述 → 一句完整的音色指令。"""
+    """角色基础描述 + 本句表演描述 → 一句完整的音色指令。
+
+    两段职责分开：基础描述只写"声音是什么样"（性别/年龄/音区/质地），
+    本句描述写"这一句怎么说"（语速/音量/气息/情绪）；两段不重叠就没有冲突。
+
+    【别改这个拼接格式】它进合成缓存键（cache.summarize_params 里的 voice_prompt）：
+    格式一变，全部已有音频都会失效重跑，而这里只是措辞。
+    """
     base = (description or "").strip().rstrip("。；;")
     line = (line_prompt or "").strip().rstrip("。；;")
     if not base and not line:

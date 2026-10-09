@@ -212,6 +212,36 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert "第一句。" in script["text"]
 
 
+def test_line_editor_uses_voice_prompt_not_emotion(served, settings, narrator_lines, tmp_path):
+    """Qwen3 分支：角色文本不再展示情绪，编辑弹窗只改「本句表演描述」。"""
+    book_id = _seed_book(settings, narrator_lines)
+    rows = store.read_jsonl(store.lines_path(settings, book_id, 0))
+    # 两行都给表演描述：第一行点开编辑后正文被替换，用第二行验证行内展示
+    for row in rows:
+        row["voice_prompt"] = "压低声音，语速放慢"
+    store.write_jsonl_atomic(store.lines_path(settings, book_id, 0), rows)
+    page = _probe(
+        f"{served}/#/book/{book_id}",
+        tmp_path / "line-edit",
+        extra=(
+            "--click=.script__tools .tab:nth-child(2)",
+            "--click=.line .line__tools button:nth-of-type(2)",
+            "--eval=JSON.stringify({"
+            " voice: (document.querySelector('.line__voice') || {}).textContent || '',"
+            " labels: [...document.querySelectorAll('.line__edit label')].map((node) => node.textContent),"
+            " toneTags: document.querySelectorAll('.tone-tag').length,"
+            " selects: document.querySelectorAll('.line__edit select').length,"
+            " })",
+        ),
+    )
+    assert page["consoleErrors"] == []
+    probe = json.loads(next(value for key, value in page.items() if key.startswith("eval:")))
+    assert probe["voice"] == "表演：压低声音，语速放慢"
+    assert probe["labels"] == ["台词", "说话人", "本句表演描述"]
+    assert probe["toneTags"] == 0        # 角色文本里不再有情绪标签
+    assert probe["selects"] == 0         # 编辑弹窗里不再有情绪下拉
+
+
 def test_workspace_voice_picker_lists_categories(served, settings, narrator_lines, tmp_path):
     book_id = _seed_book(settings, narrator_lines)
     _seed_voice(settings)

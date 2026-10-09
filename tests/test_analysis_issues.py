@@ -41,6 +41,9 @@ def test_issue_kinds_are_frozen():
         "voice_library_empty",
         "voice_recommend_failed",
         "voice_recommend_invalid",
+        "cast_sheet_failed",
+        "voice_design_failed",
+        "voice_design_incomplete",
         "tts_line_failed",
         "tts_ref_missing",
         "tts_endpoint_down",
@@ -48,6 +51,23 @@ def test_issue_kinds_are_frozen():
         "render_duration_mismatch",
         "book_export_gap",
     )
+
+
+def test_every_record_issue_kind_is_registered():
+    """回归：`voice_design_failed` 曾经漏登记，导致降级路径直接抛 ValueError 盖住真实错误。"""
+    import re
+    from pathlib import Path
+
+    used: set[str] = set()
+    root = Path(__file__).resolve().parents[1] / "src" / "audiobook"
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        used.update(re.findall(r"kind\s*=\s*[\"']([a-z_]+)[\"']", text))
+        used.update(re.findall(r"[\"']kind[\"']\s*:\s*[\"']([a-z_]+)[\"']", text))
+    # 行内 kind（dialogue/narration）和 job kind 不是 issue kind，不在校验范围
+    ignored = {"dialogue", "narration", "chapter_split"}
+    missing = sorted(used - set(ISSUE_KINDS) - ignored)
+    assert missing == [], f"这些 kind 没登记进 ISSUE_KINDS: {missing}"
 
 
 def test_book_layout_paths(settings):
