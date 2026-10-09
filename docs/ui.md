@@ -16,6 +16,9 @@
 | `#/jobs` | 任务中心 | 运行中（进度条）/排队/失败，可取消与重试 |
 | `#/book/{id}/issues` | 异常清单 | 降级与失败记录，按类型筛选、批量重试 |
 | `#/voices` | 音色库 | 试听 + 上传新音色（参考音频 + 标签介绍）+ 停用/启用（停用的收进"已停用"栏） |
+| `#/listen` | 听书 | 选一本有产物的书；手机优先，可「添加到主屏幕」当 App 用 |
+| `#/listen/{id}` | 听书 · 章节 | 章节列表 + 离线下载（每章 / 整本 / 清空）；显示已离线数量与存储占用 |
+| `#/listen/{id}/{n}` | 听书 · 播放 | 边听边高亮当前句、点句跳读、倍速、15 秒快进退、睡眠定时、自动连播；锁屏控制（Media Session） |
 | `#/settings` | 设置 | LLM + **一键启动 TTS 服务**；其余参数用固定默认值 |
 
 默认路径只有三步：**导入 → 分析台词（说话人 + 情绪）→ 生成音频 → 导出成品**，中途没有强制确认；所有人工操作都是事后修正。
@@ -181,6 +184,11 @@ PUT    /api/books/{id}/roles/{roleId}/description   保存手改的音色描述
 POST   /api/books/{id}/roles/{roleId}/rewrite       让大模型重写一版描述（异步任务）
 POST   /api/books/{id}/roles/{roleId}/preview       按当前描述生成角色试听
 GET    /api/books/{id}/roles/{roleId}/preview.wav   角色试听音频
+GET    /api/books/{id}/listen                       听书目录（只列有 wav+srt 的章节、时长、离线体积估算）
+GET    /api/books/{id}/chapters/{n}/subtitles       听书时间轴（逐句 start/end/文本/说话人）
+POST   /api/books/{id}/chapters/{n}/mobile          wav → m4a 懒转码（已最新则秒回），离线下载前先调它
+GET    /api/books/{id}/chapters/{n}/audio.m4a       手机播放用的 m4a（支持 Range 206，可拖动进度）
+GET    /sw.js · GET /manifest.webmanifest           PWA（离线外壳 + 添加到主屏幕）
 GET    /api/settings · PUT /api/settings       （密钥永不回显）
 GET    /api/tts/local                          本机 TTS 状态 + 启动参数
 POST   /api/tts/local/start · /stop            一键启动 / 停止

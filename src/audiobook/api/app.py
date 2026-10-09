@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .. import audio, jobs, store, voicelib
+from .. import audio, jobs, listen, store, voicelib
 from ..analysis.design import save_description
 from ..analysis.voices import description_key, preview_path, write_preview_meta
 from ..engines.factory import build_engine
@@ -190,6 +190,24 @@ def create_app(settings, conn) -> FastAPI:
         @app.get("/")
         def index():
             return FileResponse(WEB_DIR / "index.html", media_type="text/html")
+
+        # PWA：service worker 必须从根路径下发（作用域才是整个站点），
+        # manifest 同理，浏览器只认同源根下的名字。
+        @app.get("/sw.js")
+        def service_worker():
+            return FileResponse(
+                WEB_DIR / "sw.js",
+                media_type="text/javascript",
+                headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+            )
+
+        @app.get("/manifest.webmanifest")
+        def web_manifest():
+            return FileResponse(
+                WEB_DIR / "manifest.webmanifest",
+                media_type="application/manifest+json",
+                headers={"Cache-Control": "no-cache"},
+            )
 
     @app.post("/api/books")
     async def upload_book(file: UploadFile = File(...), title: str = Form("未命名")):
@@ -960,5 +978,51 @@ def create_app(settings, conn) -> FastAPI:
         if not path.exists():
             raise HTTPException(status_code=404, detail="audio not ready")
         return FileResponse(path, media_type="audio/wav")
+
+    # ---------------------------------------------------------------- 手机听书
+    # 章节 wav → m4a（懒转码 + 按 mtime 失效）；只列有成品（wav + srt）的章节。
+    @app.get("/api/books/{book_id}/listen")
+    def listen_catalog(book_id: str):
+        try:
+            return listen.catalog(settings, book_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="book not found") from exc
+
+    @app.get("/api/books/{book_id}/chapters/{index}/subtitles")
+    def chapter_subtitles(book_id: str, index: int):
+        try:
+            return listen.chapter_timeline(settings, book_id, index)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc) or "subtitle not ready") from exc
+
+    @app.post("/api/books/{book_id}/chapters/{index}/mobile")
+    def prepare_mobile_audio(book_id: str, index: int, payload: dict | None = None):
+        force = bool((payload or {}).get("force"))
+        try:
+            path = listen.ensure_mobile_audio(settings, book_id, index, force=force)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except listen.FFmpegError as exc:
+            raise HTTPException(status_code=503, detail=f"转码失败：{exc}") from exc
+        return {
+            "ok": True,
+            "bytes": path.stat().st_size,
+            "mtime": round(path.stat().st_mtime, 3),
+            "url": f"/api/books/{book_id}/chapters/{index}/audio.m4a",
+        }
+
+    @app.get("/api/books/{book_id}/chapters/{index}/audio.m4a")
+    def chapter_audio_mobile(book_id: str, index: int):
+        try:
+            path = listen.ensure_mobile_audio(settings, book_id, index)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except listen.FFmpegError as exc:
+            raise HTTPException(status_code=503, detail=f"转码失败：{exc}") from exc
+        return FileResponse(
+            path,
+            media_type="audio/mp4",
+            headers={"Cache-Control": "private, max-age=0, must-revalidate"},
+        )
 
     return app

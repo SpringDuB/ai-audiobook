@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     loudness_target_lufs: float = -16.0
     loudness_true_peak: float = -1.5
     loudness_rms_target_db: float = -20.0
+    # 手机听书：章节 wav 按需转成 AAC/m4a，离线下载体积约 wav 的 1/8。
+    # 语音内容单声道足够；48~64kbps 在手机上基本听不出和 wav 的差别。
+    mobile_audio_bitrate_kbps: int = 64
+    mobile_audio_channels: int = 1
 
     @property
     def db_path(self) -> Path:

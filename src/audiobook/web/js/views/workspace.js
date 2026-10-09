@@ -883,7 +883,23 @@ async function build(route, host) {
           total ? ` · ${duration(total)}` : "",
         ),
       ),
-      h("div", { class: "script__tools" }, scriptTabs),
+      h(
+        "div",
+        { class: "script__tools" },
+        scriptTabs,
+        ready
+          ? h(
+              "a",
+              {
+                class: "btn btn-sm btn-ghost script__listen",
+                href: `#/listen/${bookId}/${state.index}`,
+                title: "听书模式：边听边高亮当前句，可下载到手机离线听",
+              },
+              icon("headphones", { size: 12 }),
+              "听书",
+            )
+          : null,
+      ),
     );
   };
 

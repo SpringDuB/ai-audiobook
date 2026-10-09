@@ -1,0 +1,17 @@
+{
+  "name": "AI 有声书 · 听书",
+  "short_name": "听书",
+  "description": "AI 多人语音有声书：离线下载章节，边听边高亮当前句子。",
+  "start_url": "/#/listen",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12100e",
+  "theme_color": "#f7f4ef",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

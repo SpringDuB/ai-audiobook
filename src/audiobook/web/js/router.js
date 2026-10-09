@@ -8,6 +8,10 @@ export function parseHash(hash) {
   const [head, ...rest] = parts;
   if (["shelf", "jobs", "voices", "settings"].includes(head)) return { name: head };
   if (head === "issues") return { name: "issues", bookId: rest[0] || null };
+  if (head === "listen") {
+    const index = rest[1] === undefined || rest[1] === "" ? null : Number(rest[1]);
+    return { name: "listen", bookId: rest[0] || null, index: Number.isNaN(index) ? null : index };
+  }
   if (head === "book" && rest[0]) {
     if (rest[1] === "chapter" && rest[2] !== undefined) {
       return { name: "chapter", bookId: rest[0], index: Number(rest[2]) };

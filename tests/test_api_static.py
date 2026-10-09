@@ -14,6 +14,10 @@ def test_root_serves_app_shell(settings):
     assert 'id="main"' in body and 'id="masthead"' in body and 'id="rail"' in body
     assert "#/shelf" in body and "#/jobs" in body and "#/settings" in body
     assert "/static/logo-mark.png" in body
+    # PWA：可安装 + 苹果触屏图标 + 听书入口
+    assert 'rel="manifest" href="/manifest.webmanifest"' in body
+    assert 'rel="apple-touch-icon"' in body
+    assert "#/listen" in body
     # 双主题：防闪烁脚本要在样式表之前落主题，顶栏要有切换按钮
     assert 'id="theme-toggle"' in body
     assert 'localStorage.getItem("aiab-theme")' in body
@@ -32,8 +36,12 @@ def test_static_assets_are_offline_only(settings):
         "/static/js/ui.js",
         "/static/js/icons.js",
         "/static/js/format.js",
+        "/static/js/offline.js",
         "/static/logo-mark.png",
         "/static/favicon.png",
+        "/static/icons/icon-192.png",
+        "/static/icons/icon-512.png",
+        "/static/icons/apple-touch-icon.png",
     ):
         assert client.get(path).status_code == 200, path
     css = client.get("/static/theme.css").text + client.get("/static/app.css").text
@@ -61,9 +69,27 @@ def test_static_assets_are_offline_only(settings):
 
 def test_view_modules_are_served(settings):
     client = _client(settings)
-    for name in ("shelf", "workspace", "jobs", "issues", "voices", "settings"):
+    for name in ("shelf", "workspace", "listen", "jobs", "issues", "voices", "settings"):
         assert client.get(f"/static/js/views/{name}.js").status_code == 200, name
     assert client.get("/static/js/voicepicker.js").status_code == 200
+
+
+def test_pwa_manifest_and_service_worker(settings):
+    client = _client(settings)
+    manifest = client.get("/manifest.webmanifest")
+    assert manifest.status_code == 200
+    assert manifest.headers["content-type"].startswith("application/manifest+json")
+    body = manifest.json()
+    assert body["start_url"] == "/#/listen" and body["scope"] == "/"
+    assert {icon["sizes"] for icon in body["icons"]} >= {"192x192", "512x512"}
+
+    sw = client.get("/sw.js")
+    assert sw.status_code == 200
+    assert sw.headers["service-worker-allowed"] == "/"      # 作用域必须覆盖整个站点
+    text = sw.text
+    # 离线播放的关键：缓存命中时要自己切 206 分片，手机播放器才肯起播 / 拖进度
+    assert "Content-Range" in text and "206" in text
+    assert "aiab-offline-v1" in text
 
 
 def test_unknown_static_path_is_404(settings):

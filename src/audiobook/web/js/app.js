@@ -4,13 +4,18 @@ import { errorState, h, runTeardowns } from "./ui.js";
 import { icon } from "./icons.js";
 import * as shelf from "./views/shelf.js";
 import * as workspace from "./views/workspace.js";
+import * as listen from "./views/listen.js";
 import * as jobs from "./views/jobs.js";
 import * as issues from "./views/issues.js";
 import * as voices from "./views/voices.js";
 import * as settings from "./views/settings.js";
+import { registerServiceWorker } from "./offline.js";
 
 // 书页与章节页都是同一个工作台，只是选中的章节不同
-const VIEWS = { shelf, book: workspace, chapter: workspace, jobs, issues, voices, settings };
+const VIEWS = { shelf, book: workspace, chapter: workspace, listen, jobs, issues, voices, settings };
+
+// PWA：HTTPS / localhost 下注册 service worker，听书章节就能离线听
+registerServiceWorker();
 
 /* ------------------------------------------------------------------ 主题
    首访跟随系统（index.html 里的内联脚本负责在样式表之前落主题），
@@ -56,6 +61,8 @@ function crumbFor(route) {
       return "书 / 章节";
     case "chapter":
       return `第 ${route.index} 章 · 校对台`;
+    case "listen":
+      return route.bookId ? (route.index === null ? "听书 · 章节" : "听书 · 播放") : "听书";
     case "jobs":
       return "任务中心";
     case "issues":
