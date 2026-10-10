@@ -171,9 +171,9 @@ def test_shelf_and_workspace_render_without_js_errors(served, settings, narrator
     assert workspace["counts"]["chapterItems"] == 1
     assert workspace["counts"]["castRows"] == 1
     assert "角色音色" in workspace["text"]
-    # 角色行上是"音色描述 + 试听/保存/重写/绑库存音色"这一组动作
+    # 角色行上是"音色描述 + 试听/保存/微调/换一版/绑库存音色"这一组动作
     assert workspace["counts"]["descEditors"] == 1
-    assert workspace["counts"]["descActions"] == 4
+    assert workspace["counts"]["descActions"] == 5
     assert workspace["counts"]["bindButtons"] == 1
     assert "音色描述" in workspace["text"] or "三十多岁的男性" in workspace["text"]
     # 默认停在「原文」页签：进书先看干净原文，不再直接甩出角色文本

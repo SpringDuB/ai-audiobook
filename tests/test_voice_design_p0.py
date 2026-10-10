@@ -198,6 +198,31 @@ def test_cast_sheet_continues_after_one_batch_fails():
     assert "第 1/2 批失败" in issues[0]["reason"]
 
 
+def test_build_cast_sheet_only_reassigns_roles_without_archetype():
+    """增量：已有原型的角色不再重新定，只进【已占用音色】；本次只分批还没有原型的角色。"""
+    briefs = [
+        {"role_id": "narrator", "name": "旁白", "lines": 100, "is_narrator": True},
+        {"role_id": "r1", "name": "苏锐", "lines": 60},
+        {"role_id": "r2", "name": "林可", "lines": 40},
+    ]
+    known = {
+        "narrator": {"archetype": "三十多岁男性，中低音区，厚实"},
+        "r1": {"archetype": "二十出头男性，中高音区，清亮"},
+    }
+    runner = _Runner(output=_echo_archetypes(["林可"]))
+    archetypes, issues = build_cast_sheet(runner, book_id="b1", briefs=briefs, known=known)
+
+    assert archetypes == {"林可": "林可的原型"}
+    assert len(runner.calls) == 1  # 不再为已有原型的角色重跑
+    user = runner.calls[0]["user"]
+    assert "【已占用音色" in user
+    assert "三十多岁男性，中低音区，厚实" in user
+    assert "二十出头男性，中高音区，清亮" in user
+    assert "苏锐（60 句）" not in user  # 苏锐不再出现在待定清单里
+    assert "林可（40 句）" in user
+    assert issues == []
+
+
 def test_top_avoid_rows_returns_frequent_roles_only():
     archetypes = {"苏锐": "中高音区清亮", "林可": "高音区甜美"}
     briefs = [
@@ -321,6 +346,7 @@ def _seed_design_book(settings) -> None:
                     "voice_source": "design",
                     "description": "二十出头的年轻男性，嗓音偏低，语速不快。",
                     "description_source": "llm",
+                    "archetype": "二十出头男性，中高音区，音色清亮",
                 }
             },
         },
@@ -358,24 +384,30 @@ def _run_voice_design(settings, conn, payload: dict):
     return role, llm
 
 
-def test_handler_uses_cast_sheet_archetype(settings, conn):
+def test_handler_scoped_reroll_skips_cast_sheet_and_refreshes_archetype(settings, conn):
+    """换一版音色只重写这一个角色：不再重跑全书选角表，旧原型也不该继续代表新声音。"""
     _seed_design_book(settings)
     role, llm = _run_voice_design(settings, conn, {"roles": ["role_0001"], "force": True, "mode": "reroll"})
 
-    assert role["archetype"] == "二十出头男性，中高音区，音色清亮"
     assert role["description"].startswith("二十出头男性")
-    prompts = [call["user"] for call in llm.calls]
-    design = next(text for text in prompts if "【VOICE_DESIGN】" in text)
-    assert "二十出头男性，中高音区，音色清亮" in design  # 原型进了单角色提示词
+    assert not [call for call in llm.calls if "【CAST_SHEET】" in call["user"]]
+    design = next(text for text in (call["user"] for call in llm.calls) if "【VOICE_DESIGN】" in text)
+    assert "【选角表】" not in design  # reroll 不被旧原型约束
+    assert "二十出头男性，中高音区，音色清亮" not in design
     assert "上一版描述" not in design  # reroll：不带锚点
+    # 新描述回写成新的“已占用”提示，后续增量选角不会再拿旧原型代表这个角色
+    assert role["archetype"].startswith("二十出头男性")
 
 
-def test_handler_refine_keeps_previous_description_as_anchor(settings, conn):
+def test_handler_refine_keeps_previous_description_and_archetype(settings, conn):
+    """微调沿用上一版描述和已有原型，同样不重跑选角表。"""
     _seed_design_book(settings)
     _, llm = _run_voice_design(settings, conn, {"roles": ["role_0001"], "force": True, "mode": "refine"})
 
+    assert not [call for call in llm.calls if "【CAST_SHEET】" in call["user"]]
     design = next(text for text in (call["user"] for call in llm.calls) if "【VOICE_DESIGN】" in text)
     assert "上一版描述：二十出头的年轻男性，嗓音偏低，语速不快。" in design
+    assert "二十出头男性，中高音区，音色清亮" in design  # 已有原型继续当锚点
     assert "微调" in design
 
 
@@ -394,6 +426,7 @@ def test_handler_reroll_with_user_instruction(settings, conn):
     )
 
     assert role["description"]  # 写进去了
+    assert not [call for call in llm.calls if "【CAST_SHEET】" in call["user"]]
     design = next(text for text in (call["user"] for call in llm.calls) if "【VOICE_DESIGN】" in text)
     assert "【用户要求（硬性）】" in design
     assert "换成五十岁上下的老者" in design

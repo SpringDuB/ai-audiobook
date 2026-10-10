@@ -215,13 +215,21 @@ def build_cast_sheet(
     做法是只让台词数 ≥ min_lines、且按台词数排在前面（最多 max_roles 个）的角色参与，
     每批 batch_size 个；每批都能看到前面几批已经定下的原型（增量避让），
     所以跨批之间也不会撞。出场极少的龙套不参与，但拿得到主角群的已占原型当避让提示。
+
+    增量：已经有音色（原型或基础描述）的角色不再重新定，只留在"已占用音色"里当参照；
+    所以补新角色/重跑时只给全新的角色分批，不会把整本书的选角表再烧一遍。
     """
     known = known or {}
     participants = cast_sheet_participants(briefs, min_lines=min_lines, max_roles=max_roles)
-    if len(participants) < 2:
+    pending = [brief for brief in participants if not voice_hint(known.get(brief["role_id"]))]
+    if not pending:
         return {}, []
+    pending_ids = {brief["role_id"] for brief in pending}
+    others = [brief for brief in participants if brief["role_id"] not in pending_ids]
+    if len(pending) < 2 and not others:
+        return {}, []  # 单角色书：没有可协调的对象，保持原行为
     size = max(2, int(batch_size))
-    batches = [participants[index : index + size] for index in range(0, len(participants), size)]
+    batches = [pending[index : index + size] for index in range(0, len(pending), size)]
     archetypes: dict[str, str] = {}
     issues: list[dict] = []
     for index, batch in enumerate(batches, start=1):
@@ -294,6 +302,19 @@ def cast_sheet_participants(
     return picked[: max(0, int(max_roles))]
 
 
+def voice_hint(entry: dict | None) -> str:
+    """一个角色当前已占用的音色提示：原型优先，其次取描述前缀。
+
+    单角色重写（换一版音色）不重跑选角表，用它复用已有原型 / 回写新描述。
+    """
+    entry = entry or {}
+    text = str(entry.get("archetype") or "").strip()
+    if text:
+        return text
+    description = str(entry.get("description") or "").strip()
+    return _clip_sentence(description, AVOID_DESC_CHARS) if description else ""
+
+
 def _avoid_rows(briefs: list[dict], archetypes: dict[str, str], known: dict[str, dict]) -> list[dict]:
     """已经占用的音色：优先用本次刚定的原型，其次用角色已有的原型/描述前缀。"""
     rows: list[dict] = []
@@ -301,11 +322,7 @@ def _avoid_rows(briefs: list[dict], archetypes: dict[str, str], known: dict[str,
         name = brief["name"]
         text = str(archetypes.get(name) or "").strip()
         if not text:
-            entry = known.get(brief["role_id"]) or {}
-            text = str(entry.get("archetype") or "").strip()
-        if not text:
-            description = str((known.get(brief["role_id"]) or {}).get("description") or "").strip()
-            text = _clip_sentence(description, AVOID_DESC_CHARS) if description else ""
+            text = voice_hint(known.get(brief["role_id"]))
         if text:
             rows.append({"name": name, "archetype": text})
     return rows

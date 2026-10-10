@@ -1,12 +1,14 @@
 """分析链第四步：给每个角色写基础音色描述（纯大模型，不占显存）。
 
 两条入口：
-  - 整本：只补"还没有描述"的角色（断点续跑，重复点不会白烧 token）；
+  - 整本：只补"还没有描述"的角色（断点续跑，重复点不会白烧 token），并且选角表
+    也只给还没有音色（原型/描述）的角色分批定，已有的直接当已占用参照；
   - 单角色重写（payload.roles=[role_id]）：前端点"重新写一版"走这条，
     用户自己改的描述（description_source=manual）默认不动，除非 force。
+    **不重跑全书选角表**：微调沿用角色已有的原型，换一版只按台词 + 已占用音色重设计。
 
-流程：先跑一次全书的「选角表」（一次 LLM 调用，给所有角色定音色原型、两两拉开），
-再按原型给每个角色写描述 —— 这样同类角色不会撞成一个声音。选角表失败不影响主流程。
+流程：先跑「选角表」（给还没有原型的角色定音色原型、两两拉开），再按原型给每个
+角色写描述 —— 这样同类角色不会撞成一个声音。选角表失败不影响主流程。
 
 描述写进 casting.json；试听音频按需生成（API 的 preview 接口），不在这里占 GPU。
 同一个文件里还有 `voice_preview` 任务：一次性把多个角色的试听音频生成出来
@@ -26,6 +28,7 @@ from ..analysis.design import (
     role_briefs,
     save_description,
     top_avoid_rows,
+    voice_hint,
 )
 from ..analysis.derive import derive_lang
 from ..analysis.issues import record_issue
@@ -77,22 +80,35 @@ def handle_voice_design(ctx, job) -> None:
     casting = store.read_json(store.casting_path(ctx.settings, book_id), default={}) or {}
     known = casting.get("roles") or {}
 
-    # 选角表：只让有戏份的角色参与、分批做（600+ 角色的书一次全交给模型不现实），
-    # 每批都能看到前面已占用的原型，跨批也不会撞。
-    ctx.progress(job, 0, len(targets), f"先定选角表（共 {len(briefs)} 个角色）…")
-    archetypes, cast_issues = build_cast_sheet(
-        require_llm(ctx),
-        book_id=book_id,
-        briefs=list(briefs.values()),
-        known=known,
-        batch_size=ctx.settings.cast_sheet_batch,
-        max_roles=ctx.settings.cast_sheet_max_roles,
-        min_lines=ctx.settings.cast_sheet_min_lines,
-        on_progress=lambda done, total, message: ctx.progress(
-            job, 0, len(targets), f"选角表 {done}/{total} 批：{message}"
-        ),
-        cancel_check=ctx.cancel_check(job),
-    )
+    if roles:
+        # 指定角色重写（换一版音色 / 微调）：只动这几个角色，不再重跑全书选角表。
+        # 微调沿用已有原型（守住用户听过的音色）；换一版不受旧原型约束，
+        # 只按"已占用音色"避让，免得和别的角色撞声。
+        ctx.progress(job, 0, len(targets), f"重写 {len(targets)} 个角色的音色描述…")
+        archetypes: dict[str, str] = {}
+        if mode == "refine":
+            for brief in targets:
+                hint = voice_hint(known.get(brief["role_id"]))
+                if hint:
+                    archetypes[brief["name"]] = hint
+        cast_issues: list[dict] = []
+    else:
+        # 选角表：只让有戏份、还没有原型的角色参与、分批做（600+ 角色的书一次全交给
+        # 模型不现实）；每批都能看到前面已占用的原型，跨批也不会撞。
+        ctx.progress(job, 0, len(targets), "先定选角表（已有原型的角色会跳过）…")
+        archetypes, cast_issues = build_cast_sheet(
+            require_llm(ctx),
+            book_id=book_id,
+            briefs=list(briefs.values()),
+            known=known,
+            batch_size=ctx.settings.cast_sheet_batch,
+            max_roles=ctx.settings.cast_sheet_max_roles,
+            min_lines=ctx.settings.cast_sheet_min_lines,
+            on_progress=lambda done, total, message: ctx.progress(
+                job, 0, len(targets), f"选角表 {done}/{total} 批：{message}"
+            ),
+            cancel_check=ctx.cancel_check(job),
+        )
     for issue in cast_issues:
         record_issue(
             ctx.settings,
@@ -111,7 +127,18 @@ def handle_voice_design(ctx, job) -> None:
     previous_texts = {role_id: text for role_id, text in previous_texts.items() if text}
 
     # 出场少、没进选角表的角色：至少避开主角群已经占用的音色
-    avoid = top_avoid_rows(archetypes, list(briefs.values()))
+    if roles:
+        hints = {
+            brief["name"]: voice_hint(known.get(brief["role_id"]))
+            for brief in briefs.values()
+        }
+        target_names = {brief["name"] for brief in targets}
+        avoid = top_avoid_rows(
+            {name: text for name, text in hints.items() if text and name not in target_names},
+            list(briefs.values()),
+        )
+    else:
+        avoid = top_avoid_rows(archetypes, list(briefs.values()))
     directives = (
         {brief["role_id"]: instruction for brief in targets} if instruction else {}
     )
@@ -154,6 +181,11 @@ def handle_voice_design(ctx, job) -> None:
                 logger.info("%s 的描述生成失败，沿用上一次的描述", brief["name"])
             continue
         ctx.raise_if_cancelled(job)
+        hint = archetypes.get(brief["name"], "")
+        if roles and not hint:
+            # 换一版没有新的选角表原型：把新描述截一段回写成"已占用"提示，
+            # 免得旧原型在后续增量选角里继续代表这个角色的声音。
+            hint = voice_hint({"description": plan["description"]})
         save_description(
             ctx.settings,
             book_id,
@@ -162,7 +194,7 @@ def handle_voice_design(ctx, job) -> None:
             sample=plan.get("sample") or "",
             source="llm",
             name=brief["name"],
-            archetype=archetypes.get(brief["name"], ""),
+            archetype=hint,
         )
         written += 1
     ctx.progress(
