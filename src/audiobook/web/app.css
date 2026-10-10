@@ -943,6 +943,69 @@
 .listen__sheetRow { display: grid; grid-template-columns: 3rem minmax(0, 1fr) auto; gap: var(--space-2); align-items: center; padding: var(--space-3) var(--space-4); border-block-end: var(--line); color: inherit; }
 .listen__sheetRow.is-current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
+/* 悬浮球：离开播放页后接管控制（暂停 / 回到播放页 / 下一章 / 停止）。
+   播放属于常驻会话，切页不断音，所以列表页、书架页都能看到它。 */
+.listen__mini {
+  position: fixed;
+  z-index: var(--z-float);
+  inset-inline-start: 50%;
+  inset-block-end: calc(var(--space-4) + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  inline-size: min(30rem, calc(100vw - 2rem));
+  padding: var(--space-2);
+  border: var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 12px);
+  transition: opacity 170ms var(--ease-out), transform 170ms var(--ease-out);
+}
+.listen__mini.is-open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+/* 播放页自己有整套控制条，别叠加 */
+body.is-listening .listen__mini { opacity: 0 !important; pointer-events: none !important; }
+.listen__miniTrack { position: absolute; inset-block-start: 0; inset-inline: var(--space-6); block-size: 2px; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface-2); }
+.listen__miniBar { display: block; block-size: 100%; background: var(--accent); transform: scaleX(0); transform-origin: left center; transition: transform 260ms linear; }
+.listen__miniBall { position: relative; display: grid; place-items: center; inline-size: 2.75rem; block-size: 2.75rem; border: 0; border-radius: 50%; background: var(--accent); color: var(--on-accent); cursor: pointer; }
+.listen__miniBall:hover { background: var(--accent-hover); }
+.listen__miniBall[data-state="playing"]::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: listen-ball 2.2s var(--ease-out) infinite;
+}
+.listen__miniBall[data-state="loading"] { background: var(--surface-2); color: var(--text-muted); }
+.listen__miniBall[data-state="loading"] .icon { animation: listen-spin 1.4s linear infinite; }
+@keyframes listen-ball {
+  0% { transform: scale(0.92); opacity: 0.55; }
+  70% { transform: scale(1.18); opacity: 0; }
+  100% { transform: scale(1.18); opacity: 0; }
+}
+@keyframes listen-spin { to { transform: rotate(360deg); } }
+.listen__miniOpen { display: grid; gap: 1px; min-inline-size: 0; padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; text-align: start; cursor: pointer; }
+.listen__miniOpen:hover { background: var(--surface-2); }
+.listen__miniText { display: grid; gap: 1px; min-inline-size: 0; }
+.listen__miniTitle { overflow: hidden; font-family: var(--font-serif); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.listen__miniMeta { overflow: hidden; color: var(--text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.listen__miniBtn { display: grid; place-items: center; inline-size: 2.25rem; block-size: 2.25rem; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; }
+.listen__miniBtn:hover { background: var(--surface-2); color: var(--text); }
+
+/* 章节列表：正在播放的那一行 */
+.listen__rowName { display: flex; align-items: center; gap: var(--space-2); min-inline-size: 0; }
+.listen__rowName strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listen__rowBadge { display: none; flex: none; align-items: center; gap: 3px; padding: 1px var(--space-2); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-family: var(--font-sans); font-size: 0.6875rem; font-weight: 600; }
+.listen__row.is-playing { background: var(--accent-soft); }
+.listen__row.is-playing .listen__rowBadge { display: inline-flex; }
+/* 悬浮球占位：不让正文被压住 */
+body.has-mini #main:not([data-view="book"]):not([data-view="chapter"]) { padding-block-end: calc(var(--space-5) + 4.5rem); }
+
 @media (max-width: 720px) {
   /* 听书播放页：全屏，不要顶栏和底部标签栏 */
   body.is-listening .masthead,
@@ -954,6 +1017,9 @@
   .listen__line { font-size: 1.09rem; margin-block-end: var(--space-3); }
   .listen__controls { padding-block-end: max(var(--space-3), env(safe-area-inset-bottom)); border-radius: 0; border-inline: 0; border-block-end: 0; }
   .listen__follow { inset-block-end: 12rem; }
+  /* 手机：悬浮在底部标签栏上方 */
+  .listen__mini { inset-block-end: calc(4.25rem + env(safe-area-inset-bottom)); inline-size: calc(100vw - 1.5rem); }
+  body.has-mini #main:not([data-view="book"]):not([data-view="chapter"]) { padding-block-end: calc(5rem + 4rem); }
   .listen__books { grid-template-columns: minmax(0, 1fr); }
   .listen__rowDl { min-inline-size: 4.5rem; padding-inline: var(--space-2); }
   .listen__head .page-head__actions { inline-size: 100%; justify-content: space-between; }

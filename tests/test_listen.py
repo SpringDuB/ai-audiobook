@@ -1,5 +1,7 @@
 """手机听书：m4a 懒转码、逐句时间轴、听书目录与 API。"""
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -95,6 +97,29 @@ def test_ensure_mobile_audio_transcodes_and_reuses(settings):
     listen.ensure_mobile_audio(settings, "b1", 1)
     assert path.stat().st_mtime_ns != first
     assert listen.catalog(settings, "b1")["chapters"][0]["m4a_ready"] is True
+
+
+def test_mobile_encoder_setting_controls_ffmpeg_args(settings, monkeypatch):
+    """编码器按设置传：aac_mf 不认 -profile:a，得单独分支，别把参数硬塞给它。"""
+    _seed_rendered_book(settings)
+    calls: list[list[str]] = []
+
+    def fake_run(_settings, args, **_kwargs):
+        calls.append(list(args))
+        Path(args[-1]).write_bytes(b"\x00\x00\x00\x18ftypmp42")  # 假装转码产物已落盘
+        return ""
+
+    monkeypatch.setattr(listen, "run_ffmpeg", fake_run)
+
+    listen.ensure_mobile_audio(settings, "b1", 1)
+    assert calls[-1][calls[-1].index("-c:a") + 1] == "aac"
+    assert "-profile:a" in calls[-1]
+    assert calls[-1][calls[-1].index("-b:a") + 1] == "64k"
+
+    hardware = settings.model_copy(update={"mobile_audio_encoder": "aac_mf"})
+    listen.ensure_mobile_audio(hardware, "b1", 1, force=True)
+    assert calls[-1][calls[-1].index("-c:a") + 1] == "aac_mf"
+    assert "-profile:a" not in calls[-1]
 
 
 @requires_ffmpeg

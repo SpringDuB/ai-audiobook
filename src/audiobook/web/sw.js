@@ -8,7 +8,7 @@
 
    缓存版本变了就在 activate 里清旧仓库；壳资源逐个 put，单个 404 不拖垮安装。 */
 
-const SHELL_CACHE = "aiab-shell-v1";
+const SHELL_CACHE = "aiab-shell-v7";   // 改了壳资源（api.js/store.js/jobs.js/listen.js…）就升版本，装完自动清旧仓库
 const OFFLINE_CACHE = "aiab-offline-v1";
 
 const SHELL_ASSETS = [

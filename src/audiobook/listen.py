@@ -62,21 +62,19 @@ def ensure_mobile_audio(settings, book_id: str, index: int, *, force: bool = Fal
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(f".{dst.name}.part")
         try:
-            run_ffmpeg(
-                settings,
-                [
-                    "-i", str(wav),
-                    "-vn",
-                    "-map_metadata", "-1",
-                    "-c:a", "aac",
-                    "-profile:a", "aac_low",
-                    "-b:a", f"{int(settings.mobile_audio_bitrate_kbps)}k",
-                    "-ac", str(int(settings.mobile_audio_channels)),
-                    "-movflags", "+faststart",
-                    "-f", "mp4",
-                    str(tmp),
-                ],
-            )
+            encoder = str(getattr(settings, "mobile_audio_encoder", "aac") or "aac").strip() or "aac"
+            args = ["-i", str(wav), "-vn", "-map_metadata", "-1", "-c:a", encoder]
+            if encoder == "aac":
+                # profile 只有内置 aac 认；塞给 aac_mf 会直接失败
+                args += ["-profile:a", "aac_low"]
+            args += [
+                "-b:a", f"{int(settings.mobile_audio_bitrate_kbps)}k",
+                "-ac", str(int(settings.mobile_audio_channels)),
+                "-movflags", "+faststart",
+                "-f", "mp4",
+                str(tmp),
+            ]
+            run_ffmpeg(settings, args)
             os.replace(tmp, dst)
         finally:
             tmp.unlink(missing_ok=True)

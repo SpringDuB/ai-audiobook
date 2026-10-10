@@ -1,9 +1,12 @@
+from pathlib import Path
+
 import pytest
 
-from audiobook import audio, jobs, store
+from audiobook import audio, jobs, listen, store
 from fake_engine import FakeEngine
 from audiobook.handlers import post, synthesize  # noqa: F401  导入即注册
 from audiobook.worker import WorkerContext, run_once
+from helpers import requires_ffmpeg
 
 
 def _run_pipeline(conn, settings, narrator_lines, text="第一句。第二句。", chapter=1):
@@ -57,3 +60,20 @@ def test_post_is_idempotent_when_nothing_changed(conn, settings, narrator_lines)
     while run_once(ctx):
         pass
     assert wav.stat().st_mtime_ns == stamp          # 没变输入 → 不重编码
+
+
+def test_post_skips_mobile_prewarm_when_disabled(conn, settings, narrator_lines):
+    """默认测试配置关掉预热：post 不该偷偷拉起 ffmpeg。"""
+    _run_pipeline(conn, settings, narrator_lines)
+    assert not listen.mobile_audio_path(settings, "b1", 1).exists()
+
+
+@requires_ffmpeg
+def test_post_prewarms_mobile_audio(conn, settings, narrator_lines):
+    """章节产出后顺手把手机离线用的 m4a 转好：手机下载时就不用现场等转码。"""
+    warm = settings.model_copy(update={"mobile_audio_prewarm": True})
+    _run_pipeline(conn, warm, narrator_lines)
+    path = listen.mobile_audio_path(warm, "b1", 1)
+    assert path.exists() and path.stat().st_size > 0
+    assert path.stat().st_mtime >= store.chapter_wav_path(warm, "b1", 1).stat().st_mtime
+    assert Path(path).suffix == ".m4a"

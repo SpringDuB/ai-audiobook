@@ -1,6 +1,7 @@
 import logging
 
 from ..analysis.issues import record_issue
+from ..listen import ensure_mobile_audio
 from ..render.chapter import render_chapter
 from ..worker import register
 
@@ -45,4 +46,11 @@ def handle_post(ctx, job) -> None:
         result.clips,
         len(result.skipped),
     )
+    # 顺手转好手机离线听的 m4a：手机下载整本时就不用一章一章现场等 ffmpeg
+    # （14 分钟一章约 9s；m4a 比 wav 新就直接复用，重渲染后自动重转）
+    if bool(getattr(settings, "mobile_audio_prewarm", True)):
+        try:
+            ensure_mobile_audio(settings, book_id, chapter)
+        except Exception:  # noqa: BLE001 - 预热失败不该影响成品，下次下载会再试
+            logger.warning("预转手机音频失败（不影响成品，下载时会重试）", exc_info=True)
     ctx.progress(job, 5, 5, f"完成 {result.duration:.2f}s")

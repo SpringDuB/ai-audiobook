@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     # 语音内容单声道足够；48~64kbps 在手机上基本听不出和 wav 的差别。
     mobile_audio_bitrate_kbps: int = 64
     mobile_audio_channels: int = 1
+    # 手机离线音频的编码器：
+    #   aac    = ffmpeg 内置 AAC（码率可控，默认 64kbps → 14 分钟一章约 9s）
+    #   aac_mf = Windows MediaFoundation（实测约 4x 快，但忽略 -b:a，单声道固定 ~32kbps）
+    mobile_audio_encoder: str = "aac"
+    # 章节产出（post）后顺手把 m4a 转好：手机下载时不用现场等 ffmpeg。
+    # 一章 ~9s，和 TTS 的 GPU 时间是重叠的；不想要这份 CPU 开销就关掉。
+    mobile_audio_prewarm: bool = True
 
     @property
     def db_path(self) -> Path:
