@@ -10,6 +10,35 @@ _BOOK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # 多线程（整章并发分析）会同时写 logs/llm.jsonl 与 issues.jsonl：
 # Windows 上文本模式追加写不是原子的，会互相覆盖丢行，所以串行化并重试。
 _APPEND_LOCK = threading.Lock()
+# 章节状态缓存：界面每切一次页都要问一遍全书章节状态（一本 256 章的书 = 2.3 万行），
+# 键是 (lines.jsonl、片段目录、render.json、章节 wav) 的 mtime/size —— worker 一写文件，
+# 签名就变，缓存自动失效，不需要任何 TTL 猜测。
+_STATE_CACHE_LOCK = threading.Lock()
+_STATE_CACHE: dict[tuple[str, str, int], tuple[tuple, dict]] = {}
+_STATE_CACHE_MAX = 20000
+
+
+def file_signature(path: Path) -> tuple[int, int] | None:
+    """(mtime_ns, size)；文件/目录不存在返回 None。用于"内容变没变"的廉价判定。"""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _clip_ids(directory: Path) -> set[str]:
+    """列一次目录拿到已存在的片段 id。
+
+    旧写法是对每一行做一次 ``(clips_dir / id.wav).exists()``：一本 256 章的书就是
+    2.3 万次 stat，光这一项就让 /api/books 慢到 3~5 秒。扫描目录一次就够。
+    """
+    try:
+        entries = os.scandir(directory)
+    except OSError:
+        return set()
+    with entries:
+        return {entry.name[:-4] for entry in entries if entry.name.endswith(".wav")}
 
 
 def book_dir(settings, book_id: str) -> Path:
@@ -192,13 +221,81 @@ def count_issues(settings, book_id: str) -> int:
     return len(read_jsonl(issues_path(settings, book_id)))
 
 
+_CHAPTERS_CACHE_LOCK = threading.Lock()
+_CHAPTERS_CACHE: dict[str, tuple[tuple[int, int] | None, dict]] = {}
+_CHAPTERS_CACHE_MAX = 8
+
+
+def read_chapters(settings, book_id: str) -> dict:
+    """读 chapters.json（整本书的正文都在里面，实测单本 8MB），按文件签名缓存。
+
+    书架/章节列表/看原文每次刷新都要它，重解析一遍 8MB JSON 就是几十毫秒。
+    返回的是缓存对象本身：调用方只读，需要改请自己 copy。
+    """
+    path = chapters_path(settings, book_id)
+    signature = file_signature(path)
+    cache_key = f"{settings.data_dir}|{book_id}"
+    with _CHAPTERS_CACHE_LOCK:
+        cached = _CHAPTERS_CACHE.get(cache_key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    payload = read_json(path, default={}) or {}
+    with _CHAPTERS_CACHE_LOCK:
+        if len(_CHAPTERS_CACHE) >= _CHAPTERS_CACHE_MAX:
+            _CHAPTERS_CACHE.clear()  # 书架规模远小于这个量级，真到上限就整体重来
+        _CHAPTERS_CACHE[cache_key] = (signature, payload)
+    return payload
+
+
+def chapter_list(settings, book_id: str) -> list[dict]:
+    """chapters.json 里的章节数组（含正文，缓存对象，只读）。"""
+    return read_chapters(settings, book_id).get("chapters") or []
+
+
+def chapter_index(settings, book_id: str) -> list[dict]:
+    """章节列表的轻量视图：只带 index/title/chars，不带正文。
+
+    书架统计和章节列表只需要这些字段；正文只在用户点开某一章看原文时才要。
+    """
+    return [
+        {
+            "index": int(chapter["index"]),
+            "title": chapter.get("title") or f"第{int(chapter['index'])}章",
+            "chars": chapter.get("chars"),
+        }
+        for chapter in chapter_list(settings, book_id)
+    ]
+
+
 def chapter_state(settings, book_id: str, index: int) -> dict:
-    """章节在流水线上的位置：empty → analyzed → synthesized → rendered。"""
-    rows = read_jsonl(lines_path(settings, book_id, index))
-    meta = read_json(chapter_render_meta_path(settings, book_id, index), default={}) or {}
+    """章节在流水线上的位置：empty → analyzed → synthesized → rendered。
+
+    这是最热的读路径（书架上每一本书的每一章都要问一次），两级省开销：
+    - 片段数用一次 ``os.scandir`` 数出来，不再对每一行做 ``exists()``；
+    - 结果按四个文件的 mtime/size 缓存，文件没动过就直接命中（worker 写文件会改签名）。
+    """
+    index = int(index)
+    lines = lines_path(settings, book_id, index)
     clips_dir = audio_dir(settings, book_id, index)
-    segments = sum(1 for row in rows if (clips_dir / f"{row['id']}.wav").exists())
-    if meta and chapter_wav_path(settings, book_id, index).exists():
+    meta_path = chapter_render_meta_path(settings, book_id, index)
+    wav_path = chapter_wav_path(settings, book_id, index)
+    signature = (
+        file_signature(lines),
+        file_signature(clips_dir),
+        file_signature(meta_path),
+        file_signature(wav_path),
+    )
+    cache_key = (str(settings.data_dir), book_id, index)
+    with _STATE_CACHE_LOCK:
+        cached = _STATE_CACHE.get(cache_key)
+    if cached is not None and cached[0] == signature:
+        return dict(cached[1])
+
+    rows = read_jsonl(lines)
+    meta = read_json(meta_path, default={}) or {}
+    present = _clip_ids(clips_dir)
+    segments = sum(1 for row in rows if row.get("id") in present)
+    if meta and signature[3] is not None:
         state = "rendered"
     elif segments:
         state = "synthesized"
@@ -206,7 +303,7 @@ def chapter_state(settings, book_id: str, index: int) -> dict:
         state = "analyzed"
     else:
         state = "empty"
-    return {
+    payload = {
         "index": index,
         "lines": len(rows),
         "segments": segments,
@@ -214,6 +311,11 @@ def chapter_state(settings, book_id: str, index: int) -> dict:
         "rendered_at": meta.get("generated_at"),
         "state": state,
     }
+    with _STATE_CACHE_LOCK:
+        if len(_STATE_CACHE) >= _STATE_CACHE_MAX:
+            _STATE_CACHE.clear()  # 章节数远小于这个量级；真到上限就整体重来，不做 LRU
+        _STATE_CACHE[cache_key] = (signature, dict(payload))
+    return payload
 
 
 def _analysis_in_flight(conn, book_id: str) -> bool:
@@ -229,7 +331,7 @@ def _analysis_in_flight(conn, book_id: str) -> bool:
 
 
 def book_stats(settings, book_id: str, conn=None) -> dict:
-    chapters = (read_json(chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+    chapters = chapter_index(settings, book_id)
     total = len(chapters)
     analyzed = generated = 0
     duration = 0.0

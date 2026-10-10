@@ -67,3 +67,52 @@ def test_settings_overlay_path_and_issue_count(settings):
     record_issue(settings, "b1", "audio_missing", reason="缺片段")
     assert store.count_issues(settings, "b1") == 1
     assert store.count_issues(settings, "b-none") == 0
+
+
+# --- 书架/章节列表的热路径缓存（/api/books 从 2.5s 降到 50ms 靠的就是这几个）---
+
+
+def test_chapter_state_cache_tracks_new_clips_and_line_rewrites(settings, narrator_lines):
+    rows = narrator_lines(0, "第一句。第二句。")
+    store.write_jsonl_atomic(store.lines_path(settings, "b7", 0), rows)
+    assert store.chapter_state(settings, "b7", 0)["state"] == "analyzed"
+    # 同一份文件再问一次：命中缓存，但结果必须还是对的
+    assert store.chapter_state(settings, "b7", 0) == store.chapter_state(settings, "b7", 0)
+
+    _synth_clips(settings, "b7", 0, rows)  # 片段目录 mtime 变了 → 缓存必须失效
+    detail = store.chapter_state(settings, "b7", 0)
+    assert (detail["segments"], detail["state"]) == (2, "synthesized")
+
+    store.write_jsonl_atomic(store.lines_path(settings, "b7", 0), narrator_lines(0, "只有一句。"))
+    assert store.chapter_state(settings, "b7", 0)["lines"] == 1
+
+
+def test_chapter_state_does_not_hand_out_the_cached_dict(settings, narrator_lines):
+    store.write_jsonl_atomic(store.lines_path(settings, "b4", 0), narrator_lines(0, "第一句。"))
+    first = store.chapter_state(settings, "b4", 0)
+    first["state"] = "tampered"
+    first["lines"] = 999
+    assert store.chapter_state(settings, "b4", 0)["state"] == "analyzed"
+    assert store.chapter_state(settings, "b4", 0)["lines"] == 1
+
+
+def test_chapter_index_drops_text_and_follows_rewrites(settings):
+    store.atomic_replace_json(
+        store.chapters_path(settings, "b5"),
+        {"chapters": [{"index": 0, "title": "卷一", "content": "正文" * 500, "chars": 4}]},
+    )
+    assert store.chapter_index(settings, "b5") == [{"index": 0, "title": "卷一", "chars": 4}]
+    # 全文只在看原文时才要，章节列表/书架统计不该把它拖着走
+    assert "content" not in store.chapter_index(settings, "b5")[0]
+    assert store.chapter_list(settings, "b5")[0]["content"] == "正文" * 500
+
+    store.atomic_replace_json(
+        store.chapters_path(settings, "b5"),
+        {
+            "chapters": [
+                {"index": 0, "title": "卷一", "content": "x", "chars": 1},
+                {"index": 1, "title": "卷二", "content": "y", "chars": 1},
+            ]
+        },
+    )
+    assert [item["index"] for item in store.chapter_index(settings, "b5")] == [0, 1]

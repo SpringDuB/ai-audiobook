@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -63,17 +64,40 @@ def _character_names(settings, book_id: str) -> dict[str, str]:
 
 
 def _chapter_meta(settings, book_id: str, index: int) -> dict | None:
-    chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
-    for chapter in chapters:
+    for chapter in store.chapter_list(settings, book_id):
         if int(chapter["index"]) == index:
             return chapter
     return None
 
 
+_OCCURRENCES_CACHE_LOCK = threading.Lock()
+_OCCURRENCES_CACHE: dict[str, tuple[tuple, dict[str, dict]]] = {}
+
+
+def _copy_occurrences(payload: dict[str, dict]) -> dict[str, dict]:
+    """给调用方一份独立副本：缓存里的 chapters 列表不能被外部改掉。"""
+    return {
+        role_id: {"chapters": list(bucket.get("chapters") or []), "lines": int(bucket.get("lines") or 0)}
+        for role_id, bucket in payload.items()
+    }
+
+
 def _role_occurrences(settings, book_id: str) -> dict[str, dict]:
-    """扫一遍逐句标注，统计每个角色出现在哪些章节、共多少句。"""
+    """扫一遍逐句标注，统计每个角色出现在哪些章节、共多少句。
+
+    这本书所有 lines.jsonl 都要读一遍（256 章 2.3 万行），而选角页刷一次就得算一次，
+    所以按"每个 lines 文件的 mtime/size"缓存：文件没动直接复用，动了立刻重算。
+    """
+    paths = sorted(store.book_dir(settings, book_id).glob("analysis/lines/chapter_*.jsonl"))
+    signature = tuple((path.name, store.file_signature(path)) for path in paths)
+    cache_key = f"{settings.data_dir}|{book_id}"
+    with _OCCURRENCES_CACHE_LOCK:
+        cached = _OCCURRENCES_CACHE.get(cache_key)
+    if cached is not None and cached[0] == signature:
+        return _copy_occurrences(cached[1])
+
     result: dict[str, dict] = {}
-    for path in sorted(store.book_dir(settings, book_id).glob("analysis/lines/chapter_*.jsonl")):
+    for path in paths:
         index = int(path.stem.rsplit("_", 1)[-1])
         rows = store.read_jsonl(path)
         for row in rows:
@@ -85,7 +109,13 @@ def _role_occurrences(settings, book_id: str) -> dict[str, dict]:
                 bucket["chapters"].add(index)
                 if key == "speaker":
                     bucket["lines"] += 1
-    return {role_id: {"chapters": sorted(bucket["chapters"]), "lines": bucket["lines"]} for role_id, bucket in result.items()}
+    computed = {
+        role_id: {"chapters": sorted(bucket["chapters"]), "lines": bucket["lines"]}
+        for role_id, bucket in result.items()
+    }
+    with _OCCURRENCES_CACHE_LOCK:
+        _OCCURRENCES_CACHE[cache_key] = (signature, computed)
+    return _copy_occurrences(computed)
 
 
 def _chapters_with_role(settings, book_id: str, role_id: str) -> list[int]:
@@ -172,12 +202,65 @@ def _lines_payload(settings, book_id: str, index: int) -> list[dict]:
     return payload
 
 
+# SSE 任务流：只推"活跃 + 最近 N 条"的窗口。
+# 旧实现每秒重发全量（2400+ 条 = 675KB，实测 755KB/s ≈ 2.7GB/小时），
+# 根因是快照里带 ts（每秒都变）导致"变了才发"永远成立，且快照是全库历史。
+SSE_ACTIVE_STATUSES = ("running", "queued")
+SSE_RECENT_JOBS = 30
+SSE_POLL_SECONDS = 1.0
+SSE_PING_SECONDS = 25.0
+
+
 def jobs_snapshot(conn, book_id: str | None = None) -> dict:
-    """SSE 推送的任务快照（抽成函数便于单测，不必读无限流）。"""
-    return {
-        "ts": int(time.time() * 1000),
-        "jobs": [j.__dict__ for j in jobs.list_jobs(conn, book_id)],
-    }
+    """SSE 推送的任务窗口：所有活跃任务 + 最近 N 条（含刚失败的）。
+
+    任务中心要看完整历史时走 GET /api/jobs 的 status/limit 参数，
+    别让事件流带上全库（2200+ 条 = 675KB/帧）。
+    """
+    active = jobs.list_jobs(conn, book_id, statuses=list(SSE_ACTIVE_STATUSES))
+    seen = {job.id for job in active}
+    recent = jobs.list_jobs(conn, book_id, limit=SSE_RECENT_JOBS)
+    merged = active + [job for job in recent if job.id not in seen]
+    merged.sort(key=lambda job: job.id)
+    return {"jobs": [job.__dict__ for job in merged]}
+
+
+def sse_frame(payload: dict) -> str:
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+class JobStream:
+    """把窗口快照做成增量帧：首帧全量，之后只发真正变了的条目。
+
+    delta=True （新前端，/api/events?v=2）：snapshot + patch(changed/removed)。
+    delta=False（老前端只认 jobs 字段）：仍然发窗口全量，但只在有变化时发，
+                且不再带 ts —— 避免旧缓存页面在升级后拿不到数据。
+    """
+
+    def __init__(self, conn, book_id: str | None = None, *, delta: bool = True) -> None:
+        self.conn = conn
+        self.book_id = book_id
+        self.delta = bool(delta)
+        self._jobs: dict[int, dict] = {}
+        self._first = True
+
+    def poll(self) -> str | None:
+        """返回一帧 SSE 文本；没有变化时返回 None（不发任何字节）。"""
+        current = {item["id"]: item for item in jobs_snapshot(self.conn, self.book_id)["jobs"]}
+        if self._first:
+            self._first = False
+            self._jobs = current
+            if self.delta:
+                return sse_frame({"type": "snapshot", "jobs": list(current.values())})
+            return sse_frame({"jobs": list(current.values())})
+        changed = [item for key, item in current.items() if self._jobs.get(key) != item]
+        removed = [key for key in self._jobs if key not in current]
+        self._jobs = current
+        if not changed and not removed:
+            return None
+        if self.delta:
+            return sse_frame({"type": "patch", "changed": changed, "removed": removed})
+        return sse_frame({"jobs": list(current.values())})
 
 
 def create_app(settings, conn) -> FastAPI:
@@ -255,7 +338,7 @@ def create_app(settings, conn) -> FastAPI:
 
     @app.get("/api/books/{book_id}/chapters")
     def book_chapters(book_id: str):
-        chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+        chapters = store.chapter_index(settings, book_id)
         if not chapters:
             meta = store.read_json(store.book_dir(settings, book_id) / "book.json", default={}) or {}
             if not meta:
@@ -709,12 +792,14 @@ def create_app(settings, conn) -> FastAPI:
         }
 
     @app.get("/api/books/{book_id}")
-    def get_book(book_id: str):
+    def get_book(book_id: str, chapters: str = "full"):
+        """书目信息。默认带上分章结果（含正文，实测一本 2.8MB）；
+        界面打开书籍只需要书名和产出清单，用 ``?chapters=none`` 别把整本书拖下来。"""
         meta = store.read_json(store.book_dir(settings, book_id) / "book.json")
         if meta is None:
             raise HTTPException(status_code=404, detail="book not found")
-        chapters = store.read_json(store.chapters_path(settings, book_id), default={})
-        return {"book": meta, "chapters": chapters, "output": _output_info(settings, book_id)}
+        payload = {} if chapters == "none" else store.read_chapters(settings, book_id)
+        return {"book": meta, "chapters": payload, "output": _output_info(settings, book_id)}
 
     @app.post("/api/books/{book_id}/run")
     def run_book(book_id: str):
@@ -769,7 +854,7 @@ def create_app(settings, conn) -> FastAPI:
         if not picked:
             raise HTTPException(status_code=400, detail="至少选择一章")
         force = bool(body.get("force"))
-        chapters = (store.read_json(store.chapters_path(settings, book_id), default={}) or {}).get("chapters") or []
+        chapters = store.chapter_index(settings, book_id)
         known = {int(chapter["index"]) for chapter in chapters}
         if not known:
             raise HTTPException(status_code=409, detail="还没有分章结果，请先分章")
@@ -838,8 +923,10 @@ def create_app(settings, conn) -> FastAPI:
         return {"ok": True, "queued": len(job_ids), "plan": plan, "job_ids": job_ids}
 
     @app.get("/api/jobs")
-    def list_jobs(book_id: str | None = None):
-        return {"jobs": [j.__dict__ for j in jobs.list_jobs(conn, book_id)]}
+    def list_jobs(book_id: str | None = None, status: str | None = None, limit: int | None = None):
+        """任务列表。默认全量（老前端照旧）；带 `status=running,queued&limit=200` 时只取需要的那些。"""
+        statuses = [item.strip() for item in (status or "").split(",") if item.strip()] or None
+        return {"jobs": [j.__dict__ for j in jobs.list_jobs(conn, book_id, statuses=statuses, limit=limit)]}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: int):
@@ -960,17 +1047,32 @@ def create_app(settings, conn) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/events")
-    async def events(book_id: str | None = None):
-        async def gen():
-            last = None
-            while True:
-                payload = json.dumps(jobs_snapshot(conn, book_id), ensure_ascii=False)
-                if payload != last:
-                    yield f"data: {payload}\n\n"
-                    last = payload
-                await asyncio.sleep(1.0)
+    async def events(book_id: str | None = None, v: int = 0):
+        """任务事件流（SSE）。
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        只推"活跃 + 最近 30 条"，而且只在真的有变化时才发帧；
+        空闲时每 25 秒只有一条 `: ping` 注释保活（2 字节）。
+        v=2 走增量帧（patch），不带 v 的老前端拿窗口全量（升级期间的缓存页面不会瞎）。
+        """
+        stream = JobStream(conn, book_id, delta=int(v or 0) >= 2)
+
+        async def gen():
+            last_ping = time.monotonic()
+            while True:
+                frame = stream.poll()
+                if frame is not None:
+                    yield frame
+                now = time.monotonic()
+                if now - last_ping >= SSE_PING_SECONDS:
+                    last_ping = now
+                    yield ": ping\n\n"
+                await asyncio.sleep(SSE_POLL_SECONDS)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/books/{book_id}/chapters/{index}/audio")
     def chapter_audio(book_id: str, index: int):

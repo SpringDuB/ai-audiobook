@@ -50,11 +50,35 @@ def get_job(conn: sqlite3.Connection, job_id: int) -> Job | None:
     return _row_to_job(row) if row else None
 
 
-def list_jobs(conn: sqlite3.Connection, book_id: str | None = None) -> list[Job]:
-    if book_id is None:
-        rows = conn.execute("SELECT * FROM jobs ORDER BY id").fetchall()
+def list_jobs(
+    conn: sqlite3.Connection,
+    book_id: str | None = None,
+    *,
+    statuses: list[str] | None = None,
+    limit: int | None = None,
+) -> list[Job]:
+    """任务列表。默认全量（老契约不变）；传 statuses/limit 时在 SQL 里就过滤掉。
+
+    任务只会越攒越多（实测 2400+ 条 = 630KB JSON），把不需要的行也读出来再序列化
+    是纯浪费：任务中心只展示运行中/排队中/最近的失败与完成。
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if book_id is not None:
+        clauses.append("book_id=?")
+        params.append(book_id)
+    if statuses:
+        clauses.append("status IN (" + ",".join("?" for _ in statuses) + ")")
+        params.extend(statuses)
+    sql = "SELECT * FROM jobs"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    if limit is not None and int(limit) > 0:
+        # "最近 N 条"：倒序取完再翻回正序，前端拿到的顺序和全量时一致
+        rows = conn.execute(sql + " ORDER BY id DESC LIMIT ?", [*params, int(limit)]).fetchall()
+        rows.reverse()
     else:
-        rows = conn.execute("SELECT * FROM jobs WHERE book_id=? ORDER BY id", (book_id,)).fetchall()
+        rows = conn.execute(sql + " ORDER BY id", params).fetchall()
     return [_row_to_job(r) for r in rows]
 
 

@@ -146,7 +146,17 @@ function block(title, jobs, hint, refresh) {
 }
 
 async function build(host) {
-  const { jobs } = await api.jobs();
+  // 任务中心只关心"活跃 + 最近 + 失败"：全量历史（2200+ 条 = 675KB）没必要每次打开都拉。
+  // 活跃任务单独取一次，免得排很久的旧任务被最近完成的任务挤出窗口。
+  const [active, recent, failedJobs] = await Promise.all([
+    api.jobs({ status: "running,queued", limit: 200 }),
+    api.jobs({ limit: 150 }),
+    api.jobs({ status: "failed", limit: 120 }),
+  ]);
+  const merged = new Map(recent.jobs.map((job) => [job.id, job]));
+  for (const job of active.jobs) merged.set(job.id, job);
+  for (const job of failedJobs.jobs) merged.set(job.id, job);
+  const jobs = [...merged.values()].sort((a, b) => a.id - b.id);
   const refresh = () => render(host, { name: "jobs" });
   const running = jobs.filter((job) => job.status === "running");
   const queued = jobs.filter((job) => job.status === "queued");

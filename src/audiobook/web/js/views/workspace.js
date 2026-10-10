@@ -489,7 +489,7 @@ async function build(route, host) {
   const bookId = route.bookId;
   const [chaptersPayload, bookPayload, castingPayload] = await Promise.all([
     api.chapters(bookId),
-    api.book(bookId).catch(() => ({})),
+    api.book(bookId, { chapters: "none" }).catch(() => ({})),
     api.casting(bookId).catch(() => ({ roles: [] })),
   ]);
   const chapters = chaptersPayload.chapters || [];

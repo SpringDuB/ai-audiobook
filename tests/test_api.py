@@ -2,7 +2,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from audiobook.api.app import create_app, jobs_snapshot
+from audiobook.api.app import JobStream, create_app, jobs_snapshot
 from audiobook.db import connect, init_db
 
 
@@ -47,6 +47,52 @@ def test_events_route_registered_and_snapshot_contains_jobs(settings):
     assert "/api/events" in paths
     payload = json.dumps(jobs_snapshot(conn, book_id), ensure_ascii=False)
     assert "chapter_split" in payload
+
+
+def test_jobs_snapshot_has_no_timestamp_and_keeps_window(settings):
+    """快照不能带每秒都变的 ts（否则"变了才发"永远成立），并且只留窗口。"""
+    client, conn = make_client(settings)
+    book_id = _upload(client, "第一章 重生十年前\n\n正文一。")
+    for index in range(45):
+        conn.execute(
+            "INSERT INTO jobs(kind, book_id, chapter_index, status, attempts, max_attempts,"
+            " created_at, updated_at) VALUES('post', ?, ?, 'done', 1, 3, ?, ?)",
+            (book_id, index + 100, index, index),
+        )
+    conn.commit()
+    snapshot = jobs_snapshot(conn, book_id)
+    assert "ts" not in snapshot
+    assert len(snapshot["jobs"]) <= 31  # 1 条活跃 + 最近 30 条
+    assert snapshot["jobs"][-1]["chapter_index"] == 144  # 最近的那条
+
+
+def test_job_stream_only_emits_when_something_changes(settings):
+    """首帧 snapshot，之后没变化就不发字节，有变化只发 patch。"""
+    client, conn = make_client(settings)
+    book_id = _upload(client, "第一章 重生十年前\n\n正文一。")
+    job_id = client.get("/api/jobs", params={"book_id": book_id}).json()["jobs"][0]["id"]
+    stream = JobStream(conn, book_id)
+
+    first = stream.poll()
+    assert first is not None and '"type": "snapshot"' in first and "chapter_split" in first
+    assert stream.poll() is None  # 空闲：一帧都不发
+
+    conn.execute("UPDATE jobs SET status='running', updated_at=updated_at+1 WHERE id=?", (job_id,))
+    conn.commit()
+    patch = stream.poll()
+    assert patch is not None
+    assert '"type": "patch"' in patch and f'"id": {job_id}' in patch
+    assert patch.count('"kind"') == 1  # patch 里只带变化的那一条，不是整份窗口
+    assert stream.poll() is None
+
+
+def test_job_stream_legacy_frame_keeps_jobs_field(settings):
+    """老前端（缓存的旧 JS）只认 jobs 字段：不带 v=2 时仍然给窗口全量。"""
+    client, conn = make_client(settings)
+    book_id = _upload(client, "第一章 重生十年前\n\n正文一。")
+    stream = JobStream(conn, book_id, delta=False)
+    frame = stream.poll()
+    assert '"jobs"' in frame and '"type"' not in frame
 
 
 def test_tts_status_reports_configured_engine(settings):

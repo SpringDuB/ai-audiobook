@@ -37,7 +37,9 @@ const send = (method, url, body) => request(method, url, body ?? {});
 
 export const api = {
   books: () => get("/api/books"),
-  book: (id) => get(`/api/books/${id}`),
+  // 书目信息：默认会带上整本书的正文。界面只用到书名/产出清单，所以传 { chapters: "none" }，
+  // 否则打开一本书要多传 2~8MB 的 JSON（原文另有 chapterText 接口按章取）。
+  book: (id, options) => get(`/api/books/${id}${options?.chapters === "none" ? "?chapters=none" : ""}`),
   chapters: (id) => get(`/api/books/${id}/chapters`),
   chapterText: (id, index) => get(`/api/books/${id}/chapters/${index}/text`),
   lines: (id, index, scene) =>
@@ -65,7 +67,14 @@ export const api = {
     form.append("title", title);
     return request("POST", "/api/books", form);
   },
-  jobs: () => get("/api/jobs"),
+  // 任务列表：默认全量（老调用照旧）；传 { status: "running,queued", limit: 200 } 只取需要的
+  jobs: (options = {}) => {
+    const params = new URLSearchParams();
+    if (options.status) params.set("status", options.status);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return get(`/api/jobs${query ? `?${query}` : ""}`);
+  },
   cancelJob: (id) => send("POST", `/api/jobs/${id}/cancel`),
   retryJob: (id) => send("POST", `/api/jobs/${id}/retry`),
   issues: (id) => get(`/api/books/${id}/issues`),
