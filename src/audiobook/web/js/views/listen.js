@@ -79,10 +79,31 @@ async function loadCatalog(bookId, preferCache) {
   }
 }
 
-// 跨章节复用同一个 <audio>：移动端（尤其 iOS）把"手势解锁"记在媒体元素上，
-// 播完自动续播时若换成新元素，play() 会被当成无手势的自动播放拦下来。
-let sharedAudio = null;
-let audioBound = false;
+// 两个 <audio> 轮着用（A/B）：
+//   - 正在播的那章装在一个上，下一章提前装到另一个上边下边缓冲；
+//   - 章节播完直接切元素开始播，不再"给正在播的元素换 src"。
+// 手机息屏时，给 <audio> 换 src 会触发一次新的媒体加载，系统会把这次加载推迟到亮屏，
+// 表现就是"切到下一章就没声了，打开界面等一会才继续"——提前装好的元素没有这个加载动作。
+const slots = { a: null, b: null };
+let activeSlot = "a";
+
+// 页面订阅：模块换播放元素（A↔B）时通知播放页重绑事件
+const sessionListeners = new Set();
+
+function emitSession(type, payload) {
+  for (const listener of [...sessionListeners]) {
+    try {
+      listener(type, payload);
+    } catch (error) {
+      /* 页面自己的事，别影响播放 */
+    }
+  }
+}
+
+export function onSessionEvent(listener) {
+  sessionListeners.add(listener);
+  return () => sessionListeners.delete(listener);
+}
 
 /* ------------------------------------------------ 常驻播放会话 + 悬浮球
 
@@ -121,26 +142,47 @@ function m4aUrl(bookId, index) {
   return `/api/books/${bookId}/chapters/${index}/audio.m4a`;
 }
 
-function audioElement() {
-  if (!sharedAudio) {
-    sharedAudio = new Audio();
-    sharedAudio.className = "listen__audio";
-    sharedAudio.preload = "metadata";
+function elementFor(slot) {
+  let audio = slots[slot];
+  if (!audio) {
+    audio = new Audio();
+    audio.className = "listen__audio";
+    audio.preload = "metadata";
+    audio.dataset.slot = slot;
+    slots[slot] = audio;
+    bindAudioElement(audio);
   }
   // 页面切换时 renderWithState 会替换整棵 DOM；<audio> 固定挂在 document 上，
-  // 跨章节只换 src，元素本身不动（被摘掉的话 play() 会被浏览器拒绝）。
-  if (!sharedAudio.isConnected) document.body.append(sharedAudio);
-  bindAudio();
-  return sharedAudio;
+  // 元素本身不动（被摘掉的话 play() 会被浏览器拒绝）。
+  if (!audio.isConnected) document.body.append(audio);
+  return audio;
+}
+
+/** 当前正在出声的那个元素。UI / 进度 / 锁屏都跟着它走。 */
+function audioElement() {
+  return elementFor(activeSlot);
+}
+
+/** 另一个元素：用来提前装下一章。 */
+function standbyAudio() {
+  return elementFor(activeSlot === "a" ? "b" : "a");
+}
+
+function isActiveAudio(audio) {
+  return audio === slots[activeSlot];
 }
 
 function saveCurrent() {
-  if (!session.srcKey || !session.loaded || !sharedAudio) return;
-  savePosition(session.srcBookId, session.srcIndex, sharedAudio.currentTime || 0, sharedAudio.playbackRate);
+  const audio = slots[activeSlot];
+  if (!session.srcKey || !session.loaded || !audio) return;
+  savePosition(session.srcBookId, session.srcIndex, audio.currentTime || 0, audio.playbackRate);
 }
 
 async function playAudio() {
   const audio = audioElement();
+  // iOS：新元素没经过手势不允许出声。用户点播放的这一下顺手把备用元素"解锁"
+  // （静音播一帧再停），息屏续播时换到它才不会被打回来。
+  if (navigator.userActivation?.isActive) unlockStandby();
   try {
     await audio.play();
   } catch (error) {
@@ -152,6 +194,30 @@ async function playAudio() {
   }
 }
 
+function unlockStandby() {
+  // 只有 iOS 需要这一步；Android 上静音起播反而会骚扰锁屏通知
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!ios) return;
+  const audio = standbyAudio();
+  if (!audio.src || !audio.paused) return;
+  const muted = audio.muted;
+  audio.muted = true;
+  const attempt = audio.play();
+  if (!attempt?.then) {
+    audio.muted = muted;
+    return;
+  }
+  attempt
+    .then(() => {
+      audio.pause();
+      audio.muted = muted;
+      audio.currentTime = 0;
+    })
+    .catch(() => {
+      audio.muted = muted;
+    });
+}
+
 function toggleAudio() {
   const audio = audioElement();
   if (audio.paused) void playAudio();
@@ -160,11 +226,14 @@ function toggleAudio() {
 
 /** 彻底停下：清会话、清 src、收起悬浮球（悬浮球上的 × / 锁屏 stop 用）。 */
 function stopSession() {
-  const audio = audioElement();
   saveCurrent();
-  audio.pause();
-  audio.removeAttribute("src");
-  audio.load();
+  for (const audio of Object.values(slots)) {
+    if (!audio) continue;
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+  }
+  primed = null;
   switchSeq += 1;
   session.bookId = null;
   session.index = null;
@@ -187,8 +256,8 @@ function stopSession() {
 }
 
 function syncMediaPosition() {
-  if (!("mediaSession" in navigator) || !session.key || !sharedAudio) return;
-  const audio = sharedAudio;
+  const audio = slots[activeSlot];
+  if (!("mediaSession" in navigator) || !session.key || !audio) return;
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
   try {
     navigator.mediaSession.setPositionState({
@@ -236,31 +305,34 @@ function bindMediaSession() {
     }
   };
   set("play", () => void playAudio());
-  set("pause", () => sharedAudio?.pause());
+  set("pause", () => slots[activeSlot]?.pause());
   set("stop", () => stopSession());
   set("seekbackward", () => {
-    if (sharedAudio) sharedAudio.currentTime = Math.max(0, (sharedAudio.currentTime || 0) - 15);
+    const audio = slots[activeSlot];
+    if (audio) audio.currentTime = Math.max(0, (audio.currentTime || 0) - 15);
   });
   set("seekforward", () => {
-    if (sharedAudio) sharedAudio.currentTime = Math.min(sharedAudio.duration || 0, (sharedAudio.currentTime || 0) + 15);
+    const audio = slots[activeSlot];
+    if (audio) audio.currentTime = Math.min(audio.duration || 0, (audio.currentTime || 0) + 15);
   });
   set("previoustrack", () => {
-    if (session.prev) goChapter(session.bookId, session.prev.index, { autoplay: !sharedAudio?.paused, resume: true });
+    if (session.prev) goChapter(session.bookId, session.prev.index, { autoplay: !slots[activeSlot]?.paused, resume: true });
   });
   set("nexttrack", () => {
-    if (session.next) goChapter(session.bookId, session.next.index, { autoplay: !sharedAudio?.paused, resume: true });
+    if (!session.next) return;
+    // 锁屏上点"下一首"也是息屏场景：装好了就直接切元素，别再触发一次加载
+    if (primedFor(session.bookId, session.next.index)) void swapToPrimed(session.next);
+    else goChapter(session.bookId, session.next.index, { autoplay: !slots[activeSlot]?.paused, resume: true });
   });
 }
 
-/** 常驻 <audio> 监听：只绑一次，切页不断。 */
-function bindAudio() {
-  if (audioBound) return;
-  audioBound = true;
-  const audio = sharedAudio;
+/** 常驻 <audio> 监听：每个元素只绑一次，切页不断；非当前元素的事件一律不理。 */
+function bindAudioElement(audio) {
   let lastSaved = 0;
   let lastPos = 0;
 
   audio.addEventListener("play", () => {
+    if (!isActiveAudio(audio)) return;
     session.blocked = false;
     if ("mediaSession" in navigator) {
       try {
@@ -272,6 +344,7 @@ function bindAudio() {
     paintMini();
   });
   audio.addEventListener("pause", () => {
+    if (!isActiveAudio(audio)) return;
     if ("mediaSession" in navigator) {
       try {
         navigator.mediaSession.playbackState = session.key ? "paused" : "none";
@@ -284,21 +357,25 @@ function bindAudio() {
     paintMini();
   });
   audio.addEventListener("playing", () => {
+    if (!isActiveAudio(audio)) return;
     session.switching = false;
     session.buffering = false;
     paintMini();
+    primeNext();
   });
   audio.addEventListener("canplay", () => {
+    if (!isActiveAudio(audio)) return;
     session.switching = false;
     session.buffering = false;
     paintMini();
   });
   audio.addEventListener("waiting", () => {
-    if (!session.key) return;
+    if (!isActiveAudio(audio) || !session.key) return;
     session.buffering = true;
     paintMini();
   });
   audio.addEventListener("timeupdate", () => {
+    if (!isActiveAudio(audio)) return;
     const now = Date.now();
     // 进度条每次 timeupdate 都画；落 localStorage / 更新锁屏进度节流
     paintMini();
@@ -312,10 +389,12 @@ function bindAudio() {
     }
   });
   audio.addEventListener("durationchange", () => {
+    if (!isActiveAudio(audio)) return;
     paintMini();
     refreshMediaSession();
   });
   audio.addEventListener("loadedmetadata", () => {
+    if (!isActiveAudio(audio)) return;
     const rate = readRate();
     audio.defaultPlaybackRate = rate;
     audio.playbackRate = rate;
@@ -334,7 +413,7 @@ function bindAudio() {
     refreshMediaSession();
   });
   audio.addEventListener("ended", () => {
-    if (!session.key) return;
+    if (!isActiveAudio(audio) || !session.key) return;
     savePosition(session.bookId, session.index, 0, audio.playbackRate);
     const next = session.next;
     if (!next) {
@@ -342,11 +421,17 @@ function bindAudio() {
       paintMini();
       return;
     }
+    // 下一章要是已经装到备用元素里了，直接切元素（零加载，息屏也不会卡加载）；
+    // 没装上才退回"换 src"的老路。
     toast(`第 ${session.index} 章播完，继续第 ${next.index} 章`);
-    goChapter(session.bookId, next.index, { autoplay: true, resume: false });
+    if (primedFor(session.bookId, next.index)) {
+      void swapToPrimed(next);
+    } else {
+      goChapter(session.bookId, next.index, { autoplay: true, resume: false });
+    }
   });
   audio.addEventListener("error", () => {
-    if (!session.key || session.blocked) return;
+    if (!isActiveAudio(audio) || !session.key || session.blocked) return;
     session.switching = false;
     session.buffering = false;
     paintMini();
@@ -404,10 +489,10 @@ function paintMini() {
   view.root.setAttribute("aria-hidden", visible ? "false" : "true");
   // 有悬浮球时给正文留出底部空间，避免挡住最后一两行
   document.body.classList.toggle("has-mini", visible);
-  if (!visible || !sharedAudio) return;
+  const audio = slots[activeSlot];
+  if (!visible || !audio) return;
 
   const timeline = session.timeline || {};
-  const audio = sharedAudio;
   const total = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : timeline.duration || 0;
   const position = audio.currentTime || 0;
   view.title.textContent = timeline.title || `第 ${session.index} 章`;
@@ -447,24 +532,116 @@ function applySource(bookId, index, mtime) {
   session.srcKey = `${bookId}:${index}`;
 }
 
-// 下一章音频预取：用第二个（静音）媒体元素把字节拉进浏览器缓存，
-// 续播时换 src 几乎立刻有数据；离线包已下载过的章节不用重复拉。
-let preloadElement = null;
-function preloadAudio(bookId, index, mtime) {
-  if (!mtime) return;
-  const url = `${m4aUrl(bookId, index)}?v=${mtime}`;
-  try {
-    if (!preloadElement) {
-      preloadElement = new Audio();
-      preloadElement.preload = "auto";
-      preloadElement.muted = true;
+/* ---------------------------------------------------------------- 下一章预热（A/B 切换）
+
+   息屏会卡住的只有"新的媒体加载"：所以下一章在屏幕还亮着的时候就装进备用元素
+   （转码 + 缓冲 + 字幕进内存），到点直接切元素开着播，全程没有换 src 这个动作。 */
+
+let primed = null; // 备用元素里已经装好的那一章：{ key, bookId, index, mtime }
+
+function primedFor(bookId, index) {
+  return primed && primed.bookId === bookId && primed.index === index ? primed : null;
+}
+
+function installPrimed(bookId, index, mtime) {
+  const audio = standbyAudio();
+  const relative = `${m4aUrl(bookId, index)}${mtime ? `?v=${mtime}` : ""}`;
+  if (audio.dataset.src === relative) {
+    primed = { key: `${bookId}:${index}`, bookId, index, mtime };
+    return;
+  }
+  audio.dataset.src = relative;
+  audio.preload = "auto";
+  audio.src = relative;
+  audio.load();
+  audio.playbackRate = readRate();
+  audio.defaultPlaybackRate = readRate();
+  primed = { key: `${bookId}:${index}`, bookId, index, mtime };
+}
+
+/** 给下一章做准备：服务端转码 + 字幕进内存 + 装进备用元素缓冲。 */
+function primeNext() {
+  const next = session.next;
+  if (!session.bookId || !session.loaded || !next || session.buffering) return;
+  const bookId = session.bookId;
+  if (primedFor(bookId, next.index)) return;
+  const start = (mtime) => {
+    if (session.bookId !== bookId || !session.next || session.next.index !== next.index) return;
+    try {
+      installPrimed(bookId, next.index, mtime);
+    } catch (error) {
+      /* 装不上就退回老路：到点换 src */
     }
-    if (preloadElement.dataset.key === url) return;
-    preloadElement.dataset.key = url;
-    preloadElement.src = url;
-    preloadElement.load();
-  } catch (error) {
-    /* 预取失败无所谓，正常切章还会再取一次 */
+  };
+  if (next.m4a_ready && next.m4a_mtime) start(next.m4a_mtime);
+  else {
+    void api
+      .prepareMobile(bookId, next.index, {})
+      .then((info) => {
+        next.m4a_ready = true;
+        next.m4a_mtime = info.mtime;
+        next.m4a_bytes = info.bytes;
+        if (session.catalog) cacheCatalog(bookId, session.catalog);
+        start(info.mtime);
+      })
+      .catch(() => {});
+  }
+  void api
+    .subtitles(bookId, next.index)
+    .then((payload) => cacheTimeline(bookId, next.index, payload))
+    .catch(() => {});
+}
+
+/** 播完切到已经预热好的下一章：只换元素和状态，不产生任何加载。 */
+async function swapToPrimed(next) {
+  const bookId = session.bookId;
+  const from = audioElement();
+  const to = standbyAudio();
+  const rate = readRate();
+
+  from.pause();
+  activeSlot = activeSlot === "a" ? "b" : "a";
+  primed = null;
+  to.currentTime = 0;
+  to.defaultPlaybackRate = rate;
+  to.playbackRate = rate;
+
+  session.index = next.index;
+  session.key = `${bookId}:${next.index}`;
+  session.srcBookId = bookId;
+  session.srcIndex = next.index;
+  session.srcKey = session.key;
+  session.loaded = true;
+  session.switching = false;
+  session.buffering = false;
+  session.resume = false;
+  session.timeline = cachedTimeline(bookId, next.index) || null;
+  session.cues = session.timeline?.cues || [];
+  refreshNeighbors();
+  emitSession("element", to);
+  refreshMediaSession();
+  paintMini();
+
+  await playAudio();
+  primeNext();
+
+  // 时间轴还没在内存里（少见）：补一次，页面随后拿到就能高亮
+  if (!session.timeline) {
+    void loadTimeline(bookId, next.index, true)
+      .then((timeline) => {
+        if (session.key !== `${bookId}:${next.index}`) return;
+        session.timeline = timeline;
+        session.cues = timeline.cues || [];
+        emitSession("timeline", timeline);
+        paintMini();
+      })
+      .catch(() => {});
+  }
+  // 人在播放页就把地址跟着走（隐藏页面也只是改 hash，不需要网络）；
+  // 在别的页面听书时别把人拽回播放页。
+  if (/^#\/listen\/[^/]+\/\d+/.test(window.location.hash)) {
+    const hash = `#/listen/${bookId}/${next.index}`;
+    if (window.location.hash !== hash) window.location.hash = hash;
   }
 }
 
@@ -485,6 +662,9 @@ async function openChapter(bookId, index, { autoplay = null, resume = true, time
       cacheCatalog(bookId, catalog);
       refreshNeighbors();
     }
+    // 息屏里刚切过来、时间轴还没在内存里：缓存优先补一次（网络慢也不挡声音）
+    if (!session.timeline) session.timeline = await loadTimeline(bookId, index, true).catch(() => null);
+    session.cues = session.timeline?.cues || [];
     if (audio.ended) audio.currentTime = 0;
     if (autoplay === true) void playAudio();
     paintMini();
@@ -978,7 +1158,8 @@ async function buildPlayer(host, bookId, index) {
     throw new Error("这一章还没有可听的成品音频（先在本章生成有声书，再回来听）");
   }
   host.dataset.listen = "player";
-  const audio = audioElement();
+  // 元素会随 A/B 切换而变（息屏续播时模块会换到预热好的那个），所以用 let + 重绑
+  let audio = audioElement();
   const timeline = info.timeline;
   const catalog = info.catalog;
 
@@ -1196,54 +1377,43 @@ async function buildPlayer(host, bookId, index) {
     }
   };
 
-  // 听本章时后台把下一章转好（服务端已有新鲜 m4a 会直接秒回，不会重复转码），
-  // 并把下一章的时间轴预取进内存、音频预取进浏览器缓存：续播时不再等网络。
-  let warmedNext = false;
-  const warmNext = () => {
-    if (warmedNext || !next) return;
-    warmedNext = true;
-    if (!(next.m4a_ready && next.m4a_mtime)) {
-      void api.prepareMobile(bookId, next.index, {})
-        .then((info) => {
-          // 和目录缓存是同一份对象：切到下一章时直接走"已转好"快路径
-          next.m4a_ready = true;
-          next.m4a_mtime = info.mtime;
-          next.m4a_bytes = info.bytes;
-          if (!downloadIsCurrent(bookId, next)) preloadAudio(bookId, next.index, info.mtime);
-        })
-        .catch(() => {});
-    } else if (!downloadIsCurrent(bookId, next)) {
-      preloadAudio(bookId, next.index, next.m4a_mtime);
-    }
-    void api.subtitles(bookId, next.index)
-      .then((payload) => cacheTimeline(bookId, next.index, payload))
-      .catch(() => {});
-  };
-
   /* --- 事件 --- */
 
-  // <audio> 现在是跨章节复用的，旧页面的监听必须在切页时解绑，否则会串章节。
+  // <audio> 跨章节复用（而且是 A/B 两个元素轮换），页面只监听"当前那个"：
+  // 旧页面的监听必须解绑，模块换元素时重绑，否则会串章节。
   const abort = new AbortController();
   const listen = (target, type, handler, options) =>
     target.addEventListener(type, handler, { ...options, signal: abort.signal });
+  let audioAbort = new AbortController();
+  const attachAudio = (element) => {
+    audioAbort.abort();
+    audioAbort = new AbortController();
+    element.addEventListener("play", paintPlay, { signal: audioAbort.signal });
+    element.addEventListener("pause", paintPlay, { signal: audioAbort.signal });
+    element.addEventListener("timeupdate", () => {
+      syncProgress();
+      paintStatus();
+    }, { signal: audioAbort.signal });
+    element.addEventListener("durationchange", () => {
+      syncProgress();
+      paintStatus();
+    }, { signal: audioAbort.signal });
+    element.addEventListener("loadedmetadata", () => {
+      element.playbackRate = readRate();
+      syncProgress();
+      paintStatus();
+    }, { signal: audioAbort.signal });
+  };
+  attachAudio(audio);
+  const unbindSwap = onSessionEvent((type, payload) => {
+    if (type !== "element") return;
+    audio = payload;
+    attachAudio(audio);
+    paintPlay();
+    syncProgress();
+  });
 
   playButton.addEventListener("click", () => (audio.paused ? void playAudio() : audio.pause()));
-  listen(audio, "play", paintPlay);
-  listen(audio, "play", warmNext);
-  listen(audio, "pause", paintPlay);
-  listen(audio, "timeupdate", () => {
-    syncProgress();
-    paintStatus();
-  });
-  listen(audio, "durationchange", () => {
-    syncProgress();
-    paintStatus();
-  });
-  listen(audio, "loadedmetadata", () => {
-    audio.playbackRate = readRate();
-    syncProgress();
-    paintStatus();
-  });
 
   seek.addEventListener("pointerdown", () => { dragging = true; });
   listen(window, "pointerup", () => { dragging = false; });
@@ -1377,14 +1547,16 @@ async function buildPlayer(host, bookId, index) {
   paintStatus();
   raf = requestAnimationFrame(tick);
   syncProgress();
-  // 已经在放（从悬浮球回到播放页 / 刚切章）就顺手把下一章转码 + 预取，续播更快
-  warmNext();
+  // 已经在放（从悬浮球回到播放页 / 刚切章）就顺手把下一章转码 + 装进备用元素
+  primeNext();
 
   onTeardown(() => {
     cancelAnimationFrame(raf);
     window.clearInterval(sleep.ticker);
     remember();
     abort.abort();
+    audioAbort.abort();
+    unbindSwap();
     delete host.dataset.listen;
     // 关键：切页不暂停、不清 src —— 播放属于常驻 session，悬浮球随后接管控制。
     // 若是"播放页 → 播放页"，新页面会先一步把 pageToken 加一：样式留着，不闪顶栏/底栏。
