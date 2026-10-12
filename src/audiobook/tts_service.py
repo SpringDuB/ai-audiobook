@@ -20,6 +20,29 @@ STILL_ACTIVE = 259
 # 首次启动可能要先下几 GB 权重，宽限期给足；期间显示"启动中"，不再当成僵尸 pid
 STARTUP_GRACE_SECONDS = 1800.0
 
+# 只保留 qwen3：IndexTTS 的实际听感达不到有声书要求，已经下线。
+# 界面下拉、CLI 参数、旧 settings.json 里残留的 indextts / fake 一律收敛到它。
+SUPPORTED_BACKENDS = ("qwen3",)
+BACKEND_ALIASES = {
+    "qwen": "qwen3",
+    "qwen3-tts": "qwen3",
+    "qwen3_tts": "qwen3",
+    "qwen3tts": "qwen3",
+}
+
+
+def normalize_backend(value: str | None) -> tuple[str, str | None]:
+    """收敛后端名：返回 (实际使用的后端, 被顶替掉的原始值或 None)。
+
+    第二个值非空表示"这个请求要的后端已经下线了"，调用方据此提示用户 / 记日志。
+    """
+    raw = str(value or "").strip().lower()
+    if raw in SUPPORTED_BACKENDS:
+        return raw, None
+    if raw in BACKEND_ALIASES:  # 只是写法不同，不算被顶替
+        return BACKEND_ALIASES[raw], None
+    return SUPPORTED_BACKENDS[0], (raw or None)
+
 
 def _pid_alive(pid: int) -> bool:
     """进程是否还活着。Windows 上不能用 os.kill(pid, 0)——那会真的把进程杀掉。"""
@@ -119,7 +142,9 @@ class LocalTtsService:
         try:
             import httpx
 
-            response = httpx.get(f"{url.rstrip('/')}/health", timeout=timeout)
+            # trust_env=False：本机回环不走系统代理。开着代理的机器上，
+            # 代理会替 127.0.0.1 应答（返回非 JSON 的错误页），探活就会误判成"服务没起来"。
+            response = httpx.get(f"{url.rstrip('/')}/health", timeout=timeout, trust_env=False)
             if response.status_code != 200:
                 return None
             payload = response.json()
@@ -180,11 +205,12 @@ class LocalTtsService:
     ) -> dict:
         current = self.status()
         if current["running"]:
-            if current.get("backend") == (backend or self.settings.tts_backend):
+            wanted, _ = normalize_backend(backend or self.settings.tts_backend)
+            if current.get("backend") == wanted:
                 return current
-            # 状态文件里是别的后端（例如已经删掉的 fake）：先停掉再按现在的配置起
+            # 状态文件里是别的后端（例如已经下线的 indextts/fake）：先停掉再按现在的配置起
             self.stop()
-        backend = backend or self.settings.tts_backend
+        backend, replaced = normalize_backend(backend or self.settings.tts_backend)
         port = int(port or self.settings.tts_port)
         model_source = model_source or self.settings.tts_model_source
         model_dir = model_dir or self.settings.tts_model_dir
@@ -218,8 +244,10 @@ class LocalTtsService:
             env["AIAB_TTS_HF_ENDPOINT"] = hf_endpoint
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        # 请求了已下线的后端时把纠正写进日志：界面上的提示和这份日志能对上
+        note = f"（请求的 {replaced} 已下线，自动换成 {backend}）" if replaced else ""
         with open(self.log_path, "a", encoding="utf-8") as handle:
-            handle.write(f"\n===== {stamp} 启动 TTS：backend={backend} port={port} model={model_source} =====\n")
+            handle.write(f"\n===== {stamp} 启动 TTS：backend={backend} port={port} model={model_source} {note}=====\n")
             self._prepare_environment(handle, env)
             if self.port_busy(port):
                 # 常见坑：上次遗留的服务还占着端口，新服务会以 "address already in use" 失败
@@ -243,13 +271,17 @@ class LocalTtsService:
             pid=self._process.pid,
             port=port,
             backend=backend,
+            requested_backend=replaced or backend,
             model_source=model_source,
             model_dir=str(model_dir),
             hf_endpoint=hf_endpoint,
             started_at=time.time(),
             command=command,
         )
-        return self.status()
+        info = self.status()
+        if replaced:
+            info["replaced_backend"] = replaced
+        return info
 
     def _prepare_environment(self, handle, env: dict) -> None:
         """venv 缺失或缺少基础依赖时补一下；只装基础依赖，不自动拉 torch 这类大件。"""

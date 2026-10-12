@@ -51,6 +51,10 @@ class HttpTtsEngine:
             timeout=timeout
             or httpx.Timeout(settings.tts_timeout_seconds, connect=settings.tts_connect_timeout_seconds),
             transport=transport,
+            # TTS 是本机回环服务：绝不能走系统代理。开着代理（如 7890）的机器上，
+            # httpx 默认 trust_env=True 会把 127.0.0.1:8020 也发给代理，
+            # 代理偶发回空响应/502，表现就是"批量合成突然报 502、TTS 日志里却没有请求"。
+            trust_env=False,
         )
 
     def close(self) -> None:

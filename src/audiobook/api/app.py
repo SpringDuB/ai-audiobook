@@ -21,7 +21,7 @@ from ..config import EMOTION_TEXT_ENABLED, OVERLAY_KEYS, get_settings, load_over
 from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
 from ..pipeline import resume_book
-from ..tts_service import LocalTtsService
+from ..tts_service import LocalTtsService, normalize_backend
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -961,12 +961,14 @@ def create_app(settings, conn) -> FastAPI:
     @app.get("/api/tts/local")
     def tts_local_status():
         fresh = _fresh_settings()
+        # 后端下拉里只留 qwen3：旧 settings.json 里存着 indextts 也不能露出来
+        backend, _ = normalize_backend(fresh.tts_backend)
         return {
             "service": tts_service.status(),
             "engine": fresh.engine,
             "endpoints": list(fresh.tts_endpoints),
             "launch": {
-                "backend": fresh.tts_backend,
+                "backend": backend,
                 "model_source": fresh.tts_model_source,
                 "model_dir": fresh.tts_model_dir,
                 "hf_endpoint": fresh.tts_hf_endpoint,
@@ -988,10 +990,10 @@ def create_app(settings, conn) -> FastAPI:
                     return value
             return default
 
-        # fake 后端已删除：旧 settings.json / 老请求里的值一律兜到 indextts
-        backend = str(pick("backend", "tts_backend", default=fresh.tts_backend))
-        if backend != "indextts":
-            backend = "indextts"
+        # 只保留 qwen3：indextts 已下线（旧 settings.json / 老请求里的值一律换成 qwen3）。
+        # 这里以前写死兜到 indextts，结果"界面选了 qwen3、实际起的是 indextts"——别改回去。
+        requested_backend = str(pick("backend", "tts_backend", default=fresh.tts_backend))
+        backend, replaced_backend = normalize_backend(requested_backend)
         port = int(pick("port", "tts_port", default=fresh.tts_port))
         model_source = str(pick("model_source", "tts_model_source", default=fresh.tts_model_source))
         model_dir = str(pick("model_dir", "tts_model_dir", default=fresh.tts_model_dir))
@@ -1013,6 +1015,8 @@ def create_app(settings, conn) -> FastAPI:
             )
         except (RuntimeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if replaced_backend:
+            service = {**service, "replaced_backend": replaced_backend}
         # 一键启动的副作用：主服务自动把合成引擎切到刚起来的本机服务（worker 每轮会重读设置）
         overlay = save_overlay(
             settings,
@@ -1030,6 +1034,7 @@ def create_app(settings, conn) -> FastAPI:
             "service": service,
             "engine": "http",
             "endpoints": [service["url"]],
+            "requested_backend": requested_backend,
             "overlay_keys": sorted(overlay),
         }
 

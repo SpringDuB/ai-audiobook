@@ -111,21 +111,21 @@ def test_tts_local_endpoints_switch_engine(settings, monkeypatch):
     assert status["service"]["running"] is False
     assert status["launch"]["backend"] == settings.tts_backend
 
-    started = client.post("/api/tts/local/start", json={"backend": "indextts", "port": 8123, "model_source": "local"}).json()
+    started = client.post("/api/tts/local/start", json={"backend": "qwen3", "port": 8123, "model_source": "local"}).json()
     assert started["engine"] == "http"
     assert started["endpoints"] == ["http://127.0.0.1:8123"]
     overlay = load_overlay(settings)
     assert overlay["engine"] == "http"
     assert overlay["tts_endpoints"] == ["http://127.0.0.1:8123"]
     assert overlay["tts_port"] == 8123
-    assert overlay["tts_backend"] == "indextts"
+    assert overlay["tts_backend"] == "qwen3"
 
     assert client.get("/api/tts/local/logs?offset=0").json()["lines"] == ["fake tts up"]
     assert client.post("/api/tts/local/stop").json()["service"]["running"] is False
 
 
-def test_start_falls_back_to_indextts_when_stored_backend_is_gone(settings, monkeypatch):
-    """老 data/settings.json 里存着 fake：一键启动要能自己纠正，而不是报"未知后端"。"""
+def test_start_falls_back_to_qwen3_when_stored_backend_is_gone(settings, monkeypatch):
+    """老 data/settings.json 里存着 fake / indextts：一键启动要能自己纠正，而不是报"未知后端"。"""
     from audiobook.config import save_overlay
 
     save_overlay(settings, {"tts_backend": "fake"})
@@ -151,8 +151,10 @@ def test_start_falls_back_to_indextts_when_stored_backend_is_gone(settings, monk
 
     monkeypatch.setattr(app_module, "LocalTtsService", FakeService)
     client = _client(settings)
-    client.post("/api/tts/local/start", json={})
-    assert seen["backend"] == "indextts"
+    started = client.post("/api/tts/local/start", json={}).json()
+    assert seen["backend"] == "qwen3"
+    assert started["service"]["replaced_backend"] == "fake"
+    assert load_overlay(settings)["tts_backend"] == "qwen3"
 
 
 def test_start_accepts_the_settings_page_payload(settings, monkeypatch):
@@ -183,6 +185,7 @@ def test_start_accepts_the_settings_page_payload(settings, monkeypatch):
     client.post(
         "/api/tts/local/start",
         json={
+            # 只保留 qwen3：界面就算（老前端）发 indextts 也要收敛到 qwen3
             "tts_backend": "indextts",
             "tts_model_source": "modelscope",
             "tts_model_dir": "checkpoints",
@@ -191,7 +194,7 @@ def test_start_accepts_the_settings_page_payload(settings, monkeypatch):
         },
     )
     assert seen == {
-        "backend": "indextts",
+        "backend": "qwen3",
         "port": 8123,
         "model_source": "modelscope",
         "model_dir": "checkpoints",

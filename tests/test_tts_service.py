@@ -28,12 +28,12 @@ def test_status_is_idle_before_any_start(tmp_path):
 
 def test_start_stop_manages_child_process_and_state_file(tmp_path):
     service = _service(tmp_path)
-    started = service.start(backend="indextts", port=8099)
+    started = service.start(backend="qwen3", port=8099)
     try:
         assert started["running"] is True
         assert started["pid"] and started["pid"] > 0
         assert started["port"] == 8099
-        assert started["backend"] == "indextts"
+        assert started["backend"] == "qwen3"
         # 状态落在文件里，重启浏览器后还认得
         assert service.state_path.exists()
         assert service.status()["running"] is True
@@ -45,21 +45,38 @@ def test_start_stop_manages_child_process_and_state_file(tmp_path):
 
 def test_start_is_idempotent_when_already_running(tmp_path):
     service = _service(tmp_path)
-    first = service.start(backend="indextts", port=8099)
+    first = service.start(backend="qwen3", port=8099)
     try:
-        second = service.start(backend="indextts", port=8099)
+        second = service.start(backend="qwen3", port=8099)
         assert second["pid"] == first["pid"]
     finally:
         service.stop()
 
 
-def test_start_restarts_when_running_backend_was_removed(tmp_path):
-    """状态文件里是已删掉的 fake：一键启动要把它换掉，而不是"已经在跑"就返回。"""
+def test_start_coerces_retired_backends_to_qwen3(tmp_path):
+    """只保留 qwen3：请求里写着已下线的 indextts / fake，也要起 qwen3。"""
     service = _service(tmp_path)
-    first = service.start(backend="fake", port=8099)
+    started = service.start(backend="indextts", port=8099)
     try:
-        second = service.start(backend="indextts", port=8099)
-        assert second["backend"] == "indextts"
+        assert started["backend"] == "qwen3"
+        assert started["replaced_backend"] == "indextts"
+        # 别名照样算同一个后端，不报"被顶替"
+        again = service.start(backend="qwen3-tts", port=8099)
+        assert again["backend"] == "qwen3"
+        assert again["pid"] == started["pid"]
+        assert "replaced_backend" not in again
+    finally:
+        service.stop()
+
+
+def test_start_restarts_when_state_file_has_a_retired_backend(tmp_path):
+    """状态文件里是已下线的 indextts：一键启动要换成 qwen3，而不是"已经在跑"就返回。"""
+    service = _service(tmp_path)
+    first = service.start(backend="qwen3", port=8099)
+    try:
+        service._write_state(backend="indextts")   # 上一版留下的台账
+        second = service.start(backend="qwen3", port=8099)
+        assert second["backend"] == "qwen3"
         assert second["pid"] != first["pid"]
     finally:
         service.stop()
@@ -67,7 +84,7 @@ def test_start_restarts_when_running_backend_was_removed(tmp_path):
 
 def test_logs_stream_incrementally(tmp_path):
     service = _service(tmp_path)
-    service.start(backend="indextts", port=8099)
+    service.start(backend="qwen3", port=8099)
     try:
         first = service.logs(offset=0)
         assert first["reset"] is True
@@ -82,7 +99,7 @@ def test_logs_stream_incrementally(tmp_path):
 
 def test_dead_pid_is_not_reported_as_running(tmp_path):
     service = _service(tmp_path)
-    service._write_state(pid=999999, port=9, backend="indextts", started_at=time.time())
+    service._write_state(pid=999999, port=9, backend="qwen3", started_at=time.time())
     info = service.status()
     assert info["running"] is False
     assert info["pid"] is None
@@ -94,7 +111,7 @@ def test_alive_pid_without_health_is_not_our_service(tmp_path):
     from audiobook import tts_service
 
     service = _service(tmp_path, tts_port=9)
-    service._write_state(pid=os.getpid(), port=9, backend="indextts", started_at=time.time() - 9999)
+    service._write_state(pid=os.getpid(), port=9, backend="qwen3", started_at=time.time() - 9999)
     info = service.status()
     assert info["running"] is False
     assert service._read_state()["pid"] is None
@@ -121,10 +138,10 @@ def test_start_strips_parent_virtual_env(tmp_path, monkeypatch):
     monkeypatch.setenv("VIRTUAL_ENV_PROMPT", "ai-audiobook")
     settings = get_settings(data_dir=tmp_path / "data")
     service = LocalTtsService(settings, command=_sleeper(), popen=fake_popen)
-    service.start(backend="indextts", port=8099)
+    service.start(backend="qwen3", port=8099)
     assert "VIRTUAL_ENV" not in captured["env"]
     assert "VIRTUAL_ENV_PROMPT" not in captured["env"]
-    assert captured["env"]["AIAB_TTS_BACKEND"] == "indextts"
+    assert captured["env"]["AIAB_TTS_BACKEND"] == "qwen3"
     # 中文日志必须按 UTF-8 落盘，否则界面上是乱码
     assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
     assert captured["env"]["PYTHONUTF8"] == "1"
@@ -138,7 +155,7 @@ def test_start_resolves_relative_model_dir_under_tts(tmp_path):
     """跑一次真进程（模型来源 local，不会下载）：日志里要能看到解析后的绝对路径。"""
     settings = get_settings(data_dir=tmp_path / "data", tts_model_dir="checkpoints", tts_model_source="local")
     service = LocalTtsService(settings)
-    service.start(backend="indextts", port=8024)
+    service.start(backend="qwen3", port=8024)
     try:
         line = next(line for line in service.logs(offset=0)["lines"] if "模型目录" in line)
         assert str(tts_service.TTS_DIR / "checkpoints") in line
@@ -155,8 +172,8 @@ def test_build_command_prefers_venv_python(tmp_path, monkeypatch):
     python.write_text("", encoding="utf-8")
     monkeypatch.setattr(tts_service, "TTS_DIR", fake_root)
     service = LocalTtsService(get_settings(data_dir=tmp_path / "data"))
-    command = service.build_command(backend="indextts", port=8123)
-    assert command == [str(python), "-m", "aiab_tts", "serve", "--backend", "indextts", "--host", "127.0.0.1", "--port", "8123"]
+    command = service.build_command(backend="qwen3", port=8123)
+    assert command == [str(python), "-m", "aiab_tts", "serve", "--backend", "qwen3", "--host", "127.0.0.1", "--port", "8123"]
 
 
 def test_build_command_uses_the_qwen_venv_for_qwen3(tmp_path, monkeypatch):
@@ -211,7 +228,7 @@ def test_start_warns_when_port_is_taken(tmp_path):
         port = sock.getsockname()[1]
         settings = get_settings(data_dir=tmp_path / "data")
         service = LocalTtsService(settings, command=_sleeper())
-        service.start(backend="indextts", port=port)
+        service.start(backend="qwen3", port=port)
         try:
             assert any("已经有服务在应答" in line for line in service.logs(offset=0)["lines"])
         finally:

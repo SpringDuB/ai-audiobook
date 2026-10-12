@@ -45,7 +45,8 @@ def main(argv=None) -> int:
     p_tts = sub.add_parser("tts", help="一键启动/停止本机 TTS 推理服务（tts/ 子项目）")
     tts_sub = p_tts.add_subparsers(dest="tts_cmd", required=True)
     p_tts_start = tts_sub.add_parser("start")
-    p_tts_start.add_argument("--backend", choices=["indextts"], default=None)
+    # 只保留 qwen3：indextts 已下线（tts_service.normalize_backend 也会兜一道）
+    p_tts_start.add_argument("--backend", choices=["qwen3"], default=None)
     p_tts_start.add_argument("--port", type=int, default=None)
     p_tts_start.add_argument("--model-source", choices=["modelscope", "huggingface", "local"], default=None)
     p_tts_start.add_argument("--model-dir", default=None)

@@ -26,10 +26,8 @@ const LAUNCH_FIELDS = [
     key: "tts_backend",
     label: "推理后端",
     type: "select",
-    options: [
-      ["qwen3", "qwen3（Qwen3-TTS，按音色描述逐句生成）"],
-      ["indextts", "indextts（IndexTTS-2.5，参考音频克隆）"],
-    ],
+    // 只保留 qwen3：IndexTTS 听感达不到要求，已下线（后端也会把 indextts 收敛到 qwen3）
+    options: [["qwen3", "qwen3（Qwen3-TTS，按音色描述逐句生成）"]],
   },
   {
     key: "tts_model_source",
@@ -133,17 +131,13 @@ async function build() {
   );
 
   // 这里要说清楚"点下去会发生什么"，免得用户以为它不干活
-  const backendHint = h("p", { class: "field__hint muted" });
+  const backendHint = h(
+    "p",
+    { class: "field__hint muted" },
+    "qwen3 跑在 tts/.venv-qwen（先执行 tts/scripts/install_qwen3.ps1 建环境+下权重）；启动后模型按需加载，日志在下面。",
+  );
   const backendSelect = launchGrid.querySelector("#f-tts_backend");
-  const paintBackendHint = () => {
-    backendHint.textContent =
-      backendSelect.value === "qwen3"
-        ? "qwen3 跑在 tts/.venv-qwen（先执行 tts/scripts/install_qwen3.ps1 建环境+下权重）；启动后模型按需加载，日志在下面。"
-        : "indextts 跑在 tts/.venv；启动时会先按「模型来源」下载/校验权重，再加载模型。";
-  };
-  backendSelect.addEventListener("change", paintBackendHint);
-  paintBackendHint();
-  backendSelect.closest(".field").append(backendHint);
+  backendSelect?.closest(".field")?.append(backendHint);
 
   const syncAdvanced = async () => {
     try {
@@ -169,7 +163,12 @@ async function build() {
         button.textContent = "启动中…";
         try {
           const result = await api.ttsStart(collect(launchGrid));
-          toast(`TTS 已拉起：${result.service.url}；合成引擎已切到 http`);
+          const replaced = result.service?.replaced_backend;
+          toast(
+            replaced
+              ? `请求的后端 ${replaced} 已下线，已改用 qwen3：${result.service.url}`
+              : `TTS 已拉起：${result.service.url}；合成引擎已切到 http`,
+          );
           await poll();
           await syncAdvanced();
         } catch (error) {
@@ -215,7 +214,7 @@ async function build() {
       h(
         "p",
         { class: "setting-section__note" },
-        "点一下，IndexTTS-2.5 就在本机独立进程里起来（和后端不共进程），合成引擎自动切过去。首次启动可能要等权重下载。",
+        "点一下，Qwen3-TTS 就在本机独立进程里起来（和后端不共进程），合成引擎自动切过去。首次启动可能要等模型加载。",
       ),
       h("div", { class: "status-panel" }, statusLine),
       h("div", { class: "row", style: { marginBlock: "var(--space-3)" } }, startButton, stopButton),
