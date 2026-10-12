@@ -260,6 +260,36 @@ def test_voice_design_prompt_forbids_speed_and_emotion_in_base_description():
     assert "音区" in text and "音色质地" in text
 
 
+def test_voice_design_prompt_keeps_adults_unless_text_says_child():
+    """除非原文明确写了是小孩，否则不许写成萝莉音/十三四岁少女。"""
+    text = voice_design_user("林可", [], ["我不去。"], 12)
+
+    assert "年龄红线" in text
+    assert "萝莉音" in text and "十三四岁的少女" in text and "娃娃音" in text
+    # 常见称呼不能当作年龄依据（"小姑娘/丫头"在中文里常指年轻女性，不是小孩）
+    assert "不等于小孩" in text and "小姑娘" in text
+    # 只有用户点名要幼态声音时才照办
+    assert "只有用户在**用户要求**里点名" in text
+
+
+def test_refine_rules_are_allowed_to_fix_underage_description():
+    text = voice_design_user("林可", [], ["我不去。"], 12, previous="十三四岁的少女，嗓音清亮。")
+
+    assert "改成成年写法" in text
+    assert "保持 80% 不变" in text            # 依旧保持"微调"的定位
+
+
+def test_narrator_prompt_forbids_child_voice():
+    text = voice_design_user("旁白", [], ["他走进院子。"], 40, is_narrator=True)
+    assert "旁白是**成年人**声线" in text
+
+
+def test_cast_sheet_prompt_also_keeps_archetypes_adult():
+    text = cast_sheet_user([{"name": "林可", "lines": 3}])
+    assert "年龄红线" in text
+    assert "萝莉音" in text and "二十多岁" in text
+
+
 def test_voice_design_user_renders_user_directive_and_avoid_list():
     text = voice_design_user(
         "苏锐",
