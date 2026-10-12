@@ -1395,7 +1395,10 @@ async function build(route, host) {
         toast("整本导出完成，可在「更多 ▾」里打开成果文件夹");
       }
     }
-    const running = mine.find((job) => job.status === "running");
+    // 整章合成和别的任务可以同时在跑：进度条优先展示合成（用户最关心的那条）
+    const running =
+      mine.find((job) => job.status === "running" && SYNTH_KINDS.has(job.kind)) ||
+      mine.find((job) => job.status === "running");
     const queued = mine.filter((job) => job.status === "queued").length;
     if (running) {
       const jobProgress = running.progress || {};

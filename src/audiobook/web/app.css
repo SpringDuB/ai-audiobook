@@ -348,6 +348,11 @@
 
 .tabs { display: inline-flex; border: var(--line); border-radius: var(--radius-sm); overflow: hidden; background: var(--surface); }
 .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  white-space: nowrap;
   background: transparent;
   border: 0;
   color: var(--text-muted);
@@ -361,6 +366,21 @@
 .tab:hover { background: var(--surface-2); color: var(--text); }
 .tab[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .tabs--sm .tab { padding: 2px var(--space-3); font-size: var(--text-xs); }
+.tab .icon { opacity: 0.85; }
+.tab__count {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.tab[aria-pressed="true"] .tab__count { background: var(--bg); color: var(--accent); }
+.tab--danger .tab__count { background: var(--danger-soft); color: var(--danger); }
+.tab--danger[aria-pressed="true"] { background: var(--danger-soft); color: var(--danger); }
+.tab--danger[aria-pressed="true"] .tab__count { background: var(--bg); color: var(--danger); }
 
 .raw-text { font-family: var(--font-serif); font-size: var(--text-base); line-height: 1.95; margin: 0 0 var(--space-3); }
 
@@ -635,29 +655,118 @@
 
 /* ------------------------------------------------------------------ 任务中心 */
 
+/* 任务中心：一个面板 + 状态页签，列表在面板内部滚动 */
+.jobs__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-block: var(--space-4) var(--space-3);
+}
+.jobs__live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.jobs__live .dot { inline-size: 6px; block-size: 6px; }
+.jobs__stamp { font-family: var(--font-mono); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.jobs__panel { overflow: hidden; }
+.jobs__scroll {
+  max-block-size: min(68vh, 44rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.jobs__scroll::-webkit-scrollbar { inline-size: 10px; }
+.jobs__scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid var(--surface);
+  border-radius: var(--radius-pill);
+}
+.jobs__scroll::-webkit-scrollbar-track { background: transparent; }
+.jobs__empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-7) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+}
+.jobs__empty .icon { color: var(--border-strong); }
+.jobs__empty p { margin: 0; font-size: var(--text-sm); }
+.jobs__empty p.muted { color: var(--text-faint); font-size: var(--text-xs); }
+
 .list-head, .job-row { display: grid; gap: var(--space-3); align-items: center; }
 .list-head {
-  grid-template-columns: 4.75rem minmax(0, 1fr) minmax(0, 1.25fr) auto 5.5rem;
+  grid-template-columns: 5.25rem minmax(0, 1fr) minmax(0, 1.25fr) auto 5.5rem;
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--surface);
   padding: var(--space-2) var(--space-4);
+  border-block-end: var(--line);
   font-size: var(--text-xs);
   color: var(--text-faint);
   letter-spacing: 0.06em;
 }
 .job-row {
-  grid-template-columns: 4.75rem minmax(0, 1fr) minmax(0, 1.25fr) auto 5.5rem;
+  grid-template-columns: 5.25rem minmax(0, 1fr) minmax(0, 1.25fr) auto 5.5rem;
   padding: var(--space-3) var(--space-4);
-  border-block-start: var(--line);
+  border-block-end: var(--line);
   font-size: var(--text-sm);
 }
-.job-row:first-of-type { border-block-start: 0; }
-.job-row__id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
+.job-row:last-of-type { border-block-end: 0; }
+.job-row:hover { background: var(--surface-2); }
+.job-row[data-status="running"] { box-shadow: inset 2px 0 0 var(--accent); }
+.job-row[data-status="failed"] { box-shadow: inset 2px 0 0 var(--danger); }
+.job-row__id {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+.job-row__id .dot { inline-size: 6px; block-size: 6px; }
+.dot[data-state="done"] { background: var(--ok); }
+.dot[data-state="failed"] { background: var(--danger); }
+.dot[data-state="queued"], .dot[data-state="canceled"], .dot[data-state="idle"] { background: var(--border-strong); }
 .job-row__what { display: grid; gap: 2px; min-inline-size: 0; }
 .job-row__kind { font-weight: 600; }
 .job-row__meta { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-faint); }
 .job-row__state { display: grid; gap: 4px; min-inline-size: 0; }
 .job-row__status { display: flex; align-items: center; gap: var(--space-2); }
 .job-row__act { display: flex; justify-content: flex-end; }
-.job-row[data-status="failed"] .job-row__msg { color: var(--danger); font-size: var(--text-xs); }
+.job-row__msg {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
+.job-row__target {
+  justify-self: start;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: start;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 140ms var(--ease-out);
+}
+.job-row__target:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .job-row[data-status="done"] { color: var(--text-muted); }
 
 /* ------------------------------------------------------------------ 异常清单 */
@@ -807,9 +916,15 @@
   .list-head { display: none; }
   .job-row { grid-template-columns: minmax(0, 1fr) auto; }
   .job-row__id, .job-row__state { grid-column: 1 / -1; }
+  .jobs__toolbar .tabs { max-inline-size: 100%; overflow-x: auto; }
+  .jobs__live { margin-inline-start: 0; }
 }
 
 @media (max-width: 720px) {
+  .jobs__toolbar .tab { padding: 5px var(--space-2); }
+  .jobs__toolbar .tab .icon { display: none; }
+  .jobs__toolbar .tab__count { padding: 0 5px; }
+  .jobs__scroll { max-block-size: min(62vh, 34rem); }
   .masthead { padding: 0 var(--space-4); gap: var(--space-3); }
   .masthead__name { display: none; }
   .masthead__crumb::before { display: none; }

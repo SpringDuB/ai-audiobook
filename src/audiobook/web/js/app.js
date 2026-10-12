@@ -89,6 +89,11 @@ function paintStatus(state) {
   }
   if (running.length) {
     dot.dataset.state = "running";
+    if (running.length > 1) {
+      // 分型并发：整章合成旁边还能跑渲染 / 试听等任务，这里只报数量
+      label.textContent = `${running.length} 个任务运行中`;
+      return;
+    }
     const job = running[0];
     const progress = job.progress || {};
     label.textContent = `${job.kind} ${progress.done ?? 0}/${progress.total ?? 0}`;
