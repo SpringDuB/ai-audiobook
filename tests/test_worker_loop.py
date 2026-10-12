@@ -3,6 +3,7 @@ import time
 
 import pytest
 
+from audiobook import worker as worker_mod
 from audiobook import jobs
 from audiobook.worker import (
     HANDLERS,
@@ -239,7 +240,8 @@ def test_run_forever_runs_different_books_in_parallel(conn, settings):
         HANDLERS.pop("unit_parallel", None)
 
 
-def test_run_forever_serializes_jobs_of_the_same_book(conn, settings):
+def test_run_forever_runs_same_book_jobs_in_parallel(conn, settings):
+    """同一本书里互不相关的任务现在能并行（这是"生成整本音频时别的照常跑"的基础）。"""
     state, _lock, enter, leave = _parallel_probe()
 
     @register("unit_same_book")
@@ -259,6 +261,144 @@ def test_run_forever_serializes_jobs_of_the_same_book(conn, settings):
             worker_id="w-test",
         )
         assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
-        assert state["book_peak"] == 1     # 同一本书的两个任务不会重叠
+        assert state["book_peak"] == 2     # 同一本书的两个任务真在并行
     finally:
         HANDLERS.pop("unit_same_book", None)
+
+
+def test_run_forever_keeps_other_tasks_running_during_gpu_synth(conn, settings, monkeypatch):
+    """整章合成（GPU 通道）跑的时候，渲染 / 试听这类任务照常并行；合成自己仍是 1 条。"""
+    monkeypatch.setattr(worker_mod, "GPU_KINDS", frozenset({"unit_gpu_synth"}))
+    lock = threading.Lock()
+    state = {"total": 0, "peak": 0, "gpu": 0, "gpu_peak": 0, "overlap": False}
+
+    @register("unit_gpu_synth")
+    def _synth(ctx, job):
+        with lock:
+            state["total"] += 1
+            state["gpu"] += 1
+            state["peak"] = max(state["peak"], state["total"])
+            state["gpu_peak"] = max(state["gpu_peak"], state["gpu"])
+        try:
+            time.sleep(0.6)
+        finally:
+            with lock:
+                state["gpu"] -= 1
+                state["total"] -= 1
+
+    @register("unit_render")
+    def _render(ctx, job):
+        with lock:
+            state["total"] += 1
+            state["peak"] = max(state["peak"], state["total"])
+        try:
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                with lock:
+                    if state["gpu"] > 0:
+                        state["overlap"] = True
+                        break
+                time.sleep(0.01)
+            time.sleep(0.2)
+        finally:
+            with lock:
+                state["total"] -= 1
+
+    try:
+        jobs.enqueue(conn, "unit_gpu_synth", "b1", 1)
+        jobs.enqueue(conn, "unit_gpu_synth", "b2", 1)   # 第二条合成必须等第一条跑完
+        jobs.enqueue(conn, "unit_render", "b1", 2)      # 同书另一章：要能和合成并行
+        ctx = WorkerContext(
+            settings=settings.model_copy(update={"worker_concurrency": 2, "worker_tts_jobs": 1}),
+            conn=conn,
+            worker_id="w-test",
+        )
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=3) == 3
+        assert state["overlap"] is True    # 合成没跑完，渲染已经开工
+        assert state["gpu_peak"] == 1      # 整章合成全局只有 1 条
+        assert state["peak"] >= 2          # 两条通道确实同时在跑
+    finally:
+        HANDLERS.pop("unit_gpu_synth", None)
+        HANDLERS.pop("unit_render", None)
+
+
+def test_run_forever_serializes_same_chapter_clip_work(conn, settings, monkeypatch):
+    """同一章的音轨链（合成 / 渲染）互斥：防止渲染读到合成到一半的片段。"""
+    monkeypatch.setattr(
+        worker_mod, "CHAPTER_CLIP_KINDS", frozenset({"unit_clip_a", "unit_clip_b"})
+    )
+    lock = threading.Lock()
+    state = {"inflight": 0, "peak": 0}
+
+    def handler(ctx, job):
+        with lock:
+            state["inflight"] += 1
+            state["peak"] = max(state["peak"], state["inflight"])
+        try:
+            time.sleep(0.25)
+        finally:
+            with lock:
+                state["inflight"] -= 1
+
+    register("unit_clip_a")(handler)
+    register("unit_clip_b")(handler)
+    ctx = WorkerContext(
+        settings=settings.model_copy(update={"worker_concurrency": 2, "worker_tts_jobs": 1}),
+        conn=conn,
+        worker_id="w-test",
+    )
+    try:
+        jobs.enqueue(conn, "unit_clip_a", "b1", 1)
+        jobs.enqueue(conn, "unit_clip_b", "b1", 1)
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
+        assert state["peak"] == 1          # 同一章：一条接一条
+
+        state["peak"] = 0
+        jobs.enqueue(conn, "unit_clip_a", "b1", 1)
+        jobs.enqueue(conn, "unit_clip_b", "b1", 2)
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
+        assert state["peak"] == 2          # 不同章：并行跑
+    finally:
+        HANDLERS.pop("unit_clip_a", None)
+        HANDLERS.pop("unit_clip_b", None)
+
+
+def test_run_forever_serializes_analysis_chain_per_book(conn, settings, monkeypatch):
+    """分析链同一本书串行（characters.json / casting.json 并发读改写会互相覆盖）。"""
+    monkeypatch.setattr(
+        worker_mod, "ANALYSIS_CHAIN_KINDS", frozenset({"unit_chain_a", "unit_chain_b"})
+    )
+    lock = threading.Lock()
+    state = {"inflight": 0, "peak": 0}
+
+    def handler(ctx, job):
+        with lock:
+            state["inflight"] += 1
+            state["peak"] = max(state["peak"], state["inflight"])
+        try:
+            time.sleep(0.25)
+        finally:
+            with lock:
+                state["inflight"] -= 1
+
+    register("unit_chain_a")(handler)
+    register("unit_chain_b")(handler)
+    ctx = WorkerContext(
+        settings=settings.model_copy(update={"worker_concurrency": 2, "worker_tts_jobs": 1}),
+        conn=conn,
+        worker_id="w-test",
+    )
+    try:
+        jobs.enqueue(conn, "unit_chain_a", "b1", 1)
+        jobs.enqueue(conn, "unit_chain_b", "b1", 2)
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
+        assert state["peak"] == 1          # 同一本书：一条接一条
+
+        state["peak"] = 0
+        jobs.enqueue(conn, "unit_chain_a", "b1", 1)
+        jobs.enqueue(conn, "unit_chain_b", "b2", 1)
+        assert run_forever(ctx, poll_seconds=0.05, max_jobs=2) == 2
+        assert state["peak"] == 2          # 不同书：并行跑
+    finally:
+        HANDLERS.pop("unit_chain_a", None)
+        HANDLERS.pop("unit_chain_b", None)

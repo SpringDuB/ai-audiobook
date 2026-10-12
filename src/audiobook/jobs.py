@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 
 
@@ -126,24 +127,88 @@ def set_payload(conn, job_id: int, payload: dict | None, now=None) -> None:
     conn.execute("UPDATE jobs SET payload=?, updated_at=? WHERE id=?", (raw, ts, job_id))
 
 
-def claim(conn, worker_id, lease_seconds=30, now=None, one_job_per_book: bool = True) -> Job | None:
+def _placeholders(values: Collection[str]) -> str:
+    return ",".join("?" for _ in values)
+
+
+def claim(
+    conn,
+    worker_id,
+    lease_seconds=30,
+    now=None,
+    *,
+    kinds: Collection[str] | None = None,
+    exclude_kinds: Collection[str] | None = None,
+    max_running: tuple[Collection[str], int] | None = None,
+    exclusive_per_book: Collection[str] | None = None,
+    exclusive_per_chapter: Collection[str] | None = None,
+) -> Job | None:
     """领取一个排队任务。
 
-    ``one_job_per_book=True``（默认）：同一本书同时只跑一个任务 —— 分析 / 选角 /
-    合成 / 渲染 / 合本之间有文件依赖，并行会互相踩（比如合成读到刚被改写的角色表）。
-    不同书之间不受影响，配合 worker 的多槽位就是跨书并行。
+    并发策略不写死在队列里，由调用方（worker）用过滤条件表达，见 worker.run_forever：
+
+    - ``kinds`` / ``exclude_kinds``：只领 / 不领某些 kind —— 整章合成（吃 GPU）
+      与其余任务走两条通道，互不堵；
+    - ``max_running=(kinds, limit)``：这组 kind 全局最多同时跑 limit 条。数的是库里
+      ``status='running'`` 的行，所以多开 worker 进程也拦得住；
+    - ``exclusive_per_book``：这组 kind 在同一本书里同时只跑一条 —— 分析链的任务会
+      读改写同一份 characters.json / casting.json，并发读改写会互相覆盖；
+    - ``exclusive_per_chapter``：这组 kind 在同一本书同一章里同时只跑一条 —— 合成与
+      渲染碰的是同一章的片段 / 成品，重叠会读到写了一半的结果。
+
+    默认（不带任何条件）只按 ``priority, id`` 顺序领一个可跑的任务。
     """
     ts = now_ms(now)
+    sql = (
+        "SELECT id FROM jobs WHERE status='queued' AND cancel_requested=0"
+        " AND (not_before IS NULL OR not_before<=?)"
+    )
+    params: list[object] = [ts]
+    if kinds:
+        group = tuple(sorted(set(kinds)))
+        sql += f" AND kind IN ({_placeholders(group)})"
+        params.extend(group)
+    if exclude_kinds:
+        group = tuple(sorted(set(exclude_kinds)))
+        sql += f" AND kind NOT IN ({_placeholders(group)})"
+        params.extend(group)
+    if max_running:
+        group, limit = tuple(sorted(set(max_running[0]))), int(max_running[1])
+        if group:
+            marks = _placeholders(group)
+            sql += (
+                f" AND (kind NOT IN ({marks}) OR (SELECT COUNT(*) FROM jobs r"
+                f" WHERE r.status='running' AND r.kind IN ({marks})) < ?)"
+            )
+            params.extend(group)
+            params.extend(group)
+            params.append(limit)
+    if exclusive_per_book:
+        group = tuple(sorted(set(exclusive_per_book)))
+        if group:
+            marks = _placeholders(group)
+            sql += (
+                f" AND (kind NOT IN ({marks}) OR NOT EXISTS (SELECT 1 FROM jobs r"
+                f" WHERE r.status='running' AND r.book_id=jobs.book_id AND r.kind IN ({marks})))"
+            )
+            params.extend(group)
+            params.extend(group)
+    if exclusive_per_chapter:
+        group = tuple(sorted(set(exclusive_per_chapter)))
+        if group:
+            marks = _placeholders(group)
+            sql += (
+                f" AND (kind NOT IN ({marks}) OR NOT EXISTS (SELECT 1 FROM jobs r"
+                f" WHERE r.status='running' AND r.book_id=jobs.book_id"
+                f" AND IFNULL(r.chapter_index,-1)=IFNULL(jobs.chapter_index,-1)"
+                f" AND r.kind IN ({marks})))"
+            )
+            params.extend(group)
+            params.extend(group)
+    sql += " ORDER BY priority, id LIMIT 1"
     conn.execute("BEGIN IMMEDIATE")
     try:
-        sql = (
-            "SELECT id FROM jobs WHERE status='queued' AND cancel_requested=0"
-            " AND (not_before IS NULL OR not_before<=?)"
-        )
-        if one_job_per_book:
-            sql += " AND book_id NOT IN (SELECT book_id FROM jobs WHERE status='running')"
-        sql += " ORDER BY priority, id LIMIT 1"
-        row = conn.execute(sql, (ts,)).fetchone()
+        row = conn.execute(sql, params).fetchone()
         if row is None:
             conn.execute("COMMIT")
             return None

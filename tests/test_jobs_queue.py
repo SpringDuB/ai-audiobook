@@ -57,19 +57,71 @@ def test_claim_respects_not_before(conn):
     assert jobs.claim(conn, "w2", now=61_001).id == job_id
 
 
-def test_claim_skips_books_that_already_have_a_running_job(conn):
-    """同一本书同时只跑一个任务（分析→选角→合成→渲染→合本 有文件依赖）。"""
+def test_claim_allows_parallel_jobs_of_the_same_book(conn):
+    """默认不按书串行：并行范围由调用方的分组过滤决定（worker 里才是策略）。"""
     first = jobs.enqueue(conn, "synthesize", "b1", 1)
     second = jobs.enqueue(conn, "post", "b1", 2)
-    other = jobs.enqueue(conn, "synthesize", "b2", 1)
 
     assert jobs.claim(conn, "w1").id == first
-    # b1 还有任务在跑 → 跳过 b1 的第二条，先跑别的书
-    assert jobs.claim(conn, "w1").id == other
-    assert jobs.claim(conn, "w1") is None
+    assert jobs.claim(conn, "w1").id == second
+
+
+def test_claim_kinds_and_exclude_kinds_filters(conn):
+    """两条通道的切分：只领某些 kind / 排除某些 kind。"""
+    post = jobs.enqueue(conn, "post", "b1", 1)
+    synth = jobs.enqueue(conn, "synthesize", "b1", 2)
+
+    assert jobs.claim(conn, "w1", exclude_kinds=("synthesize",)).id == post
+    assert jobs.claim(conn, "w1", exclude_kinds=("synthesize",)) is None
+    assert jobs.claim(conn, "w1", kinds=("synthesize",)).id == synth
+
+
+def test_claim_max_running_caps_a_kind_group(conn):
+    """整章合成这类 GPU 任务全局最多同时跑 N 条；别的 kind 不受影响。"""
+    first = jobs.enqueue(conn, "synthesize", "b1", 1)
+    second = jobs.enqueue(conn, "synthesize", "b2", 1)
+    post = jobs.enqueue(conn, "post", "b3", 1)
+    cap = (("synthesize",), 1)
+
+    assert jobs.claim(conn, "w1", max_running=cap).id == first
+    # 合成通道满了：先让别的任务过（不被卡在队列头上），第二条合成继续等
+    assert jobs.claim(conn, "w1", max_running=cap).id == post
+    assert jobs.claim(conn, "w1", max_running=cap) is None
 
     jobs.complete(conn, first, "w1")
-    assert jobs.claim(conn, "w1").id == second
+    assert jobs.claim(conn, "w1", max_running=cap).id == second
+
+
+def test_claim_exclusive_per_book_serializes_analysis_chain(conn):
+    """分析链（读改写同一份 characters.json）同一本书串行，跨书不受影响。"""
+    characters = jobs.enqueue(conn, "characters", "b1")
+    lines = jobs.enqueue(conn, "lines", "b1", 1)
+    other_book = jobs.enqueue(conn, "lines", "b2", 1)
+    group = ("characters", "lines")
+
+    assert jobs.claim(conn, "w1", exclusive_per_book=group).id == characters
+    # b1 的分析链上已经有任务在跑 → 跳过 b1 的 lines，先跑别的书
+    assert jobs.claim(conn, "w1", exclusive_per_book=group).id == other_book
+    assert jobs.claim(conn, "w1", exclusive_per_book=group) is None
+
+    jobs.complete(conn, characters, "w1")
+    assert jobs.claim(conn, "w1", exclusive_per_book=group).id == lines
+
+
+def test_claim_exclusive_per_chapter_blocks_same_chapter_only(conn):
+    """合成与渲染不能同时碰同一章；别的章照常并行。"""
+    synth = jobs.enqueue(conn, "synthesize", "b1", 1)
+    post_same = jobs.enqueue(conn, "post", "b1", 1)
+    post_other = jobs.enqueue(conn, "post", "b1", 2)
+    group = ("synthesize", "synthesize_line", "post", "lines")
+
+    assert jobs.claim(conn, "w1", exclusive_per_chapter=group).id == synth
+    # 第 1 章有合成在跑 → 跳过第 1 章的 post，先跑第 2 章的
+    assert jobs.claim(conn, "w1", exclusive_per_chapter=group).id == post_other
+    assert jobs.claim(conn, "w1", exclusive_per_chapter=group) is None
+
+    jobs.complete(conn, synth, "w1")
+    assert jobs.claim(conn, "w1", exclusive_per_chapter=group).id == post_same
 
 
 def test_fail_after_max_attempts_marks_failed(conn):

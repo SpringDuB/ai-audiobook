@@ -84,11 +84,12 @@ class Settings(BaseSettings):
     tts_max_line_chunk_chars: int = 0
     tts_endpoints: list[str] = []
     worker_poll_seconds: float = 1.0
-    # worker 一次能同时跑几个任务：不同书之间可以并行；同一本书的任务按队列顺序串行
-    # （分析 → 选角 → 合成 → 渲染 → 合本 之间有文件依赖，并行会互相踩）
-    worker_concurrency: int = 2
-    # 同时跑几个"吃 TTS/GPU"的合成任务：TTS 服务端本来就有并发闸门，
-    # 多个合成任务并排只会互相抢显存，默认 1
+    # 除整章合成以外，worker 里还能同时跑几个任务（分析 / 选角 / 音色描述 / 试听 /
+    # 渲染 / 导出……）。这些任务要么在等大模型网络，要么吃 CPU，能并行；
+    # 同一本书的分析链、同一章的音轨链另有串行约束（见 worker.run_forever）
+    worker_concurrency: int = 10
+    # 整章合成（吃 TTS/GPU）同时跑几个：TTS 服务端本来就有并发闸门，
+    # 多个整章任务并排只会互相抢显存，默认 1；试听 / 单行重合成不走这条通道，不受它限制
     worker_tts_jobs: int = 1
     lease_seconds: int = 30
 

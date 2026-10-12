@@ -63,6 +63,23 @@ LLM_KEYS = (
     "llm_stream",
 )
 
+# ---------------------------------------------------------------- 任务分型（并发策略）
+# 并发策略只看 kind，不写进 jobs.claim：claim 只认过滤条件，策略集中在这里。
+#
+# 1) GPU_KINDS：吃 TTS/显存的长任务（整章合成），全局最多 worker_tts_jobs 条（默认 1）。
+#    试听（voice_preview）和单行重合成（synthesize_line）刻意不进来 —— 它们是"条级"
+#    短任务，用户等不起，允许插在整章合成旁边跑（TTS 服务端自己还有请求闸门兜底，
+#    插进去只是排队，不会把显存挤爆）。
+GPU_KINDS = frozenset({"synthesize"})
+# 2) ANALYSIS_CHAIN_KINDS：分析链会读改写同一份 characters.json / casting.json，
+#    同一本书里同时只跑一条，避免并发读改写互相覆盖（不同书不受影响）。
+ANALYSIS_CHAIN_KINDS = frozenset(
+    {"chapter_split", "characters", "chapters", "lines", "casting", "voice_design"}
+)
+# 3) CHAPTER_CLIP_KINDS：碰同一章音轨 / 成品的任务（合成、单行重合成、渲染、重落行），
+#    同一本书同一章同时只跑一条 —— 渲染读到合成到一半的片段会产出残缺成品。
+CHAPTER_CLIP_KINDS = frozenset({"synthesize", "synthesize_line", "post", "lines"})
+
 
 def _key(settings, names: tuple[str, ...]) -> tuple:
     values = []
@@ -187,19 +204,13 @@ def _heartbeat_loop(ctx: WorkerContext, job_id: int, lease_seconds: int, stop: t
         conn.close()
 
 
-def run_job(ctx: WorkerContext, job, *, lease_seconds: int | None = None, gate=None) -> None:
-    """跑一个已领取的任务：心跳 + handler + 落库（完成 / 取消 / 失败）。
-
-    ``gate`` 是可选的并发闸门（比如吃 GPU 的合成任务），拿不到就排队等着，
-    期间心跳继续续租，任务不会被别的 worker 抢走。
-    """
+def run_job(ctx: WorkerContext, job, *, lease_seconds: int | None = None) -> None:
+    """跑一个已领取的任务：心跳 + handler + 落库（完成 / 取消 / 失败）。"""
     lease = lease_seconds or ctx.settings.lease_seconds
     ctx.watcher = CancelWatcher(ctx.settings.db_path, job.id)
     stop = threading.Event()
     hb = threading.Thread(target=_heartbeat_loop, args=(ctx, job.id, lease, stop), daemon=True)
     hb.start()
-    if gate is not None:
-        gate.acquire()
     try:
         handler = HANDLERS.get(job.kind)
         if handler is None:
@@ -219,8 +230,6 @@ def run_job(ctx: WorkerContext, job, *, lease_seconds: int | None = None, gate=N
         else:
             jobs.complete(ctx.conn, job.id, ctx.worker_id)
     finally:
-        if gate is not None:
-            gate.release()
         stop.set()
         hb.join(timeout=1.0)
         ctx.watcher.close()
@@ -231,7 +240,13 @@ def run_once(ctx: WorkerContext, lease_seconds: int | None = None) -> bool:
     ctx.refresh()
     lease = lease_seconds or ctx.settings.lease_seconds
     jobs.reap_expired(ctx.conn)
-    job = jobs.claim(ctx.conn, ctx.worker_id, lease)
+    job = jobs.claim(
+        ctx.conn,
+        ctx.worker_id,
+        lease,
+        exclusive_per_book=ANALYSIS_CHAIN_KINDS,
+        exclusive_per_chapter=CHAPTER_CLIP_KINDS,
+    )
     if job is None:
         return False
     run_job(ctx, job, lease_seconds=lease)
@@ -244,20 +259,22 @@ def run_forever(
     stop_event=None,
     max_jobs: int | None = None,
 ) -> int:
-    """worker 主循环：同时跑 ``worker_concurrency`` 个任务。
+    """worker 主循环：任务按"吃不吃 GPU"分两条通道并行。
 
-    并发规则：
-    - 不同书的任务可以并行（各占一个槽位）；
-    - 同一本书同时只跑一个任务（jobs.claim 里按 book_id 排他），保证
-      分析 → 选角 → 合成 → 渲染 → 合本 的依赖顺序；
-    - ``worker_tts_jobs`` 控制"吃 TTS/GPU"的合成任务同时跑几个，默认 1，
-      免得两个任务互相抢显存；
+    并发规则（要的就是"生成整本音频时别的操作照常能跑"）：
+
+    - 整章合成（``GPU_KINDS``）全局最多 ``worker_tts_jobs`` 条（默认 1）：显存就一份，
+      两个整章任务并排只会互相抢。上限写在 claim 的 SQL 里，多开 worker 也拦得住。
+    - 其余任务（分析、选角、音色描述、渲染、导出、试听、单行重合成）最多
+      ``worker_concurrency`` 条并行，且与整章合成互不排队 —— 整本合成在跑的时候，
+      点试听、重渲染某一章、重新分析都照常执行。
+    - 同一本书的分析链串行、同一章的音轨链串行（见 ``jobs.claim`` 的
+      ``exclusive_per_book`` / ``exclusive_per_chapter``）。
     - 只有全部槽位空闲时才重读设置：重建引擎 / LLM 客户端不能打断在跑的任务。
     """
     interval = poll_seconds or ctx.settings.worker_poll_seconds
-    slots = max(1, int(getattr(ctx.settings, "worker_concurrency", 1) or 1))
-    tts_jobs = max(1, int(getattr(ctx.settings, "worker_tts_jobs", 1) or 1))
-    tts_gate = threading.Semaphore(tts_jobs)
+    gpu_slots = max(1, int(getattr(ctx.settings, "worker_tts_jobs", 1) or 1))
+    other_slots = max(1, int(getattr(ctx.settings, "worker_concurrency", 1) or 1))
     executed = 0
     running: dict = {}
 
@@ -266,12 +283,36 @@ def run_forever(
         conn = connect(ctx.settings.db_path)
         try:
             job_ctx = replace(ctx, conn=conn)
-            gate = tts_gate if job.kind == "synthesize" else None
-            run_job(job_ctx, job, lease_seconds=ctx.settings.lease_seconds, gate=gate)
+            run_job(job_ctx, job, lease_seconds=ctx.settings.lease_seconds)
         finally:
             conn.close()
 
-    with ThreadPoolExecutor(max_workers=slots, thread_name_prefix="job") as pool:
+    def claim_for_lane(gpu_free: int, other_free: int):
+        """按通道领任务：GPU 通道有空位先领整章合成，再补其它任务。"""
+        if gpu_free > 0:
+            job = jobs.claim(
+                ctx.conn,
+                ctx.worker_id,
+                ctx.settings.lease_seconds,
+                kinds=GPU_KINDS,
+                max_running=(GPU_KINDS, gpu_slots),
+                exclusive_per_book=ANALYSIS_CHAIN_KINDS,
+                exclusive_per_chapter=CHAPTER_CLIP_KINDS,
+            )
+            if job is not None:
+                return job
+        if other_free > 0:
+            return jobs.claim(
+                ctx.conn,
+                ctx.worker_id,
+                ctx.settings.lease_seconds,
+                exclude_kinds=GPU_KINDS,
+                exclusive_per_book=ANALYSIS_CHAIN_KINDS,
+                exclusive_per_chapter=CHAPTER_CLIP_KINDS,
+            )
+        return None
+
+    with ThreadPoolExecutor(max_workers=gpu_slots + other_slots, thread_name_prefix="job") as pool:
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
@@ -280,21 +321,26 @@ def run_forever(
                 jobs.reap_expired(ctx.conn)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("回收过期租约失败：%s", exc)
-            while len(running) < slots:
-                if not running:
-                    ctx.refresh()
+            if not running:
+                ctx.refresh()
+            while True:
+                gpu_n = sum(1 for kind, _job_id in running.values() if kind in GPU_KINDS)
+                other_n = len(running) - gpu_n
+                if gpu_n >= gpu_slots and other_n >= other_slots:
+                    break
                 try:
-                    job = jobs.claim(ctx.conn, ctx.worker_id, ctx.settings.lease_seconds)
+                    job = claim_for_lane(gpu_slots - gpu_n, other_slots - other_n)
                 except Exception as exc:  # noqa: BLE001 - 领任务偶发失败不该让 worker 退出
                     logger.warning("领取任务失败：%s", exc)
                     break
                 if job is None:
                     break
-                running[pool.submit(work, job)] = job.id
+                running[pool.submit(work, job)] = (job.kind, job.id)
             if running:
                 done, _ = wait(list(running), timeout=interval, return_when=FIRST_COMPLETED)
                 for future in done:
-                    job_id = running.pop(future, None)
+                    entry = running.pop(future, None)
+                    job_id = entry[1] if entry else None
                     executed += 1
                     try:
                         future.result()
