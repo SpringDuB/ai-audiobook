@@ -36,9 +36,10 @@ def _llm(**kwargs) -> FakeLLM:
     return FakeLLM(routes=routes, **kwargs)
 
 
-def _ctx(settings, conn, llm) -> WorkerContext:
+def _ctx(settings, conn, llm, *, merge: bool = True) -> WorkerContext:
+    # 这些用例覆盖旧的合并行为，显式打开 AB_ROLE_MERGE_ENABLED 对应的开关
     return WorkerContext(
-        settings=settings,
+        settings=settings.model_copy(update={"role_merge_enabled": merge}),
         conn=conn,
         worker_id="w1",
         llm=LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=4), settings),
@@ -164,3 +165,23 @@ def test_analysis_handlers_require_llm(settings, conn, tmp_path):
     assert job.status == "queued"  # 计入重试
     row = conn.execute("SELECT error FROM jobs WHERE id=?", (job.id,)).fetchone()
     assert "未配置 LLM" in row["error"]
+
+
+def test_characters_handler_keeps_names_separate_when_merge_disabled(settings, conn, tmp_path):
+    """AB_ROLE_MERGE_ENABLED=false（默认）：不再发合并请求，每个称呼各自成为角色。"""
+    txt = tmp_path / "b.txt"
+    txt.write_text("第一章 开始\n\n小鹿：走。\n\n鹿儿：来了。\n", encoding="utf-8")
+    book_id = import_book(settings, conn, txt, title="T")
+    llm = _llm(routes={"【MERGE_ROLES】": {"characters": [{"name": "小鹿", "aliases": ["鹿儿"]}]}})
+    ctx = _ctx(settings, conn, llm, merge=False)
+
+    assert run_once(ctx) is True  # chapter_split
+    resume_book(settings, conn, book_id, phase="analysis")
+    assert run_once(ctx) is True  # characters：只提取，不合并
+
+    payload = store.read_json(store.characters_path(settings, book_id))
+    assert {c["name"] for c in payload["characters"]} == {"旁白", "小鹿", "鹿儿"}
+    assert payload["names"]["鹿儿"] != payload["names"]["小鹿"]
+    assert all("【MERGE_ROLES】" not in call["user"] for call in llm.calls)
+    passes = {row["pass"] for row in store.read_jsonl(store.llm_log_path(settings, book_id))}
+    assert passes == {"extract"}

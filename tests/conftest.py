@@ -43,6 +43,7 @@ def settings(tmp_path: Path):
         export_mkv=False,
         mobile_audio_prewarm=False,
         ui_password="",
+        role_merge_enabled=False,
     )
 
 

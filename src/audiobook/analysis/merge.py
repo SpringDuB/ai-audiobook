@@ -165,6 +165,10 @@ def _apply_groups(characters: list[dict], groups: list[dict], entries: list[dict
         target["chapters"] = sorted(chapters)
         target["mentions"] = mentions
         target["first"] = list(first)
+    return _sorted_characters(characters)
+
+
+def _sorted_characters(characters: list[dict]) -> list[dict]:
     narrator = [character for character in characters if character.get("is_narrator")]
     others = [character for character in characters if not character.get("is_narrator")]
     others.sort(
@@ -175,6 +179,44 @@ def _apply_groups(characters: list[dict], groups: list[dict], entries: list[dict
         )
     )
     return [*narrator, *others]
+
+
+def _identity_groups(entries: list[dict]) -> list[dict]:
+    """不合并模式的分组：每个称呼各自成一个角色。"""
+    return [{"name": entry["name"], "aliases": []} for entry in entries]
+
+
+def _apply_identity_groups(characters: list[dict], entries: list[dict]) -> list[dict]:
+    """不合并模式落表：老角色按主名复用 role_id，统计按本次提取重算。
+
+    别名必须清掉：老角色表里可能留着上一次合并写进去的别名，不清掉的话
+    resolve_speaker 还会把新出现的名字解析回老角色（等于又并回去了）。
+    """
+    characters = [{**character, "aliases": []} for character in (characters or [])]
+    if not any(character.get("is_narrator") for character in characters):
+        characters.insert(0, _narrator_entry())
+    by_name = {normalize(character.get("name")): character for character in characters}
+    counter = next_role_number(characters)
+    for entry in entries:
+        name = entry["name"]
+        target = by_name.get(normalize(name))
+        if target is None:
+            counter += 1
+            target = {
+                "id": f"role_{counter:04d}",
+                "name": name,
+                "aliases": [],
+                "chapters": [],
+                "mentions": 0,
+                "first": [10**6, 10**6],
+                "is_narrator": False,
+            }
+            characters.append(target)
+            by_name[normalize(name)] = target
+        target["chapters"] = sorted(entry.get("chapters") or [])
+        target["mentions"] = int(entry.get("count") or 0)
+        target["first"] = list(entry.get("first") or (10**6, 10**6))
+    return _sorted_characters(characters)
 
 
 def _payload(book_id: str, characters: list[dict]) -> dict:
@@ -192,12 +234,26 @@ def _payload(book_id: str, characters: list[dict]) -> dict:
 
 
 def merge_roles(
-    runner, *, book_id: str, entries: list[dict], known: list[str] = (), cancel_check=None
+    runner,
+    *,
+    book_id: str,
+    entries: list[dict],
+    known: list[str] = (),
+    existing_characters: list[dict] | None = None,
+    enabled: bool = True,
+    cancel_check=None,
 ) -> tuple[dict, list[dict]]:
-    """全书整合：entries 是 role_entries 的产出，known 是重跑时旧角色表里的名字。"""
+    """全书整合：entries 是 role_entries 的产出，known 是重跑时旧角色表里的名字。
+
+    enabled=False（AB_ROLE_MERGE_ENABLED=false，默认）不调大模型：
+    每个称呼各自成一个角色，同名老角色保留原 role_id，别名一律清空。
+    """
     entries = [entry for entry in entries if entry.get("name")]
     if not entries:
         return _payload(book_id, [_narrator_entry()]), []
+    if not enabled or runner is None:
+        characters = _apply_identity_groups(list(existing_characters or []), entries)
+        return _payload(book_id, characters), []
     groups, issues = _run_merge(
         runner, book_id=book_id, entries=entries, known=list(known), cancel_check=cancel_check
     )
@@ -212,19 +268,31 @@ def extend_characters(
     payload: dict,
     spoken: list[SpokenLine] | None = None,
     extractions: list[tuple[int, list[SpokenLine]]] | None = None,
+    enabled: bool = True,
     cancel_check=None,
 ) -> tuple[dict, list[dict]]:
     """单章/多章重跑时用：把新冒出来的称呼并进已有角色表（是别名就并进老角色）。
 
     extractions 用于一次并入多章（[(chapter_index, lines), ...]），与 spoken 二选一：
     多章时章号/首次出场要按真实章号记，否则新角色的 chapters 会全记成第 0 章。
-    runner=None 时不调大模型，只按名字本地补角色（边提取边展示用的临时表，
-    全书整合完成后再由 lines 任务用最终角色表覆盖）。
+    runner=None 或 enabled=False 时不调大模型，只按名字本地补角色（新称呼各自成角；
+    边提取边展示用的临时表，全书整合完成后再由 lines 任务用最终角色表覆盖）。
     """
     source = extractions if extractions is not None else [(0, spoken or [])]
+    source_entries = role_entries(source)
+    if not enabled:
+        # 不合并：只认「主名」是不是老角色；老表里的别名不算已知，新名字各自成角。
+        # 不能走 _apply_groups —— 它会把老角色的别名也当已知，等于又并回去。
+        characters = list((payload or {}).get("characters") or [])
+        known = {normalize(character.get("name")) for character in characters}
+        entries = [entry for entry in source_entries if normalize(entry["name"]) not in known]
+        if not entries:
+            return (payload or _payload(book_id, [_narrator_entry()])), []
+        merged = _apply_identity_groups(characters, entries)
+        return _payload(book_id, merged), []
     existing = names_from_payload(payload)
     known = {normalize(name) for name in existing}
-    entries = [entry for entry in role_entries(source) if normalize(entry["name"]) not in known]
+    entries = [entry for entry in source_entries if normalize(entry["name"]) not in known]
     if not entries:
         # 没有新称呼也要给出可用角色表：全旁白章节 / 首次分析时 payload 可能是空的
         return (payload or _payload(book_id, [_narrator_entry()])), []

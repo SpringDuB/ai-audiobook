@@ -199,6 +199,7 @@ def handle_chapters(ctx, job) -> None:
         book_id=book_id,
         payload=existing,
         extractions=results,
+        enabled=bool(ctx.settings.role_merge_enabled),
         cancel_check=ctx.cancel_check(job),
     )
     for issue in issues:

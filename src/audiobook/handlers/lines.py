@@ -79,11 +79,14 @@ def _characters_for(
     ]
     if not unknown:
         return characters
+    # 合并关着的时候新称呼各自成角，这条路径不需要 LLM
+    merge_enabled = bool(ctx.settings.role_merge_enabled)
     characters, issues = extend_characters(
-        require_llm(ctx) if allow_llm else None,
+        require_llm(ctx) if (allow_llm and merge_enabled) else None,
         book_id=book_id,
         payload=characters,
         spoken=spoken,
+        enabled=merge_enabled,
         cancel_check=cancel_check,
     )
     for issue in issues:

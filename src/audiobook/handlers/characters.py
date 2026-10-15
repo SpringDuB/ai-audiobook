@@ -181,11 +181,16 @@ def handle_characters(ctx, job) -> None:
 
     results.sort(key=lambda item: item[0])
     ctx.raise_if_cancelled(job)
+    merge_enabled = bool(ctx.settings.role_merge_enabled)
+    if not merge_enabled:
+        logger.info("角色合并已关闭（AB_ROLE_MERGE_ENABLED=false）：每个称呼各自成一个角色")
     payload, issues = merge_roles(
         runner,
         book_id=book_id,
         entries=role_entries(results),
         known=known_names,
+        existing_characters=existing.get("characters") or [],
+        enabled=merge_enabled,
         cancel_check=ctx.cancel_check(job),
     )
     for issue in issues:

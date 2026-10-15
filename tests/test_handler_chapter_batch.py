@@ -71,9 +71,11 @@ def _llm(**kwargs) -> FakeLLM:
     return FakeLLM(routes=routes, **kwargs)
 
 
-def _ctx(settings, conn, llm, concurrency: int = 4) -> WorkerContext:
+def _ctx(settings, conn, llm, concurrency: int = 4, *, merge: bool = True) -> WorkerContext:
     return WorkerContext(
-        settings=settings.model_copy(update={"llm_concurrency": concurrency}),
+        settings=settings.model_copy(
+            update={"llm_concurrency": concurrency, "role_merge_enabled": merge}
+        ),
         conn=conn,
         worker_id="w1",
         llm=LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=concurrency), settings, max_attempts=2),

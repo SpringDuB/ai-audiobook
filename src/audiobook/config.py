@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # 一句一条记录，窗口太大输出会被 llm_max_output_tokens 截断，所以字符数与句数都要卡
     llm_line_window_chars: int = 1600
     llm_line_window_sentences: int = 80
+    # 分析台词跑完后，是否再调一次大模型做「同人异名合并」（本名/绰号/尊称并成一个角色）。
+    # 默认关：这一步是 LLM 判断，可能把两个称呼并错，而且并完在前端只显示主名，很难发现。
+    # 需要时用 AB_ROLE_MERGE_ENABLED=true 打开（旧行为）。
+    role_merge_enabled: bool = False
     # 选角表（跨角色音色协调）：一本书可能有 600+ 角色，一次全交给模型既不现实
     # 也没效果 —— 只让"有戏份"的角色（台词数 ≥ min_lines）参与，按台词数排队；
     # 每批最多 batch_size 个角色，后一批看得到前面已占用的原型（增量避让）。

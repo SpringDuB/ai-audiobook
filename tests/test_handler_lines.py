@@ -33,9 +33,9 @@ def _seed_chapter(settings, book_id="b1", index=1, content="苏锐说：“走�
     )
 
 
-def _ctx(settings, conn, llm) -> WorkerContext:
+def _ctx(settings, conn, llm, *, merge: bool = False) -> WorkerContext:
     return WorkerContext(
-        settings=settings,
+        settings=settings.model_copy(update={"role_merge_enabled": merge}),
         conn=conn,
         worker_id="w1",
         llm=LlmJsonRunner(llm, AdaptiveLimiter(max_concurrency=4), settings) if llm else None,
@@ -74,7 +74,7 @@ def test_lines_handler_merges_a_new_name_into_the_character_table(settings, conn
     jobs.enqueue(conn, "lines", book_id, 1)
     llm = FakeLLM(routes={"【MERGE_ROLES】": {"characters": [{"name": "苏锐", "aliases": ["锐哥"]}]}})
 
-    assert run_once(_ctx(settings, conn, llm)) is True
+    assert run_once(_ctx(settings, conn, llm, merge=True)) is True
 
     rows = store.read_jsonl(store.lines_path(settings, book_id, 1))
     assert rows[0]["speaker"] == "role_0001"

@@ -133,7 +133,7 @@ def _ctx(settings, conn, engine=None) -> WorkerContext:
         }
     )
     return WorkerContext(
-        settings=settings,
+        settings=settings.model_copy(update={"role_merge_enabled": True}),
         conn=conn,
         worker_id="w1",
         engine=engine or FakeEngine(ms_per_char=10.0),
