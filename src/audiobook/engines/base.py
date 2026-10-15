@@ -45,6 +45,8 @@ class EngineCapabilities:
     voice_design: bool = False
     # 服务端是否支持"逐句按描述生成"（把每句的音色描述直接喂给它）
     voice_prompt: bool = False
+    # 服务端是否支持透传生成参数（temperature / repetition_penalty / subtalker_* …）
+    options: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class SynthParams:
     # 为空时引擎退回"按 voice_id 到音色库里找 ref.wav"的老路径（旁白/库存音色）
     ref_path: Path | None = None
     ref_text: str = ""
+    # 生成参数（只对"按描述生成"通道生效）：治喊叫 / 拖长 / 喘得假这类听感问题
+    options: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,9 @@ def summarize_params(params: SynthParams | None, caps: EngineCapabilities) -> di
         summary["ref"] = ref_token(params.ref_path)
         if params.ref_text:
             summary["ref_text"] = params.ref_text
+    if params.options:
+        # 生成参数变了也要重合成（否则调参看不出任何变化）
+        summary["options"] = dict(sorted(params.options.items()))
     return summary
 
 

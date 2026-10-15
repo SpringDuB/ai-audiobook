@@ -297,16 +297,21 @@ class Qwen3TtsBackend:
 
     # ---------------------------------------------------------------- 按描述生成（主路径）
 
-    def design(self, *, text: str, instruct: str, lang: str = "ZH") -> tuple[bytes, int, str]:
+    def design(
+        self, *, text: str, instruct: str, lang: str = "ZH", options: dict | None = None
+    ) -> tuple[bytes, int, str]:
         """按描述生成一段音频，返回 (wav 字节, 采样率, 实际说的文本)。
 
         同一段逻辑既服务于"角色试听"，也服务于逐句合成。
+        ``options`` 是透传给 generate_voice_design() 的生成参数（采样 / 重复惩罚 /
+        解码器采样 / 最大长度），用来治"喊、拖长、喘得假"这类听感问题。
         """
         model = self._model("design")
         wavs, sample_rate = model.generate_voice_design(
             text=text,
             language=language_name(lang),
             instruct=(instruct or "").strip() or FALLBACK_INSTRUCT,
+            **(options or {}),
         )
         return _wav_bytes(wavs[0], sample_rate), int(sample_rate), text
 
@@ -315,10 +320,12 @@ class Qwen3TtsBackend:
         texts = [item.text for item in requests]
         instructs = [(item.voice_prompt or "").strip() or FALLBACK_INSTRUCT for item in requests]
         languages = [language_name(item.lang) for item in requests]
+        # 一个包一次解码：生成参数只能整包一份（service 层已保证各项一致）
         wavs, sample_rate = model.generate_voice_design(
             text=texts,
             language=languages if len(set(languages)) > 1 else languages[0],
             instruct=instructs,
+            **(requests[0].options or {}),
         )
         durations: list[float] = []
         for waveform, path in zip(wavs, out_paths):
@@ -343,7 +350,10 @@ class Qwen3TtsBackend:
             audio = _wav_bytes(wavs[0], sample_rate)
         else:
             audio, sample_rate, _ = self.design(
-                text=request.text, instruct=request.voice_prompt, lang=request.lang
+                text=request.text,
+                instruct=request.voice_prompt,
+                lang=request.lang,
+                options=request.options,
             )
         return SynthesisResult(
             audio=audio,
@@ -405,6 +415,8 @@ class Qwen3TtsBackend:
             "maxBatchItems": int(self.settings.max_batch_items),
             "supportsSeed": False,
             "supportsWarmup": True,
+            # 支持透传生成参数（temperature / repetition_penalty / subtalker_* …）
+            "options": True,
             # 按描述生成（逐句 instruct）+ 试听设计接口
             "voiceDesign": True,
             "voicePrompt": True,

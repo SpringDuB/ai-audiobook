@@ -86,6 +86,7 @@ class HttpTtsEngine:
                 max_batch_items=max(1, int(data.get("maxBatchItems") or 1)),
                 voice_design=bool(data.get("voiceDesign")),
                 voice_prompt=bool(data.get("voicePrompt")),
+                options=bool(data.get("options")),
             )
         return self._caps
 
@@ -135,6 +136,8 @@ class HttpTtsEngine:
                 entry["emoVector"] = list(params.emo_vector)
             if params.pronunciation:
                 entry["pronunciation"] = params.pronunciation
+            if params.options and caps.options:
+                entry["options"] = dict(params.options)
             payload_items.append(entry)
         first_params = items[0][1] or SynthParams()
         payload: dict = {"lang": first_params.lang or "ZH", "items": payload_items}
@@ -226,6 +229,9 @@ class HttpTtsEngine:
             payload["emoVector"] = list(params.emo_vector)
         if params.pronunciation:
             payload["pronunciation"] = params.pronunciation
+        if params.options and caps.options:
+            # 生成参数：服务端不认识就会 422，所以按能力开关决定发不发
+            payload["options"] = dict(params.options)
         try:
             response = self._post_synthesize(payload)
         except TtsBadRef:

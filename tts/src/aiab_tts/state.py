@@ -668,6 +668,7 @@ class ServiceState:
                 rate=request_payload.rate,
                 pronunciation=request_payload.pronunciation,
                 seed=request_payload.seed,
+                options=dict(request_payload.options or {}),
             )
             result = self._synthesize_with_heal(request)
         except ServiceError:
@@ -806,6 +807,17 @@ class ServiceState:
             self.inflight += 1
         started = time.monotonic()
         try:
+            # 生成参数是"整包一份"的（批量解码一次出多条）：各项不一致时直接报错，
+            # 免得安静地按第一条执行、让调用方以为每条都生效了
+            shared: dict | None = None
+            for item in items:
+                current = dict(item.options or {})
+                if shared is None:
+                    shared = current
+                elif current != shared:
+                    raise ServiceError(
+                        "bad_request", "批量合成里各项的 options 必须一致（要不同请拆开请求）", 400
+                    )
             requests = [
                 SynthesisRequest(
                     text=item.text,
@@ -818,6 +830,7 @@ class ServiceState:
                     rate=item.rate,
                     pronunciation=item.pronunciation,
                     seed=item.seed,
+                    options=dict(item.options or {}),
                 )
                 for item in items
             ]

@@ -19,6 +19,8 @@ class SynthesisRequest:
     rate: float = 1.0
     pronunciation: dict[str, str] = field(default_factory=dict)
     seed: int | None = None
+    # 生成参数（白名单见 schemas.GENERATION_OPTIONS）：透传给模型的 generate_*()
+    options: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
