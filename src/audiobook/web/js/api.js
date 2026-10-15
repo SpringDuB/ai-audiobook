@@ -26,6 +26,10 @@ async function request(method, url, body, options = {}) {
     init.body = JSON.stringify(body);
   }
   const response = await fetch(url, init);
+  if (response.status === 401 && url !== "/api/login") {
+    // 入口密码开了以后会话会过期（或换了密码）：丢回登录页，别让界面停在一堆报错上
+    window.location.replace("/login");
+  }
   if (!response.ok) throw new ApiError(await readError(response), response.status);
   if (response.status === 204) return null;
   const type = response.headers.get("content-type") || "";
@@ -37,6 +41,10 @@ const send = (method, url, body) => request(method, url, body ?? {});
 
 export const api = {
   books: () => get("/api/books"),
+  // 入口密码状态：auth_required=false 时下面两个接口都是空操作
+  session: () => get("/api/session"),
+  login: (password) => send("POST", "/api/login", { password }),
+  logout: () => send("POST", "/api/logout"),
   // 书目信息：默认会带上整本书的正文。界面只用到书名/产出清单，所以传 { chapters: "none" }，
   // 否则打开一本书要多传 2~8MB 的 JSON（原文另有 chapterText 接口按章取）。
   book: (id, options) => get(`/api/books/${id}${options?.chapters === "none" ? "?chapters=none" : ""}`),

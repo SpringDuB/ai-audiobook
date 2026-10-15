@@ -22,6 +22,8 @@ def test_root_serves_app_shell(settings):
     assert 'id="theme-toggle"' in body
     assert 'localStorage.getItem("aiab-theme")' in body
     assert body.index("aiab-theme") < body.index("/static/theme.css")
+    # 入口密码：退出按钮在顶栏（默认 hidden，app.js 问过 /api/session 才露出来）
+    assert 'id="logout"' in body and "hidden" in body.split('id="logout"')[1][:120]
 
 
 def test_static_assets_are_offline_only(settings):
@@ -37,6 +39,7 @@ def test_static_assets_are_offline_only(settings):
         "/static/js/icons.js",
         "/static/js/format.js",
         "/static/js/offline.js",
+        "/static/js/gate.js",
         "/static/logo-mark.png",
         "/static/favicon.png",
         "/static/icons/icon-192.png",

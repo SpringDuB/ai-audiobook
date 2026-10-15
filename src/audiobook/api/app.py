@@ -8,8 +8,8 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import audio, jobs, listen, store, voicelib
@@ -22,6 +22,7 @@ from ..editing import apply_line_patch, invalidate_chapter
 from ..importer import import_book
 from ..pipeline import resume_book
 from ..tts_service import LocalTtsService, normalize_backend
+from .auth import COOKIE_MAX_AGE, COOKIE_NAME, PasswordGate, authenticated, password_matches, session_token
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -265,6 +266,8 @@ class JobStream:
 
 def create_app(settings, conn) -> FastAPI:
     app = FastAPI(title="AI 有声书")
+    # AB_UI_PASSWORD 非空的入口闸门；留空时中间件原样透传，行为与以前完全一致
+    app.add_middleware(PasswordGate, password=settings.ui_password)
     tts_service = LocalTtsService(settings)
 
     if WEB_DIR.exists():
@@ -273,6 +276,15 @@ def create_app(settings, conn) -> FastAPI:
         @app.get("/")
         def index():
             return FileResponse(WEB_DIR / "index.html", media_type="text/html")
+
+        # 入口密码页：密码没开或已经登录过，页面里的脚本会把你送回 "/"
+        @app.get("/login")
+        def login_page():
+            return FileResponse(
+                WEB_DIR / "login.html",
+                media_type="text/html",
+                headers={"Cache-Control": "no-store"},
+            )
 
         # PWA：service worker 必须从根路径下发（作用域才是整个站点），
         # manifest 同理，浏览器只认同源根下的名字。
@@ -291,6 +303,43 @@ def create_app(settings, conn) -> FastAPI:
                 media_type="application/manifest+json",
                 headers={"Cache-Control": "no-cache"},
             )
+
+    @app.post("/api/login")
+    async def login(payload: dict | None = None):
+        """输入访问密码 → 种会话 cookie。没设密码时直接放行（前端会立刻回首页）。"""
+        expected = settings.ui_password
+        if not expected:
+            return {"ok": True, "auth_required": False}
+        given = str((payload or {}).get("password") or "")
+        if not password_matches(given, expected):
+            # 慢半拍：猜密码的脚本每个请求都要等，穷举不划算
+            await asyncio.sleep(0.5)
+            raise HTTPException(status_code=401, detail="密码不对")
+        response = JSONResponse({"ok": True, "auth_required": True})
+        response.set_cookie(
+            COOKIE_NAME,
+            session_token(expected),
+            max_age=COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    @app.post("/api/logout")
+    def logout():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return response
+
+    @app.get("/api/session")
+    def session_state(request: Request):
+        """前端启动时问一次：要不要密码（auth_required）、现在算不算登录（authenticated）。"""
+        required = bool(settings.ui_password)
+        return {
+            "auth_required": required,
+            "authenticated": authenticated(settings.ui_password, request.headers.get("cookie", "")),
+        }
 
     @app.post("/api/books")
     async def upload_book(file: UploadFile = File(...), title: str = Form("未命名")):

@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     worker_tts_jobs: int = 1
     lease_seconds: int = 30
 
+    # 界面入口密码（AB_UI_PASSWORD）：留空 = 打开页面直接进（默认）；
+    # 填上 = 进编辑台前要先输这个密码（页面跳 /login，接口没会话回 401）。
+    # 会话是从密码派生的 HMAC：改密码即已登录的设备全部重新登录，服务端不存 session。
+    ui_password: str = ""
+
     # 一键启动的本机 TTS 服务（tts/ 子项目）的启动参数
     # qwen3 = Qwen3-TTS（VoiceDesign 设计音色 + Base 克隆，当前主线）
     # indextts = IndexTTS-2.5（情绪向量通道，保留可选）

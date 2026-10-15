@@ -189,12 +189,17 @@ GET    /api/books/{id}/chapters/{n}/subtitles       听书时间轴（逐句 sta
 POST   /api/books/{id}/chapters/{n}/mobile          wav → m4a 懒转码（已最新则秒回），离线下载前先调它
 GET    /api/books/{id}/chapters/{n}/audio.m4a       手机播放用的 m4a（支持 Range 206，可拖动进度）
 GET    /sw.js · GET /manifest.webmanifest           PWA（离线外壳 + 添加到主屏幕）
+GET    /login · POST /api/login · POST /api/logout · GET /api/session   入口密码（见下）
 GET    /api/settings · PUT /api/settings       （密钥永不回显）
 GET    /api/tts/local                          本机 TTS 状态 + 启动参数
 POST   /api/tts/local/start · /stop            一键启动 / 停止
 GET    /api/tts/local/logs?offset=N            增量拉日志
 GET    /api/events                              SSE：任务快照
 ```
+
+入口密码（`AB_UI_PASSWORD`）留空时上面这些谁都能调，和以前一样；填上以后：页面请求 303 跳 `/login`，
+`/api/*` 没会话回 401（登录页、`/static/`、`/sw.js`、`/manifest.webmanifest`、`/api/session`、`/api/login`、`/api/logout` 除外）。
+会话 cookie（`aiab_auth`，HttpOnly + SameSite=Lax，30 天）存的是密码派生的 HMAC，服务端不落 session；改密码即全部失效。
 
 写入类操作都不会在请求里做重活：改句子只落盘 + 作废该章成品；`resynth` / `render` / `export` 只入队，由 `worker` 执行。
 

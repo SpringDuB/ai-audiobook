@@ -2,6 +2,7 @@ import { store } from "./store.js";
 import { parseHash, startRouter } from "./router.js";
 import { errorState, h, runTeardowns } from "./ui.js";
 import { icon } from "./icons.js";
+import { api } from "./api.js";
 import * as shelf from "./views/shelf.js";
 import * as workspace from "./views/workspace.js";
 import * as listen from "./views/listen.js";
@@ -52,6 +53,37 @@ themeButton?.addEventListener("click", () => {
 });
 
 paintTheme();
+
+/* ------------------------------------------------- 入口密码（AB_UI_PASSWORD）
+   密码没开时这一整段是空转：按钮本来就 hidden，接口也不拦人。
+   开了密码：没登录（页面来自缓存 / 会话过期）先丢回登录页；登录了才露出「退出」。 */
+
+const logoutButton = document.getElementById("logout");
+
+if (logoutButton) {
+  logoutButton.append(icon("log-out", { size: 16 }));
+  logoutButton.addEventListener("click", async () => {
+    try {
+      await api.logout();
+    } catch (error) {
+      /* 删不掉 cookie 也先回登录页：反正页面进不去了 */
+    }
+    window.location.replace("/login");
+  });
+}
+
+api
+  .session()
+  .then((session) => {
+    if (session.auth_required && !session.authenticated) {
+      window.location.replace("/login");
+      return;
+    }
+    if (session.auth_required) logoutButton?.removeAttribute("hidden");
+  })
+  .catch(() => {
+    /* 问不到状态不拦人：接口那层遇到 401 时 api.js 还会兜一次 */
+  });
 
 function crumbFor(route) {
   switch (route.name) {

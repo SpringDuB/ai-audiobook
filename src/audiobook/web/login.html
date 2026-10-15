@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f4ef">
+  <meta name="robots" content="noindex">
+  <title>输入访问密码 · AI 有声书</title>
+  <link rel="icon" href="/static/logo-mark.png" type="image/png">
+  <script>
+    // 与 index.html 同一份主题逻辑：样式表之前跑，刷新不闪一帧
+    (function () {
+      try {
+        var saved = localStorage.getItem("aiab-theme");
+        var system = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : system;
+      } catch (error) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="gate">
+    <form class="gate__card" id="gate-form">
+      <img class="gate__mark" src="/static/logo-mark.png" alt="" width="34" height="34" translate="no">
+      <h1 class="gate__title" translate="no">AI 有声书</h1>
+      <p class="gate__hint">这台机器的编辑台开着访问密码，输入后进入。</p>
+      <div class="field">
+        <label for="gate-password">访问密码</label>
+        <input id="gate-password" name="password" type="password" autocomplete="current-password" required autofocus>
+      </div>
+      <p class="gate__error" id="gate-error" role="alert" hidden></p>
+      <button class="btn btn-primary gate__submit" id="gate-submit" type="submit">进入</button>
+    </form>
+  </main>
+  <script type="module" src="/static/js/gate.js"></script>
+</body>
+</html>

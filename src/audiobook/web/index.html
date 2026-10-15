@@ -42,6 +42,8 @@
         <span class="dot" data-state="idle" aria-hidden="true"></span>
         <span class="mono" id="runlabel">空闲</span>
       </div>
+      <!-- 只在开了访问密码（AB_UI_PASSWORD）时显示：app.js 问过 /api/session 再放出来 -->
+      <button id="logout" class="icon-btn" type="button" aria-label="退出登录" title="退出登录" hidden></button>
       <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换到深色主题" title="切换深色主题">☾</button>
     </div>
   </header>
