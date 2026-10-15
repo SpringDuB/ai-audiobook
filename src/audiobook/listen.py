@@ -67,6 +67,9 @@ def ensure_mobile_audio(settings, book_id: str, index: int, *, force: bool = Fal
             if encoder == "aac":
                 # profile 只有内置 aac 认；塞给 aac_mf 会直接失败
                 args += ["-profile:a", "aac_low"]
+                # 快速搜索算法（原生 aac 单线程，-threads 没用）：40 分钟一章实测
+                # 11.9s → 4.6s，单核冲刺更短，风扇来不及被拉满；体积基本不变。
+                args += ["-aac_coder", "fast"]
             args += [
                 "-b:a", f"{int(settings.mobile_audio_bitrate_kbps)}k",
                 "-ac", str(int(settings.mobile_audio_channels)),

@@ -114,12 +114,14 @@ def test_mobile_encoder_setting_controls_ffmpeg_args(settings, monkeypatch):
     listen.ensure_mobile_audio(settings, "b1", 1)
     assert calls[-1][calls[-1].index("-c:a") + 1] == "aac"
     assert "-profile:a" in calls[-1]
+    assert calls[-1][calls[-1].index("-aac_coder") + 1] == "fast"
     assert calls[-1][calls[-1].index("-b:a") + 1] == "64k"
 
     hardware = settings.model_copy(update={"mobile_audio_encoder": "aac_mf"})
     listen.ensure_mobile_audio(hardware, "b1", 1, force=True)
     assert calls[-1][calls[-1].index("-c:a") + 1] == "aac_mf"
     assert "-profile:a" not in calls[-1]
+    assert "-aac_coder" not in calls[-1]
 
 
 @requires_ffmpeg
