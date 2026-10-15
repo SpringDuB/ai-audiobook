@@ -128,6 +128,9 @@ uv run aiab tts start --wait 600   # 窗口 3；首次会先下载权重再加�
 然后打开 <http://127.0.0.1:8300>。（也可以用 `serve` + `worker` 起好，在设置页点「一键启动 TTS 服务」，
 启动参数会写入 `data/settings.json`，worker 下一轮任务自动生效，不用重启。）
 
+以后重启不用记这几条命令：`powershell -ExecutionPolicy Bypass -File tools\restart.ps1`（或双击
+`tools\restart.cmd`）会停掉旧的 serve / worker、轮转日志、隐藏窗口重新拉起并自检，最后打印入口地址与 PID。
+
 ## 日常使用
 
 1. **书架**导入 txt / epub → 自动分章（卡片本身可点进书页，卡上只有「打开 / 删除」）；
@@ -176,6 +179,7 @@ uv run aiab tts start --wait 600   # 窗口 3；首次会先下载权重再加�
 | `uv run aiab run <bookId>` | 按文件断点补跑下一步（分析 + 合成） |
 | `uv run aiab export <bookId> [--mode chapter/book/all] [--container mp4]` | 导出成品 |
 | `uv run aiab tts start/stop/status/logs` | 一键启停本机 TTS 服务 |
+| `powershell -ExecutionPolicy Bypass -File tools\restart.ps1` | 一键重启后端与 worker（`-WithTts` 连 TTS 一起拉，`-Stop` 只停不启） |
 | `uv run aiab llm-check` | 验证 LLM 端点连通并做一次 JSON 往返 |
 | `uv run aiab migrate voices/book` | 从旧系统迁移音色 / 书籍 |
 | `uv run aiab snapshot export/import` | 单本书的 JSON 快照导出导入 |
