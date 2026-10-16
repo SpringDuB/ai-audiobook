@@ -21,7 +21,7 @@ import {
 const POS_PREFIX = "aiab-listen-pos:";
 const LAST_PREFIX = "aiab-listen-last:";
 const RATE_KEY = "aiab-listen-rate";
-const RATES = [1, 1.25, 1.5, 2, 0.75];
+const RATES = [1, 1.25, 1.5, 1.75, 2, 0.75];
 const NARRATOR_NAMES = new Set(["旁白", "narrator", "未知", ""]);
 
 // 预取缓存：听本章时把下一章的时间轴 / 目录拿进内存，切章时不再依赖网络往返。
