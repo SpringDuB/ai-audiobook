@@ -7,6 +7,13 @@ CHAPTER_PATTERNS = [
     re.compile(r"^卷[零一二三四五六七八九十百千万〇0-9]+\s*\S*"),
 ]
 
+# 番外这类附属章节没有"第X章"前缀，但同样是独立章节。只认行首固定词 +
+# 分隔符/序号，标题部分不含句读，且整行较短，避免把正文叙述行误拆。
+EXTRA_CHAPTER_PATTERNS = [
+    re.compile(r"^番外(?:篇|章|回)?(?:[\s:：0-9零一二三四五六七八九十][^。！？!?；;，,、…]*)?$"),
+]
+EXTRA_TITLE_MAX_CHARS = 40
+
 SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
 WORD_CHARS = re.compile(r"[0-9A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 CLOSING_MARKS = "”\"’』」）)】]"
@@ -21,7 +28,11 @@ class Chapter:
 
 def match_chapter_title(line: str) -> bool:
     line = line.strip()
-    return bool(line) and any(p.match(line) for p in CHAPTER_PATTERNS)
+    if not line:
+        return False
+    if any(p.match(line) for p in CHAPTER_PATTERNS):
+        return True
+    return len(line) <= EXTRA_TITLE_MAX_CHARS and any(p.match(line) for p in EXTRA_CHAPTER_PATTERNS)
 
 
 def split_span(text: str) -> list[str]:
